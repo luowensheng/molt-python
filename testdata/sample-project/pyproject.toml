@@ -1,0 +1,14 @@
+[project]
+name = "hello-pyexec"
+version = "1.0.0"
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.28.0",
+]
+
+[project.scripts]
+hello-pyexec = "hello.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

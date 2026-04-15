@@ -1,0 +1,32 @@
+name: "pyexec"
+commands:
+    build:
+        args:
+            os:
+                type: string
+            arch:
+                type: string
+            version:
+                type: string
+            output:
+                type: string
+        script: |-
+            GOOS="{{.os}}" GOARCH="{{.arch}}" go build -ldflags="-X main.Version={{.version}} -X main.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ) -s -w"  -o {{.output}}
+
+    build_mac:
+        args:
+            version:
+                type: string
+        script: |-
+            OUTPUT_DIR="./builds/{{.version}}/mac/pyexec"
+            {{Run}} build --os darwin --arch arm64 --version {{.version}} --output $OUTPUT_DIR
+            bman add $OUTPUT_DIR
+            pyexec version
+    
+    build_all:
+        args:
+            version:
+                index: 0
+                type: string    
+        script: |-
+            {{Run}} build_mac --version {{.version}}
