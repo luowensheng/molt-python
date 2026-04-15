@@ -11,13 +11,36 @@ commands:
             output:
                 type: string
         script: |-
-            GOOS="{{.os}}" GOARCH="{{.arch}}" go build -ldflags="-X main.Version={{.version}} -X main.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ) -s -w"  -o {{.output}}
+            set -e
+
+            VERSION="{{.version}}"
+            DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            COMMIT=$(git rev-parse --short HEAD)
+
+            # ensure clean working tree (optional but recommended)
+            git diff --quiet || {
+            echo "Working tree not clean"
+            exit 1
+            }
+
+            # tag existing commit (safe, no new commits)
+            git tag -a "$VERSION" -m "release $VERSION" || true
+
+            # build binary
+            GOOS="{{.os}}" GOARCH="{{.arch}}" go build \
+            -ldflags "\
+            -X main.commit=$COMMIT \
+            -X main.version=$VERSION \
+            -X main.date=$DATE \
+            -s -w" \
+            -o "{{.output}}"
 
     build_mac:
         args:
             version:
                 type: string
         script: |-
+            set -e
             OUTPUT_DIR="./builds/{{.version}}/mac/pyexec"
             {{Run}} build --os darwin --arch arm64 --version {{.version}} --output $OUTPUT_DIR
             bman add $OUTPUT_DIR
@@ -29,4 +52,5 @@ commands:
                 index: 0
                 type: string    
         script: |-
+            set -e
             {{Run}} build_mac --version {{.version}}

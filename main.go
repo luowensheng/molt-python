@@ -63,7 +63,7 @@ func main() {
 		err = cmdSBOM(os.Args[2:])
 	// Meta
 	case "version", "--version":
-		fmt.Printf("pyexec %s %s\n", version, date)
+		fmt.Printf(`pyexec version="%s" release_date="%s" commit_hash="%s"`+"\n", version, date, commit)
 	case "help", "--help", "-h":
 		usage()
 	default:
