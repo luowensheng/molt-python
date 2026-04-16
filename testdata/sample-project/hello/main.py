@@ -1,9 +1,9 @@
-"""hello-pyexec: sample application demonstrating PyExec distribution."""
+"""hello-molt: sample application demonstrating molt distribution."""
 import sys
 
 
 def main() -> None:
-    print("Hello from PyExec!")
+    print("Hello from molt!")
     print(f"Python: {sys.version}")
     try:
         import requests  # type: ignore[import]

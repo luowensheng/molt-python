@@ -1,5 +1,5 @@
 [project]
-name = "hello-pyexec"
+name = "hello-molt"
 version = "1.0.0"
 requires-python = ">=3.8"
 dependencies = [
@@ -7,7 +7,7 @@ dependencies = [
 ]
 
 [project.scripts]
-hello-pyexec = "hello.main:main"
+hello-molt = "hello.main:main"
 
 [build-system]
 requires = ["hatchling"]

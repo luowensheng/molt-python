@@ -67,7 +67,7 @@ Created: /var/folders/gh/tjrwrd7s0hx_9qdwsl4yh5f40000gn/T/TestBuildProfilesfull1
     --- PASS: TestBuildProfiles/extended (0.21s)
     --- PASS: TestBuildProfiles/full (0.20s)
 PASS
-ok  	pyexec	(cached)
+ok  	molt	(cached)
 === RUN   TestBuildMinimal
 Building myapp v1.0.0 (darwin/arm64)...
   ✓ uv.lock up to date
@@ -120,7 +120,7 @@ Building myapp v1.0.0 (darwin/arm64)...
   ✓ Compiled launcher (darwin/arm64)
 Created: /var/folders/gh/tjrwrd7s0hx_9qdwsl4yh5f40000gn/T/TestBuildOutputContainsManifest3342119921/002/myapp-v1.0.0 (3MB)
     builder_test.go:132: 
-        	Error Trace:	/Users/oliverlaleau/Documents/projects/pyexec/internal/builder/builder_test.go:132
+        	Error Trace:	/Users/oliverlaleau/Documents/projects/molt/internal/builder/builder_test.go:132
         	Error:      	
         	Test:       	TestBuildOutputContainsManifest
 --- FAIL: TestBuildOutputContainsManifest (0.27s)
@@ -128,7 +128,7 @@ Created: /var/folders/gh/tjrwrd7s0hx_9qdwsl4yh5f40000gn/T/TestBuildOutputContain
 Building myapp v1.0.0 (darwin/arm64)...
 --- PASS: TestBuildMissingProject (0.00s)
 FAIL
-FAIL	pyexec/internal/builder	1.180s
+FAIL	molt/internal/builder	1.180s
 === RUN   TestNewAndHas
 --- PASS: TestNewAndHas (0.00s)
 === RUN   TestGet
@@ -142,7 +142,7 @@ FAIL	pyexec/internal/builder	1.180s
 === RUN   TestSize
 --- PASS: TestSize (0.00s)
 PASS
-ok  	pyexec/internal/cache	(cached)
+ok  	molt/internal/cache	(cached)
 === RUN   TestCapture
 --- PASS: TestCapture (0.03s)
 === RUN   TestCaptureSourceFiltering
@@ -150,7 +150,7 @@ ok  	pyexec/internal/cache	(cached)
 === RUN   TestCaptureUvLockParsing
 --- PASS: TestCaptureUvLockParsing (0.04s)
 PASS
-ok  	pyexec/internal/capturer	(cached)
+ok  	molt/internal/capturer	(cached)
 === RUN   TestDownloadAll_Success
 --- PASS: TestDownloadAll_Success (0.00s)
 === RUN   TestDownloadAll_Cached
@@ -168,8 +168,8 @@ ok  	pyexec/internal/capturer	(cached)
 === RUN   TestParallelDownloads
 --- PASS: TestParallelDownloads (0.00s)
 PASS
-ok  	pyexec/internal/downloader	(cached)
-?   	pyexec/internal/executor	[no test files]
+ok  	molt/internal/downloader	(cached)
+?   	molt/internal/executor	[no test files]
 === RUN   TestInstallDryRun
 [dry-run] would install to /var/folders/gh/tjrwrd7s0hx_9qdwsl4yh5f40000gn/T/TestInstallDryRun573813749/001/install
 --- PASS: TestInstallDryRun (0.00s)
@@ -183,8 +183,8 @@ ok  	pyexec/internal/downloader	(cached)
   Installation complete: /var/folders/gh/tjrwrd7s0hx_9qdwsl4yh5f40000gn/T/TestInstallAuditLog1008126129/001/install
 --- PASS: TestInstallAuditLog (2.24s)
 PASS
-ok  	pyexec/internal/installer	(cached)
-?   	pyexec/internal/launcher	[no test files]
+ok  	molt/internal/installer	(cached)
+?   	molt/internal/launcher	[no test files]
 === RUN   TestSaveAndLoad
 --- PASS: TestSaveAndLoad (0.00s)
 === RUN   TestSaveCreatesDirectory
@@ -200,7 +200,7 @@ ok  	pyexec/internal/installer	(cached)
 === RUN   TestFilterNotCachedWithCachedFile
 --- PASS: TestFilterNotCachedWithCachedFile (0.00s)
 PASS
-ok  	pyexec/internal/manifest	(cached)
+ok  	molt/internal/manifest	(cached)
 === RUN   TestCurrent
 --- PASS: TestCurrent (0.00s)
 === RUN   TestPythonBinaryName
@@ -213,7 +213,7 @@ ok  	pyexec/internal/manifest	(cached)
     platform_test.go:68: install base: /Users/oliverlaleau/Library/Application Support
 --- PASS: TestDefaultInstallBase (0.00s)
 === RUN   TestDefaultCacheDir
-    platform_test.go:79: cache dir: /Users/oliverlaleau/Library/Caches/pyexec
+    platform_test.go:79: cache dir: /Users/oliverlaleau/Library/Caches/molt
 --- PASS: TestDefaultCacheDir (0.00s)
 === RUN   TestPythonStandaloneURL
     platform_test.go:102: linux/amd64 → https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.12.1+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz.tar.gz
@@ -235,8 +235,8 @@ ok  	pyexec/internal/manifest	(cached)
     platform_test.go:168: TraceDeps(/usr/bin/python3): found 2 deps
 --- PASS: TestTraceDeps (0.01s)
 PASS
-ok  	pyexec/internal/platform	(cached)
-?   	pyexec/internal/testutil	[no test files]
+ok  	molt/internal/platform	(cached)
+?   	molt/internal/testutil	[no test files]
 === RUN   TestFind
 --- PASS: TestFind (0.00s)
 === RUN   TestAvailable
@@ -284,12 +284,12 @@ Resolved 1 package in 0.94ms
 testpkg v0.1.0
 --- PASS: TestTree (0.09s)
 FAIL
-FAIL	pyexec/internal/uv	0.780s
+FAIL	molt/internal/uv	0.780s
 === RUN   TestVerifySuccess
 --- PASS: TestVerifySuccess (0.00s)
 === RUN   TestVerifyMissingManifest
     verifier_test.go:51: 
-        	Error Trace:	/Users/oliverlaleau/Documents/projects/pyexec/internal/verifier/verifier_test.go:51
+        	Error Trace:	/Users/oliverlaleau/Documents/projects/molt/internal/verifier/verifier_test.go:51
         	Error:      	"python3 not found in installation" does not contain "manifest"
         	Test:       	TestVerifyMissingManifest
 --- FAIL: TestVerifyMissingManifest (0.00s)
@@ -298,7 +298,7 @@ FAIL	pyexec/internal/uv	0.780s
 === RUN   TestSBOM
 --- PASS: TestSBOM (0.00s)
 FAIL
-FAIL	pyexec/internal/verifier	0.557s
+FAIL	molt/internal/verifier	0.557s
 === RUN   TestBuildProfiles
 --- PASS: TestBuildProfiles (0.00s)
 === RUN   TestInstallModes
@@ -310,5 +310,5 @@ FAIL	pyexec/internal/verifier	0.557s
 === RUN   TestInstallConfigDefaults
 --- PASS: TestInstallConfigDefaults (0.00s)
 PASS
-ok  	pyexec/pkg/types	(cached)
+ok  	molt/pkg/types	(cached)
 FAIL

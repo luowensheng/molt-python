@@ -1,311 +1,152 @@
-# PyExec
+# molt
 
-**Hermetic Python application distribution — Docker-level reproducibility as a single binary, on Linux, macOS, and Windows.**
+**The hermetic Python project toolchain.** One tool for the entire Python project lifecycle — from scaffolding to reproducible builds to dependency forensics.
 
-PyExec is a full project lifecycle tool: it manages dependencies via `uv`, locks your environment, and packages your Python application as a self-contained executable that reconstructs an isolated environment on any target machine — no Docker, no root, no "works on my machine".
+```
+molt new project billing --type api   # scaffold a production-ready project in seconds
+molt deps tree                        # see every dep, every .so, every system lib — hashed
+molt hash lock                        # cryptographic proof of your entire build surface
+molt build                            # ship a self-contained binary
+molt_INSTALL_BASE=/opt ./billing-v1.0.0 install
+```
+
+---
+
+## Why molt
+
+Python packaging is **fragmented**. You need `pyenv` for Python versions, `uv` or `pip` for packages, `cookiecutter` for templates, `pip-audit` for CVEs, `pipdeptree` for dep trees, `pytest` + `coverage` for tests, `make` for task running, and a hand-rolled CI matrix for cross-platform builds. None of these tools talk to each other.
+
+molt unifies all of it under one mental model, one config file (`pyproject.toml`), and one lock file (`.molt-deps.lock`) that covers your entire runtime surface — not just package versions, but Python itself, every native extension `.so`, and every system library they link against.
+
+---
+
+## Install
 
 ```bash
-# Start a new project
-pyexec init myapp && cd myapp
-pyexec add fastapi uvicorn
+# From source (requires Go 1.22+)
+git clone https://github.com/yourorg/molt
+cd molt
+go build -o molt .
+mv molt /usr/local/bin/
 
-# Build for any platform
-pyexec build --profile standard .
-pyexec build --profile standard --os darwin --arch arm64 .   # cross-compile
-pyexec build --profile standard --os windows --arch amd64 .  # cross-compile
-
-# Ship and run anywhere — nothing pre-installed on target
-./myapp-v0.1.0 install
-./myapp-v0.1.0 run
+# Verify
+molt version
 ```
 
 ---
 
-## How It Works
-
-### Bring everything, touch nothing
-
-PyExec never relies on what is already on the user's machine beyond the OS kernel. Every component — Python, system libraries, packages — is either embedded in the binary or downloaded to a **private directory that PyExec fully controls**. Nothing is written outside that directory. No PATH changes. No admin rights needed. Deletable by removing one folder.
-
-### Three stages
-
-**1. Develop** — `pyexec init/add/remove/sync/lock` wrap `uv` so you never call it directly. `pyexec build` auto-locks the environment before building if `uv.lock` is missing or stale.
-
-**2. Build** — captures Python version, system library dependencies (via `ldd` / `otool` / PE walk), and packages from `uv.lock`. Cross-compiles a Go launcher binary for the target OS/arch and concatenates it with a gzipped payload archive. The result is a single executable.
-
-**3. Run** — on the target machine, the binary downloads and installs [python-build-standalone](https://github.com/indygreg/python-build-standalone) (a self-contained Python that needs nothing from the system), creates a venv, installs packages, and runs your code in a private environment.
-
-### Per-platform strategy
-
-| Layer | Linux | macOS | Windows |
-|---|---|---|---|
-| Python runtime | python-build-standalone (glibc ≥ 2.17) | python-build-standalone (macOS 10.15+) | python-build-standalone |
-| System libs | Private `lib/` + `LD_LIBRARY_PATH` | Bundled in standalone; `@rpath` patching for edge cases | Bundled in standalone; wheel-local DLLs |
-| Native packages | Wheels + `LD_LIBRARY_PATH` | Wheels (self-contained) | Wheels (self-contained) |
-| Process isolation | Linux namespaces (no root) | None (stable ABI makes it unnecessary) | None |
-| System files touched | **zero** | **zero** | **zero** |
-| Admin rights | **no** | **no** | **no** |
-| Reproducibility | 95% | 90% | 85% |
-
----
-
-## Project Structure
-
-```
-pyexec/
-├── cmd/pyexec/          # CLI (stdlib only, no external deps)
-├── internal/
-│   ├── platform/        # OS-specific behaviour behind one interface
-│   │   ├── platform.go          # shared: paths, URLs, env vars
-│   │   ├── platform_linux.go    # ldd + CLONE_* namespaces
-│   │   ├── platform_darwin.go   # otool -L, nil namespace attr
-│   │   ├── platform_windows.go  # PE dep walk, nil namespace attr
-│   │   └── platform_other.go    # stub for other OS
-│   ├── launcher/        # target-side runner (compiled into each binary)
-│   │   ├── main.go              # install/run/verify/uninstall subcommands
-│   │   ├── isolation_linux.go   # CLONE_NEWNS|CLONE_NEWPID|CLONE_NEWUTS
-│   │   └── isolation_other.go   # no-op on non-Linux
-│   ├── uv/              # uv wrapper: Init, Add, Remove, Lock, Sync, Raw…
-│   ├── builder/         # capture → manifest → cross-compile launcher → assemble
-│   ├── capturer/        # Python version, platform.TraceDeps, uv.lock parse
-│   ├── installer/       # standalone Python download, venv, pip, @rpath patch
-│   ├── executor/        # launch Python via platform.EnvVars + NamespaceSysProcAttr
-│   ├── manifest/        # JSON manifest encode/decode/filter
-│   ├── downloader/      # parallel HTTP + content-addressable cache
-│   ├── verifier/        # SHA-256 integrity + SBOM
-│   ├── cache/           # content-addressable local cache
-│   └── testutil/        # minimal stdlib-only test helpers
-├── pkg/types/           # Manifest, BuildConfig, InstallConfig, …
-├── testdata/
-│   └── sample-project/
-├── integration_test.go
-└── go.mod
-```
-
----
-
-## CLI Reference
-
-### Project lifecycle
-
-| Command | What it does |
-|---|---|
-| `pyexec init [name]` | Scaffold project + run `uv lock` |
-| `pyexec add <pkg...>` | Add dependency, update `pyproject.toml` + `uv.lock` |
-| `pyexec remove <pkg...>` | Remove dependency |
-| `pyexec sync` | Sync venv with current lockfile |
-| `pyexec lock` | Regenerate `uv.lock` from `pyproject.toml` |
-| `pyexec tree` | Show dependency tree |
-| `pyexec uv <args...>` | Raw passthrough to uv |
-
-### Distribution
-
-| Command | What it does |
-|---|---|
-| `pyexec build [path]` | Build hermetic binary (auto-locks if stale) |
-| `pyexec install [manifest]` | Install on target machine |
-| `pyexec run` | Run the installed application |
-| `pyexec versions <app>` | List installed versions |
-| `pyexec verify [dir]` | Verify installation integrity |
-| `pyexec doctor` | System diagnostics |
-| `pyexec sbom [dir]` | Software Bill of Materials (JSON) |
-
----
-
-## Build Profiles
-
-| Profile | Binary | Download on install | Reproducibility | Best for |
-|---|---|---|---|---|
-| `minimal` | 5–10 MB | ~115 MB | 85% | CI, frequent deploys |
-| `standard` | 20–30 MB | ~70 MB | 90% | General use (recommended) |
-| `extended` | 40–60 MB | ~10 MB | 93% | Edge / metered connections |
-| `full` | 100–150 MB | 0 MB | 95% | Airgapped / offline |
-
----
-
-## Cross-Compilation
-
-Build for any platform from any platform:
+## Quick Start
 
 ```bash
-# From Linux, build for macOS Apple Silicon
-pyexec build --os darwin --arch arm64 --profile standard .
+# Create a new project
+molt new project myapp --type cli
 
-# From macOS, build for Linux amd64
-pyexec build --os linux --arch amd64 --profile standard .
+# Enter it and set up the environment
+cd myapp
+molt sync              # creates .venv and installs deps
 
-# From any platform, build for Windows
-pyexec build --os windows --arch amd64 --profile standard .
-```
+# Run tasks
+molt run dev           # python -m myapp
+molt run test          # pytest tests/ -v
+molt run lint          # ruff check .
 
-`go` must be on PATH for cross-compilation. The launcher binary is cross-compiled with `CGO_ENABLED=0` so no C toolchain is needed.
+# Understand what you depend on
+molt deps tree         # full tree: packages → .so files → system libs
+molt deps conflicts    # detect version conflicts before they bite
+molt imports missing   # find imports not declared in pyproject.toml
 
----
+# Lock everything for reproducibility
+molt hash lock         # hash every file at every layer
 
-## Install Paths
-
-| OS | Install base | Cache |
-|---|---|---|
-| Linux | `~/.local/share/<app>/<ver>` | `~/.cache/pyexec` |
-| macOS | `~/Library/Application Support/<app>/<ver>` | `~/Library/Caches/pyexec` |
-| Windows | `%APPDATA%\<app>\<ver>` | `%LOCALAPPDATA%\pyexec\cache` |
-
----
-
-## Install Modes
-
-| Mode | Isolation | Reproducibility | Use case |
-|---|---|---|---|
-| `minimal` | venv only | 85% | Dev / quick testing |
-| `standalone` | Private Python + libs + namespace (Linux) | 93% | Production (recommended) |
-| `exact` | Everything + checksum audit log | 95% | Regulated / critical |
-
----
-
-## Detailed Flag Reference
-
-### `pyexec build`
-```
--profile  string   minimal|standard|extended|full  (default: standard)
--name     string   Application name (default: dir name)
--version  string   Application version (default: 0.1.0)
--output   string   Output binary path
--os       string   Target OS: linux|darwin|windows  (default: current)
--arch     string   Target arch: amd64|arm64         (default: current)
--offline           Build for offline deployment
--sign-key string   Path to signing private key
-```
-
-### `pyexec install`
-```
--mode      string  minimal|standalone|exact  (default: standalone)
--prefix    string  Custom installation directory
--cache-dir string  Cache directory
--offline           No network downloads
--parallel  int     Parallel download workers  (default: 4)
--verbose           Verbose output
--dry-run           Show what would happen without doing it
--audit-log string  Write installation audit log to file
-```
-
-### `pyexec run`
-```
--app      string  Application name
--version  string  Application version
--isolated         Linux namespace isolation (no-op on macOS/Windows)
--debug            Print exec command and environment
+# Build and ship
+molt build             # self-contained binary for current platform
+molt_INSTALL_BASE=/opt ./myapp-v0.1.0 install
 ```
 
 ---
 
-## Getting Started
+## What It Does
 
-```bash
-# Install Go 1.22+ and uv, then:
-git clone https://pyexec
-cd pyexec
-go build -o /usr/local/bin/pyexec ./cmd/pyexec
+| Area | Commands |
+|------|----------|
+| **Project scaffolding** | `new project`, `new package`, `new module`, `new cli`, `new model`, ... |
+| **Python version management** | `python list`, `python install`, `python use`, `python remove` |
+| **Dependency management** | `add`, `remove`, `sync`, `lock` (wraps uv) |
+| **Dependency analysis** | `deps tree`, `deps conflicts`, `deps why`, `deps pinned-by`, `deps minimal` |
+| **Import analysis** | `imports graph`, `imports unused`, `imports missing`, `imports cycles` |
+| **Environment** | `env validate`, `env snapshot`, `env restore`, `env reset` |
+| **Reproducibility** | `hash lock`, `hash verify`, `hash diff` |
+| **Templates** | `create --from-template`, `template list/show/add/export/new` |
+| **Task runner** | `run <task>`, `task list/add/remove` |
+| **Distribution** | `build`, `capture`, `assemble`, `install` |
+| **Verification** | `check`, `verify`, `sbom`, `doctor` |
 
-# Create and build a project
-pyexec init myapp && cd myapp
-pyexec add requests
-pyexec build --profile standard .
-./myapp-v0.1.0 install
-./myapp-v0.1.0 run
+---
+
+## Project Layout
+
+Every project created with molt follows the same structure:
+
 ```
+myapp/
+├── pyproject.toml          ← single source of truth (deps, tasks, config)
+├── .python-version         ← exact pinned Python version
+├── .molt-deps.lock       ← full hash manifest (all layers)
+├── uv.lock                 ← package lockfile
+├── .env.example            ← committed env var template
+├── .env                    ← local overrides (gitignored)
+│
+├── myapp/
+│   ├── __init__.py         ← version exposed here
+│   ├── __main__.py         ← python -m myapp always works
+│   ├── main.py             ← entry point
+│   ├── config.py           ← typed config + .env loading
+│   ├── logging.py          ← structured logging setup
+│   └── exceptions.py       ← exception hierarchy
+│
+├── tests/
+│   ├── conftest.py         ← shared fixtures
+│   └── test_main.py
+│
+└── scripts/
+    └── seed.py             ← molt run seed
+```
+
+---
+
+## Configuration
+
+All molt config lives in `pyproject.toml`:
+
+```toml
+[project]
+name = "myapp"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
+    "python-dotenv>=1.0",
+]
+
+[tool.molt.tasks]
+dev      = "python -m myapp"
+test     = "pytest tests/ -v --tb=short --cov"
+lint     = "ruff check ."
+format   = "ruff format ."
+typecheck = "mypy myapp/"
+seed     = "python scripts/seed.py"
+migrate  = "alembic upgrade head"
+```
+
+---
+
+## Documentation
+
+See [USAGE.md](USAGE.md) for comprehensive examples covering every command.
 
 ---
 
 ## License
 
 MIT
-
----
-
-## Cross-Platform Builds
-
-### Native build (always correct)
-
-```bash
-pyexec build --profile standard .
-```
-
-Builds for the machine you're running on. Always produces accurate system dep snapshots and wheel hashes. **Use this in CI on each platform.**
-
-### Two-step cross-build (correct, any machine)
-
-**Step 1 — run on the target machine** (or a CI runner of that OS):
-
-```bash
-# On the Windows machine / GitHub Actions windows-latest runner:
-pyexec capture --os windows --arch amd64 --output windows-amd64.manifest.json .
-# Produces: windows-amd64.manifest.json + windows-amd64.manifest.json.snap
-```
-
-**Step 2 — run on any machine** (your Linux dev box, CI, anywhere):
-
-```bash
-# Back on your Linux machine:
-pyexec assemble \
-  --manifest windows-amd64.manifest.json \
-  --name myapp \
-  --version 1.0.0 \
-  --profile standard \
-  .
-# Produces: myapp-v1.0.0.exe
-```
-
-The `capture` step is fast (~seconds) — it just inspects the environment and writes JSON. The heavy work (cross-compiling the launcher, packaging) happens in `assemble` and can run anywhere.
-
-### Best-effort cross-build (testing only)
-
-```bash
-pyexec build --os windows --arch amd64 --best-effort .
-```
-
-Explicitly opt-in with `--best-effort`. **Produces inaccurate system dep snapshots.** Fine for checking that the binary format works; not for production builds.
-
-Without `--best-effort`, cross-builds error with a clear message explaining the options.
-
-### Recommended CI pattern
-
-```yaml
-jobs:
-  build:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - run: pyexec build --profile standard --version $VERSION .
-      # Each platform builds its own binary natively — always correct.
-```
-
----
-
-## `pyexec doctor` Output
-
-```
-PyExec dev
-Platform:  linux/amd64
-─────────────────────────────────────
-  Install base: /home/user/.local/share
-  Cache dir:    /home/user/.cache/pyexec
-
-  ✓ python3              /usr/bin/python3
-  ✓ uv                   uv 0.4.0
-  ✓ go                   /usr/local/go/bin/go
-  ✓ ldd                  /usr/bin/ldd
-  ✓ namespaces           kernel feature
-
-Cross-build capability:
-  ✓ linux/amd64          (native)
-  ~ linux/arm64          (launcher only — use capture+assemble for accurate deps)
-  ~ darwin/amd64         (launcher only — use capture+assemble for accurate deps)
-  ~ darwin/arm64         (launcher only — use capture+assemble for accurate deps)
-  ~ windows/amd64        (launcher only — use capture+assemble for accurate deps)
-
-Core checks passed ✓
-
-For cross-platform builds, see: pyexec capture --help
-```
