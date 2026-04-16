@@ -58,3 +58,9 @@ commands:
     codebase:
         script: |-
             functool merge --ignore "builds*" --ignore "testdata*" "*.go" molt.txt "// {filepath}" 
+
+
+    testbuild:
+        script: |-
+            TEST_NAME="moltd"
+            go build -o /tmp/$TEST_NAME && bman add /tmp/$TEST_NAME && rm /tmp/$TEST_NAME

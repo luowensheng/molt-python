@@ -42,22 +42,45 @@ func New(projectDir string) *Creator {
 }
 
 // NewProject creates a full project structure.
+// internal/scaffold/scaffold.go
+
 func (c *Creator) NewProject(cfg types.ScaffoldConfig) error {
 	dir := cfg.OutputDir
 	if dir == "" {
 		dir = cfg.Name
 	}
+	// 🛠️ Sanitize project name: handle "." by deriving from current directory
+	if cfg.Name == "." {
+		if abs, err := filepath.Abs(c.ProjectDir); err == nil {
+			cfg.Name = filepath.Base(abs)
+		}
+		if cfg.Name == "" || cfg.Name == "." || cfg.Name == "/" {
+			cfg.Name = "myproject"
+		}
+		if dir == "" {
+			dir = "."
+		}
+	}
 	if cfg.Name == "" {
 		return fmt.Errorf("project name is required")
 	}
 
-	fmt.Printf("Creating %s project '%s'...\n\n", cfg.Type, cfg.Name)
-
+	fmt.Printf("Creating %s project '%s'...\n", cfg.Type, cfg.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 
 	pkg := strings.ReplaceAll(cfg.Name, "-", "_")
+	// Ensure valid Python identifier
+	pkg = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			return r
+		}
+		return '_'
+	}, pkg)
+	if len(pkg) > 0 && pkg[0] >= '0' && pkg[0] <= '9' {
+		pkg = "_" + pkg
+	}
 
 	if err := writeFile(filepath.Join(dir, "pyproject.toml"),
 		pyprojectTOML(cfg.Name, pkg, cfg.Python, cfg.Type)); err != nil {
@@ -90,6 +113,7 @@ func (c *Creator) NewProject(cfg types.ScaffoldConfig) error {
 	writeFile(filepath.Join(pkgDir, "__init__.py"), initPy(cfg.Name, "0.1.0"))
 	writeFile(filepath.Join(pkgDir, "__main__.py"), mainPy(pkg))
 	writeFile(filepath.Join(pkgDir, "main.py"), mainModule(pkg, cfg.Type))
+
 	if !cfg.Minimal {
 		writeFile(filepath.Join(pkgDir, "config.py"), configPy())
 		writeFile(filepath.Join(pkgDir, "logging.py"), loggingPy(pkg))
@@ -119,7 +143,6 @@ func (c *Creator) NewProject(cfg types.ScaffoldConfig) error {
 		writeFile(filepath.Join(testDir, "conftest.py"), conftest(pkg))
 		writeFile(filepath.Join(testDir, "test_main.py"), testMain(pkg))
 	}
-
 	if !cfg.Minimal {
 		scriptsDir := filepath.Join(dir, "scripts")
 		os.MkdirAll(scriptsDir, 0o755)
@@ -129,7 +152,6 @@ func (c *Creator) NewProject(cfg types.ScaffoldConfig) error {
 	if !cfg.NoGit {
 		exec.Command("git", "init", dir).Run()
 	}
-
 	if _, err := exec.LookPath("uv"); err == nil {
 		fmt.Println("  Running uv lock...")
 		cmd := exec.Command("uv", "lock")
@@ -139,12 +161,36 @@ func (c *Creator) NewProject(cfg types.ScaffoldConfig) error {
 		cmd.Run()
 	}
 
-	fmt.Printf("\n✓ Project '%s' created in ./%s\n\n", cfg.Name, dir)
+	fmt.Printf("\n✓ Project '%s' created in ./%s\n", cfg.Name, dir)
 	fmt.Println("Next steps:")
 	fmt.Printf("  cd %s\n", dir)
 	fmt.Println("  molt sync")
 	fmt.Println("  molt run dev")
 	fmt.Println("  molt run test")
+	return nil
+}
+
+// addEntryPoint safely injects a script entry into pyproject.toml.
+func addEntryPoint(tomlPath, name, target string) error {
+	data, err := os.ReadFile(tomlPath)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+	if !strings.Contains(content, "[project.scripts]") {
+		// Sanitize name to guarantee a valid TOML bare key
+		key := strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+				return r
+			}
+			return '_'
+		}, name)
+		if key == "" {
+			key = "app"
+		}
+		content += fmt.Sprintf("\n[project.scripts]\n%s = \"%s\"\n", key, target)
+		return os.WriteFile(tomlPath, []byte(content), 0o644)
+	}
 	return nil
 }
 
@@ -499,18 +545,6 @@ func printCreated(dir, projectDir string) {
 	})
 }
 
-func addEntryPoint(tomlPath, name, target string) error {
-	data, err := os.ReadFile(tomlPath)
-	if err != nil {
-		return err
-	}
-	content := string(data)
-	if !strings.Contains(content, "[project.scripts]") {
-		content += fmt.Sprintf("\n[project.scripts]\n%s = \"%s\"\n", name, target)
-		return os.WriteFile(tomlPath, []byte(content), 0o644)
-	}
-	return nil
-}
 
 func addTask(tomlPath, name, command string) error {
 	data, err := os.ReadFile(tomlPath)

@@ -81,10 +81,15 @@ type BuildConfig struct {
 	TargetOS       string
 	TargetArch     string
 	Offline        bool
-	SignKeyPath     string
+	SignKeyPath    string
 	EmbedFiles     []string
 	MaxSizeMB      int
 	CrossBuildMode CrossBuildMode
+
+	EmbedStrict      bool     // Enable strict mode (fail on sensitive files)
+	EmbedIgnoreFile  string   // Path to .moltignore (default: ".moltignore")
+	EmbedExtraIgnore []string // Additional patterns to exclude
+	EmbedIncludeOnly []string // If set, ONLY these patterns are included (allowlist mode)
 }
 
 type InstallConfig struct {
@@ -168,17 +173,17 @@ type PythonVersion struct {
 // ── Dependency graph ──────────────────────────────────────────────────────────
 
 type DepGraph struct {
-	Root        string         `json:"root"`
-	Version     string         `json:"version"`
-	GeneratedAt time.Time      `json:"generated_at"`
-	Platform    string         `json:"platform"`
-	GlibcVer    string         `json:"glibc_version,omitempty"`
-	Python      PythonInfo     `json:"python"`
-	Source      []SourceInfo   `json:"source"`
-	Packages    []PackageInfo  `json:"packages"`
-	NativeExts  []NativeExt    `json:"native_extensions"`
-	SystemLibs  []SysLibInfo   `json:"system_libs"`
-	BuildEnv    BuildEnvInfo   `json:"build_env"`
+	Root        string          `json:"root"`
+	Version     string          `json:"version"`
+	GeneratedAt time.Time       `json:"generated_at"`
+	Platform    string          `json:"platform"`
+	GlibcVer    string          `json:"glibc_version,omitempty"`
+	Python      PythonInfo      `json:"python"`
+	Source      []SourceInfo    `json:"source"`
+	Packages    []PackageInfo   `json:"packages"`
+	NativeExts  []NativeExt     `json:"native_extensions"`
+	SystemLibs  []SysLibInfo    `json:"system_libs"`
+	BuildEnv    BuildEnvInfo    `json:"build_env"`
 	Security    SecuritySummary `json:"security"`
 }
 
@@ -199,20 +204,20 @@ type SourceInfo struct {
 }
 
 type PackageInfo struct {
-	Name         string       `json:"name"`
-	Version      string       `json:"version"`
-	WheelSHA256  string       `json:"wheel_sha256,omitempty"`
-	Pure         bool         `json:"pure"`
-	ABI          string       `json:"abi,omitempty"`
-	License      string       `json:"license,omitempty"`
-	LastRelease  string       `json:"last_release,omitempty"`
-	Maintainers  int          `json:"maintainers,omitempty"`
-	DirectDep    bool         `json:"direct_dep"`
-	RequiredBy   []string     `json:"required_by,omitempty"`
-	Requires     []string     `json:"requires,omitempty"`
-	Files        []RecordFile `json:"files,omitempty"`
-	CVEs         []CVEInfo    `json:"cves,omitempty"`
-	SigstoreOK   bool         `json:"sigstore_verified"`
+	Name        string       `json:"name"`
+	Version     string       `json:"version"`
+	WheelSHA256 string       `json:"wheel_sha256,omitempty"`
+	Pure        bool         `json:"pure"`
+	ABI         string       `json:"abi,omitempty"`
+	License     string       `json:"license,omitempty"`
+	LastRelease string       `json:"last_release,omitempty"`
+	Maintainers int          `json:"maintainers,omitempty"`
+	DirectDep   bool         `json:"direct_dep"`
+	RequiredBy  []string     `json:"required_by,omitempty"`
+	Requires    []string     `json:"requires,omitempty"`
+	Files       []RecordFile `json:"files,omitempty"`
+	CVEs        []CVEInfo    `json:"cves,omitempty"`
+	SigstoreOK  bool         `json:"sigstore_verified"`
 }
 
 type RecordFile struct {
@@ -239,30 +244,30 @@ type HardeningInfo struct {
 }
 
 type SysLibInfo struct {
-	Name        string   `json:"name"`
-	SHA256      string   `json:"sha256"`
-	Path        string   `json:"path"`
-	SONAME      string   `json:"soname,omitempty"`
-	OSPackage   string   `json:"os_package,omitempty"`
-	Standard    bool     `json:"standard"`
-	MinRequired string   `json:"min_required,omitempty"`
-	RequiredBy  []string `json:"required_by"`
+	Name        string    `json:"name"`
+	SHA256      string    `json:"sha256"`
+	Path        string    `json:"path"`
+	SONAME      string    `json:"soname,omitempty"`
+	OSPackage   string    `json:"os_package,omitempty"`
+	Standard    bool      `json:"standard"`
+	MinRequired string    `json:"min_required,omitempty"`
+	RequiredBy  []string  `json:"required_by"`
 	CVEs        []CVEInfo `json:"cves,omitempty"`
 }
 
 type BuildEnvInfo struct {
-	OS       string `json:"os"`
-	Kernel   string `json:"kernel"`
-	Glibc    string `json:"glibc,omitempty"`
-	GCC      string `json:"gcc,omitempty"`
+	OS     string `json:"os"`
+	Kernel string `json:"kernel"`
+	Glibc  string `json:"glibc,omitempty"`
+	GCC    string `json:"gcc,omitempty"`
 	Molt   string `json:"molt"`
 }
 
 type SecuritySummary struct {
-	Warnings    int      `json:"warnings"`
-	Issues      []string `json:"issues,omitempty"`
-	SecretsFound bool    `json:"secrets_found"`
-	CVECount    int      `json:"cve_count"`
+	Warnings     int      `json:"warnings"`
+	Issues       []string `json:"issues,omitempty"`
+	SecretsFound bool     `json:"secrets_found"`
+	CVECount     int      `json:"cve_count"`
 }
 
 type CVEInfo struct {
@@ -275,7 +280,7 @@ type CVEInfo struct {
 
 type HashManifest struct {
 	GeneratedAt string            `json:"generated_at"`
-	Molt      string            `json:"molt"`
+	Molt        string            `json:"molt"`
 	Platform    string            `json:"platform"`
 	GlibcVer    string            `json:"glibc_version,omitempty"`
 	Python      HashEntry         `json:"python"`
@@ -313,12 +318,12 @@ type ImportGraph struct {
 }
 
 type ImportNode struct {
-	ID       string `json:"id"`
-	Module   string `json:"module"`
-	File     string `json:"file"`
-	Kind     string `json:"kind"` // source, stdlib, third-party
-	Package  string `json:"package,omitempty"`
-	Used     bool   `json:"used"`
+	ID      string `json:"id"`
+	Module  string `json:"module"`
+	File    string `json:"file"`
+	Kind    string `json:"kind"` // source, stdlib, third-party
+	Package string `json:"package,omitempty"`
+	Used    bool   `json:"used"`
 }
 
 type ImportEdge struct {
@@ -331,9 +336,9 @@ type ImportEdge struct {
 type TemplateSource string
 
 const (
-	TemplateBuiltin  TemplateSource = "builtin"
-	TemplateUser     TemplateSource = "user"
-	TemplateProject  TemplateSource = "project"
+	TemplateBuiltin TemplateSource = "builtin"
+	TemplateUser    TemplateSource = "user"
+	TemplateProject TemplateSource = "project"
 )
 
 type TemplateMeta struct {
@@ -408,9 +413,9 @@ type Task struct {
 // ── Dep analysis ─────────────────────────────────────────────────────────────
 
 type DepConflict struct {
-	Package      string
-	Version      string
-	Constraints  []DepConstraint
+	Package     string
+	Version     string
+	Constraints []DepConstraint
 }
 
 type DepConstraint struct {
@@ -419,11 +424,11 @@ type DepConstraint struct {
 }
 
 type DepRisk struct {
-	Package      string
-	Version      string
-	Score        int // 0-100, higher = riskier
-	Reasons      []string
-	LastRelease  string
-	Maintainers  int
-	Dependents   int // how many of your deps need this
+	Package     string
+	Version     string
+	Score       int // 0-100, higher = riskier
+	Reasons     []string
+	LastRelease string
+	Maintainers int
+	Dependents  int // how many of your deps need this
 }

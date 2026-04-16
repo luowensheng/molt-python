@@ -343,7 +343,7 @@ func cmdNew(args []string) error {
 		description := fs.String("description", "", "Project description")
 		noGit := fs.Bool("no-git", false, "Skip git init")
 		noTests := fs.Bool("no-tests", false, "Skip test scaffold")
-		minimal := fs.Bool("minimal", false, "Minimal scaffold")
+		minimal := fs.Bool("minimal", true, "Minimal scaffold")
 		var projName string
 		var flagArgs []string
 		for i := 1; i < len(args); i++ {
@@ -1294,6 +1294,9 @@ func cmdBuild(args []string) error {
 	targetOS := fs.String("os", runtime.GOOS, "Target OS")
 	targetArch := fs.String("arch", runtime.GOARCH, "Target arch")
 	bestEffort := fs.Bool("best-effort", false, "Allow cross-build")
+	embedStrict := fs.Bool("embed-strict", true, "Fail build on sensitive files (.env, keys, etc.)")
+	embedIgnore := fs.String("embed-ignore", ".moltignore", "Path to .moltignore file")
+
 	fs.Parse(args)
 
 	projectPath := "."
@@ -1314,14 +1317,16 @@ func cmdBuild(args []string) error {
 	}
 
 	return builder.New(types.BuildConfig{
-		Profile:        types.BuildProfile(*profile),
-		Name:           *name,
-		Version:        *ver,
-		ProjectPath:    absProject,
-		OutputPath:     *output,
-		TargetOS:       *targetOS,
-		TargetArch:     *targetArch,
-		CrossBuildMode: crossMode,
+		Profile:         types.BuildProfile(*profile),
+		Name:            *name,
+		Version:         *ver,
+		ProjectPath:     absProject,
+		OutputPath:      *output,
+		TargetOS:        *targetOS,
+		TargetArch:      *targetArch,
+		CrossBuildMode:  crossMode,
+		EmbedStrict:     *embedStrict,
+		EmbedIgnoreFile: *embedIgnore,
 	}).Build()
 }
 

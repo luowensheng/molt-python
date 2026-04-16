@@ -202,25 +202,22 @@ func (a *Analyser) readDirectDeps() map[string]bool {
 	return direct
 }
 
+// internal/deps/deps.go
+
+// buildPackageInfo constructs package info from site-packages and enriches it
+// with lockfile metadata (sha256, requires) and reverse dependencies (required_by).
 func (a *Analyser) buildPackageInfo(directDeps map[string]bool) []types.PackageInfo {
 	sitePackages := a.sitePackagesDir()
 	if sitePackages == "" {
 		return nil
 	}
-
-	// Read uv.lock for package metadata.
 	lockData, _ := os.ReadFile(filepath.Join(a.ProjectDir, "uv.lock"))
 	lockMeta := parseUvLockMeta(lockData)
 
 	var packages []types.PackageInfo
 	entries, _ := os.ReadDir(sitePackages)
-
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		// dist-info directories.
-		if !strings.HasSuffix(e.Name(), ".dist-info") {
+		if !e.IsDir() || !strings.HasSuffix(e.Name(), ".dist-info") {
 			continue
 		}
 		parts := strings.SplitN(strings.TrimSuffix(e.Name(), ".dist-info"), "-", 2)
@@ -236,7 +233,6 @@ func (a *Analyser) buildPackageInfo(directDeps map[string]bool) []types.PackageI
 			DirectDep: directDeps[strings.ToLower(name)],
 		}
 
-		// Read WHEEL file for pure/ABI info.
 		if wheelData, err := os.ReadFile(filepath.Join(distDir, "WHEEL")); err == nil {
 			for _, line := range strings.Split(string(wheelData), "\n") {
 				if strings.HasPrefix(line, "Root-Is-Purelib: true") {
@@ -247,28 +243,114 @@ func (a *Analyser) buildPackageInfo(directDeps map[string]bool) []types.PackageI
 				}
 			}
 		}
-
-		// Read RECORD for file hashes.
 		if recordData, err := os.ReadFile(filepath.Join(distDir, "RECORD")); err == nil {
 			pkg.Files = parseRecord(recordData, sitePackages)
 		}
-
-		// SHA256 of the wheel from lock metadata.
-		if meta, ok := lockMeta[strings.ToLower(name)]; ok {
-			pkg.WheelSHA256 = meta.sha256
-			pkg.Requires = meta.requires
-		}
-
-		// License from METADATA.
 		pkg.License = readLicense(filepath.Join(distDir, "METADATA"))
 
 		packages = append(packages, pkg)
+	}
+
+	// Build quick-lookup map & populate Requires + compute RequiredBy
+	pkgMap := map[string]*types.PackageInfo{}
+	for i := range packages {
+		pkgMap[strings.ToLower(packages[i].Name)] = &packages[i]
+	}
+	for i := range packages {
+		pkg := &packages[i]
+		if meta, ok := lockMeta[strings.ToLower(pkg.Name)]; ok {
+			pkg.WheelSHA256 = meta.sha256
+			pkg.Requires = meta.requires
+			for _, req := range meta.requires {
+				reqLower := strings.ToLower(req)
+				if parent, exists := pkgMap[reqLower]; exists {
+					parent.RequiredBy = append(parent.RequiredBy, pkg.Name)
+				}
+			}
+		}
 	}
 
 	sort.Slice(packages, func(i, j int) bool {
 		return packages[i].Name < packages[j].Name
 	})
 	return packages
+}
+
+type pkgMeta struct {
+	sha256   string
+	requires []string
+}
+
+// parseUvLockMeta extracts sha256 and dependency lists from uv.lock
+func parseUvLockMeta(data []byte) map[string]pkgMeta {
+	result := map[string]pkgMeta{}
+	if len(data) == 0 {
+		return result
+	}
+	var currentName string
+	inDeps := false
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "[[package]]" {
+			currentName = ""
+			inDeps = false
+			continue
+		}
+		if strings.HasPrefix(line, "name = ") {
+			currentName = strings.Trim(strings.TrimPrefix(line, "name = "), `"`)
+			continue
+		}
+		if currentName == "" {
+			continue
+		}
+
+		// Track dependencies block
+		if line == "dependencies = [" || line == "dependencies=[" {
+			inDeps = true
+			continue
+		}
+		if inDeps && line == "]" {
+			inDeps = false
+			continue
+		}
+
+		if inDeps {
+			if depName := extractDepName(line); depName != "" {
+				m := result[currentName]
+				m.requires = append(m.requires, depName)
+				result[currentName] = m
+			}
+		}
+
+		// Extract sha256 (can appear before or after dependencies)
+		if strings.HasPrefix(line, "sha256 = ") {
+			m := result[currentName]
+			m.sha256 = strings.Trim(strings.TrimPrefix(line, "sha256 = "), `"`)
+			result[currentName] = m
+		}
+	}
+	return result
+}
+
+// extractDepName safely parses dependency entries from uv.lock.
+// Handles both inline tables: { name = "urllib3" } and plain strings: "urllib3"
+func extractDepName(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.Trim(line, ",")
+
+	// Handle inline table { name = "pkg", specifier = ">=1.0" }
+	if strings.HasPrefix(line, "{") {
+		if idx := strings.Index(line, `name = "`); idx != -1 {
+			start := idx + len(`name = "`)
+			if end := strings.Index(line[start:], `"`); end != -1 {
+				return line[start : start+end]
+			}
+		}
+		return ""
+	}
+	// Handle plain quoted string "pkg"
+	return strings.Trim(line, `" `)
 }
 
 // ── Native extensions ─────────────────────────────────────────────────────────
@@ -1111,37 +1193,6 @@ func readProjectMeta(projectDir string) (name, version string) {
 		version = "unknown"
 	}
 	return
-}
-
-type pkgMeta struct {
-	sha256   string
-	requires []string
-}
-
-func parseUvLockMeta(data []byte) map[string]pkgMeta {
-	result := map[string]pkgMeta{}
-	if len(data) == 0 {
-		return result
-	}
-	var currentName string
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "[[package]]" {
-			currentName = ""
-			continue
-		}
-		if strings.HasPrefix(line, "name = ") {
-			currentName = strings.Trim(strings.TrimPrefix(line, "name = "), `"`)
-			continue
-		}
-		if strings.HasPrefix(line, "sha256 = ") && currentName != "" {
-			m := result[currentName]
-			m.sha256 = strings.Trim(strings.TrimPrefix(line, "sha256 = "), `"`)
-			result[currentName] = m
-		}
-	}
-	return result
 }
 
 func parseRecord(data []byte, sitePackages string) []types.RecordFile {
