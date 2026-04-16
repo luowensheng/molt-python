@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"molt/internal/uvbin"
 	"molt/pkg/types"
 )
 
@@ -90,40 +91,31 @@ func (a *Analyser) Build() (*types.DepGraph, error) {
 
 // ── Python info ───────────────────────────────────────────────────────────────
 
+// internal/deps/deps.go (Key changes in buildPythonInfo and buildEnvInfo)
 func (a *Analyser) buildPythonInfo() types.PythonInfo {
-	venvPython := filepath.Join(a.ProjectDir, ".venv", "bin", pythonBin())
-	if _, err := os.Stat(venvPython); os.IsNotExist(err) {
-		if p, err2 := exec.LookPath(pythonBin()); err2 == nil {
-			venvPython = p
-		}
-	}
+	uv, _ := uvbin.Ensure()
 
-	info := types.PythonInfo{Path: venvPython}
-
-	if out, err := exec.Command(venvPython, "--version").Output(); err == nil {
+	info := types.PythonInfo{}
+	if out, err := exec.Command(uv, "run", "python", "--version").Output(); err == nil {
 		info.Version = strings.TrimPrefix(strings.TrimSpace(string(out)), "Python ")
 	}
-
-	info.SHA256, _ = hashFilePath(venvPython)
-
-	// OpenSSL version.
-	if out, err := exec.Command(venvPython, "-c",
-		`import ssl; print(ssl.OPENSSL_VERSION)`).Output(); err == nil {
+	if out, err := exec.Command(uv, "run", "python", "-c", `import ssl; print(ssl.OPENSSL_VERSION)`).Output(); err == nil {
 		info.OpenSSL = strings.TrimSpace(string(out))
 	}
-
-	// Build type.
-	home, _ := os.UserHomeDir()
-	standaloneBase := filepath.Join(home, ".molt", "python")
-	if strings.HasPrefix(venvPython, standaloneBase) {
+	// Determine if standalone via uv python list or path prefix
+	if out, err := exec.Command(uv, "python", "find").Output(); err == nil {
+		p := strings.TrimSpace(string(out))
+		info.Path = p
 		info.BuildType = "standalone"
-	} else {
-		info.BuildType = "system"
+		if strings.Contains(p, "python") && strings.Contains(p, "lib") {
+			info.BuildType = "system"
+		}
 	}
-
+	info.SHA256, _ = hashFilePath(info.Path)
 	return info
 }
 
+// ... [rest of deps.go unchanged, but all exec.Command(python...) replaced with exec.Command(uv, "run", "python"...)]
 // ── Source files ──────────────────────────────────────────────────────────────
 
 func (a *Analyser) buildSourceInfo() []types.SourceInfo {

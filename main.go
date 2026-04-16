@@ -1178,6 +1178,9 @@ func cmdInfo() error {
 // ── Existing commands (kept from original) ───────────────────────────────────
 
 func cmdInit(args []string) error {
+	if _, err := uvbin.Ensure(); err != nil {
+		return fmt.Errorf("failed to bootstrap uv: %w", err)
+	}
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	python := fs.String("python", "", "Python version")
 	lib := fs.Bool("lib", false, "Library layout")

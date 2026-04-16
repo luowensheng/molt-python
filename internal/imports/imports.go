@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"molt/internal/uvbin"
 	"molt/pkg/types"
 )
 
@@ -379,27 +380,22 @@ func (a *Analyser) Cycles() error {
 	return nil
 }
 
-// Trace shows exactly which file gets imported for a module name.
+// internal/imports/imports.go
 func (a *Analyser) Trace(moduleName string) error {
-	fmt.Printf("Tracing import resolution for '%s'...\n\n", moduleName)
-
-	venvPython := filepath.Join(a.ProjectDir, ".venv", "bin", "python3")
-
-	script := fmt.Sprintf(`
-import importlib.util, sys
+	uv, err := uvbin.Ensure()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Tracing import resolution for '%s'...\n", moduleName)
+	script := fmt.Sprintf(`import importlib.util, sys
 spec = importlib.util.find_spec(%q)
 if spec:
     print("Found:", spec.origin or spec.submodule_search_locations)
-    print("Loader:", type(spec.loader).__name__)
 else:
-    print("NOT FOUND in sys.path")
-
-print("sys.path search order:")
-for i, p in enumerate(sys.path):
-    print(f"  [{i}] {p}")
+    print("NOT FOUND")
+    for i, p in enumerate(sys.path): print(f"  [{i}] {p}")
 `, moduleName)
-
-	cmd := exec.Command(venvPython, "-c", script)
+	cmd := exec.Command(uv, "run", "python", "-c", script)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -456,10 +452,9 @@ func (a *Analyser) collectSourceFiles() []string {
 
 // installedPackages uses `uv pip list --format=json` instead of pip directly.
 func (a *Analyser) installedPackages() map[string]string {
-	uv, err := findUV()
-	if err != nil {
-		return map[string]string{}
-	}
+	uv, _ := uvbin.Ensure()
+	out, _ := exec.Command(uv, "pip", "list", "--format=json").Output()
+
 	cmd := exec.Command(uv, "pip", "list", "--format=json")
 	cmd.Dir = a.ProjectDir
 	cmd.Env = uvEnvWithVenv(a.ProjectDir)

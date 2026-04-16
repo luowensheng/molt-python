@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"molt/internal/uvbin"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -243,24 +244,6 @@ func installPackages(installDir string, pkgs []PyPackage, verbose bool) error {
 	return cmd.Run()
 }
 
-// findUV locates the uv binary, checking PATH and common install locations.
-func findUV() (string, error) {
-	if p, err := exec.LookPath("uv"); err == nil {
-		return p, nil
-	}
-	home, _ := os.UserHomeDir()
-	candidates := []string{
-		filepath.Join(home, ".cargo", "bin", "uv"),
-		"/usr/local/bin/uv",
-	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c, nil
-		}
-	}
-	return "", fmt.Errorf("uv not found — install from https://github.com/astral-sh/uv")
-}
-
 // resolveInstallDir returns the installation directory using env var overrides.
 //
 //	Priority:
@@ -342,48 +325,6 @@ func writeReceipt(installDir string, m *Manifest, mode string) {
 }
 
 // ── Run ──────────────────────────────────────────────────────────────────────
-
-func cmdRun(args []string) error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	m, err := readManifest(self)
-	if err != nil {
-		return err
-	}
-
-	installDir := resolveInstallDir(m.AppName, m.Version)
-
-	// Check if installed; prompt if not.
-	manifestPath := filepath.Join(installDir, ".molt", "manifest.json")
-	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Not installed. Run first:\n  %s install\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "\nOr with a custom location:\n  molt_INSTALL_BASE=/opt %s install\n", os.Args[0])
-		return fmt.Errorf("not installed at %s", installDir)
-	}
-
-	pythonBin := findPython(installDir)
-	if pythonBin == "" {
-		return fmt.Errorf("python not found in %s — run install first", installDir)
-	}
-
-	mainModule := m.MainModule
-	if mainModule == "" {
-		mainModule = m.AppName + ".main"
-	}
-
-	cmdArgs := append([]string{"-m", mainModule}, args...)
-	cmd := exec.Command(pythonBin, cmdArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	cmd.Env = buildEnv(installDir)
-
-	applyIsolation(cmd)
-
-	return cmd.Run()
-}
 
 // ── Verify ───────────────────────────────────────────────────────────────────
 
@@ -843,3 +784,57 @@ func flagValue(args []string, flag, def string) string {
 	return def
 }
 
+// internal/launcher/main.go
+func findUV() (string, error) {
+	// 1. MOLT_UV override (strict)
+	if p := os.Getenv(uvbin.EnvOverride); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+		return "", fmt.Errorf("%s=%q: file not found", uvbin.EnvOverride, p)
+	}
+
+	// 2. Managed location
+	home, _ := os.UserHomeDir()
+	managed := filepath.Join(home, ".molt", "uv", "bin", "uv")
+	if runtime.GOOS == "windows" {
+		managed = filepath.Join(filepath.Dir(managed), "uv.exe")
+	}
+	if _, err := os.Stat(managed); err == nil {
+		return managed, nil
+	}
+
+	// 3. Auto-download via uvbin.Install (handles extraction properly)
+	fmt.Println("  Bootstrapping uv...")
+	if err := uvbin.Install(uvbin.PinnedVersion, false); err != nil {
+		return "", fmt.Errorf("auto-install uv: %w", err)
+	}
+	return managed, nil
+}
+
+// Update cmdRun to use uv run:
+func cmdRun(args []string) error {
+	self, _ := os.Executable()
+	m, _ := readManifest(self)
+	installDir := resolveInstallDir(m.AppName, m.Version)
+
+	uv, err := findUV()
+	if err != nil {
+		return fmt.Errorf("uv required to run: %w", err)
+	}
+
+	mainModule := m.MainModule
+	if mainModule == "" {
+		mainModule = m.AppName + ".main"
+	}
+
+	// uv run automatically activates the nearest .venv or uses system python
+	cmd := exec.Command(uv, "run", "-m", mainModule)
+	cmd.Args = append(cmd.Args, args...)
+	cmd.Dir = installDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Env = buildEnv(installDir) // keep env setup
+	return cmd.Run()
+}

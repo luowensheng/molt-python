@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"molt/internal/uvbin"
 	"molt/pkg/types"
 )
 
@@ -36,7 +37,7 @@ func New(projectDir string) *Builder {
 func (b *Builder) Build() (*types.HashManifest, error) {
 	m := &types.HashManifest{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Molt:      "dev",
+		Molt:        "dev",
 		Platform:    fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH),
 		BuildEnv:    map[string]string{},
 	}
@@ -309,19 +310,24 @@ func PrintManifest(m *types.HashManifest) {
 
 // ── Internal hashing ──────────────────────────────────────────────────────────
 
+// internal/hash/hash.go
 func (b *Builder) hashPython() types.HashEntry {
-	venvPython := filepath.Join(b.ProjectDir, ".venv", "bin", pythonBin())
-	if _, err := os.Stat(venvPython); os.IsNotExist(err) {
-		return types.HashEntry{Path: "python (not found)"}
+	uv, _ := uvbin.Ensure()
+	out, err := exec.Command(uv, "python", "find").Output()
+	if err != nil {
+		return types.HashEntry{Path: "python (not resolved)"}
 	}
-	h, _ := hashFilePath(venvPython)
-	info, _ := os.Stat(venvPython)
+	path := strings.TrimSpace(string(out))
+
+	h, _ := hashFilePath(path)
+	info, _ := os.Stat(path)
 	size := int64(0)
 	if info != nil {
 		size = info.Size()
 	}
-	return types.HashEntry{Path: venvPython, SHA256: h, Size: size, Kind: "python"}
+	return types.HashEntry{Path: path, SHA256: h, Size: size, Kind: "python"}
 }
+
 
 func (b *Builder) hashSource() []types.HashEntry {
 	var entries []types.HashEntry
@@ -585,5 +591,3 @@ func detectOS() string {
 	}
 	return runtime.GOOS
 }
-
-
