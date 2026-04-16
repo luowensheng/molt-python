@@ -46,6 +46,15 @@ commands:
             bman add $OUTPUT_DIR
             molt version
     
+    build_linux_amd:
+        args:
+            version:
+                type: string
+        script: |-
+            set -e
+            OUTPUT_DIR="./builds/{{.version}}/linux-amd/molt"
+            {{Run}} build --os linux --arch amd64 --version {{.version}} --output $OUTPUT_DIR
+    
     build_all:
         args:
             version:
@@ -54,6 +63,7 @@ commands:
         script: |-
             set -e
             {{Run}} build_mac --version {{.version}}
+            {{Run}} build_linux_amd --version {{.version}}
 
     codebase:
         script: |-
