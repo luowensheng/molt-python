@@ -1,3 +1,4 @@
+// internal/imports/imports.go
 // Package imports performs static import analysis on Python source code.
 package imports
 
@@ -91,7 +92,6 @@ func (a *Analyser) BuildGraph() (*types.ImportGraph, error) {
 				kind = "third-party"
 				pkg = topLevel
 			} else {
-				// Could be internal.
 				kind = "source"
 			}
 
@@ -125,7 +125,6 @@ func (a *Analyser) PrintGraph() error {
 		return err
 	}
 
-	// Group by kind.
 	sourceNodes := []types.ImportNode{}
 	stdlibNodes := []types.ImportNode{}
 	thirdPartyNodes := []types.ImportNode{}
@@ -178,7 +177,6 @@ func (a *Analyser) PrintGraph() error {
 	}
 	fmt.Println()
 
-	// Print edges (imports between source files).
 	fmt.Println("Internal import relationships:")
 	nodeByID := map[string]types.ImportNode{}
 	for _, n := range g.Nodes {
@@ -211,7 +209,6 @@ func (a *Analyser) Unused() error {
 	fmt.Println("Checking for unused dependencies...")
 	fmt.Println()
 
-	// Collect all imports from source.
 	allImports := map[string]bool{}
 	for _, path := range a.collectSourceFiles() {
 		for _, imp := range extractImportsFromFile(path) {
@@ -221,7 +218,6 @@ func (a *Analyser) Unused() error {
 		}
 	}
 
-	// Get direct deps from pyproject.toml.
 	directDeps := a.directDeps()
 	installed := a.installedPackages()
 
@@ -262,8 +258,7 @@ func (a *Analyser) Missing() error {
 	directDeps := a.directDeps()
 	installedPkgs := a.installedPackages()
 
-	// Walk source and find third-party imports not in direct deps.
-	missingMap := map[string][]string{} // import → files that use it
+	missingMap := map[string][]string{}
 
 	for _, path := range a.collectSourceFiles() {
 		rel, _ := filepath.Rel(a.ProjectDir, path)
@@ -272,15 +267,12 @@ func (a *Analyser) Missing() error {
 			if stdlib[topLevel] {
 				continue
 			}
-			// Is it a local module?
 			if isLocalModule(imp, a.ProjectDir) {
 				continue
 			}
-			// Is it an installed package?
 			if installedPkgs[topLevel] == "" {
 				continue
 			}
-			// Is it a direct dep?
 			if !directDeps[topLevel] && !directDeps[strings.ReplaceAll(topLevel, "_", "-")] {
 				missingMap[imp] = append(missingMap[imp], rel)
 			}
@@ -331,7 +323,6 @@ func (a *Analyser) Cycles() error {
 		return err
 	}
 
-	// Build adjacency for source nodes only.
 	nodeByID := map[string]types.ImportNode{}
 	for _, n := range g.Nodes {
 		nodeByID[n.ID] = n
@@ -346,7 +337,6 @@ func (a *Analyser) Cycles() error {
 		}
 	}
 
-	// DFS cycle detection.
 	visited := map[string]bool{}
 	inStack := map[string]bool{}
 	var cycle []string
@@ -464,9 +454,16 @@ func (a *Analyser) collectSourceFiles() []string {
 	return files
 }
 
+// installedPackages uses `uv pip list --format=json` instead of pip directly.
 func (a *Analyser) installedPackages() map[string]string {
-	pip := filepath.Join(a.ProjectDir, ".venv", "bin", "pip")
-	out, err := exec.Command(pip, "list", "--format=json").Output()
+	uv, err := findUV()
+	if err != nil {
+		return map[string]string{}
+	}
+	cmd := exec.Command(uv, "pip", "list", "--format=json")
+	cmd.Dir = a.ProjectDir
+	cmd.Env = uvEnvWithVenv(a.ProjectDir)
+	out, err := cmd.Output()
 	if err != nil {
 		return map[string]string{}
 	}
@@ -523,7 +520,6 @@ func extractImportsFromFile(path string) []string {
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		// Skip comments and strings.
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -559,12 +555,10 @@ func pathToModule(rel string) string {
 }
 
 func isLocalModule(imp, projectDir string) bool {
-	// Check if this is a local package.
 	parts := strings.Split(imp, ".")
 	if len(parts) == 0 {
 		return false
 	}
-	// Check for __init__.py.
 	pkgPath := filepath.Join(projectDir, parts[0])
 	if _, err := os.Stat(pkgPath); err == nil {
 		return true
@@ -579,4 +573,35 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// findUV locates the uv binary.
+func findUV() (string, error) {
+	if p, err := exec.LookPath("uv"); err == nil {
+		return p, nil
+	}
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".cargo", "bin", "uv"),
+		"/usr/local/bin/uv",
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("uv not found — install from https://github.com/astral-sh/uv")
+}
+
+// uvEnvWithVenv returns an environment slice pointing uv at the project venv.
+func uvEnvWithVenv(projectDir string) []string {
+	venvPath := filepath.Join(projectDir, ".venv")
+	env := os.Environ()
+	filtered := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, "VIRTUAL_ENV=") {
+			filtered = append(filtered, e)
+		}
+	}
+	return append(filtered, "VIRTUAL_ENV="+venvPath)
 }

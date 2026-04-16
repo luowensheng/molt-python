@@ -1,15 +1,21 @@
+// internal/uv/uv.go
+// Package uv is a thin command wrapper around uv.
+// All binary resolution goes through [uvbin.Find] / [uvbin.Ensure] so that
+// molt always uses its own pinned uv copy rather than whatever happens to be
+// on the host PATH.
 package uv
 
 import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
+
+	"molt/internal/uvbin"
 )
 
-var ErrNotFound = fmt.Errorf("uv not found")
+var ErrNotFound = fmt.Errorf("uv not found — run 'molt uv install'")
 
+// InitOptions controls `uv init` behaviour.
 type InitOptions struct {
 	Python   string
 	Lib      bool
@@ -17,42 +23,21 @@ type InitOptions struct {
 	NoPin    bool
 }
 
-func Find() (string, error) {
-	if p, err := exec.LookPath("uv"); err == nil {
-		return p, nil
-	}
-	home, _ := os.UserHomeDir()
-	candidates := []string{
-		filepath.Join(home, ".cargo", "bin", "uv"),
-		"/usr/local/bin/uv",
-	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c, nil
-		}
-	}
-	return "", ErrNotFound
-}
-
+// Available reports whether a uv binary can be found (does not download).
 func Available() bool {
-	_, err := Find()
+	_, err := uvbin.Find()
 	return err == nil
 }
 
+// Version returns the version string of the resolved uv binary.
 func Version() (string, error) {
-	uv, err := Find()
-	if err != nil {
-		return "", err
-	}
-	out, err := exec.Command(uv, "version").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
+	return uvbin.Version()
 }
 
+// run executes uv with the given arguments in dir, using the resolved binary.
+// It calls uvbin.Ensure so the managed copy is downloaded on first use.
 func run(dir string, args ...string) error {
-	uv, err := Find()
+	uv, err := uvbin.Ensure()
 	if err != nil {
 		return err
 	}
@@ -99,7 +84,8 @@ func Remove(dir string, packages []string, dev bool) error {
 	return run(dir, append(args, packages...)...)
 }
 
-func Lock(dir string) error            { return run(dir, "lock") }
+func Lock(dir string) error { return run(dir, "lock") }
+
 func Sync(dir string, frozen bool) error {
 	args := []string{"sync"}
 	if frozen {
@@ -107,7 +93,8 @@ func Sync(dir string, frozen bool) error {
 	}
 	return run(dir, args...)
 }
-func Tree(dir string) error            { return run(dir, "tree") }
+
+func Tree(dir string) error { return run(dir, "tree") }
 
 func LockIfStale(dir string) (bool, error) {
 	return true, Lock(dir)

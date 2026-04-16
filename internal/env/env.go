@@ -1,3 +1,4 @@
+// internal/env/env.go
 // Package env manages environment snapshots, validation, and watching.
 package env
 
@@ -101,9 +102,7 @@ func (m *Manager) Snapshot(name string) error {
 	return nil
 }
 
-// Restore restores the venv to a named snapshot.
-// Note: this verifies the snapshot matches current state and reports differences.
-// Actual package reinstallation uses pip.
+// Restore restores the venv to a named snapshot using uv.
 func (m *Manager) Restore(name string) error {
 	snap, err := m.LoadSnapshot(name)
 	if err != nil {
@@ -121,26 +120,28 @@ func (m *Manager) Restore(name string) error {
 		return fmt.Errorf("remove venv: %w", err)
 	}
 
-	// Recreate with correct Python version.
-	pythonBin := m.findPythonVersion(snap.Python)
-	if pythonBin == "" {
-		return fmt.Errorf("Python %s not available — install with 'molt python install %s'",
-			snap.Python, snap.Python)
+	// Recreate with correct Python version using uv.
+	fmt.Printf("  Creating venv with Python %s via uv...\n", snap.Python)
+	uv, err := findUV()
+	if err != nil {
+		return fmt.Errorf("uv not found: %w", err)
 	}
 
-	fmt.Printf("  Creating venv with Python %s...\n", snap.Python)
-	if err := exec.Command(pythonBin, "-m", "venv", venvDir).Run(); err != nil {
-		return fmt.Errorf("create venv: %w", err)
+	cmd := exec.Command(uv, "venv", "--python", snap.Python, venvDir)
+	cmd.Dir = m.ProjectDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("uv venv: %w", err)
 	}
 
-	// Install packages from the snapshot's package list.
-	// We extract package names/versions from the METADATA files captured.
+	// Install packages from the snapshot's package list using uv.
 	pkgs := extractPackagesFromSnapshot(snap)
 	if len(pkgs) > 0 {
-		fmt.Printf("  Installing %d packages...\n", len(pkgs))
-		pip := m.venvPip()
-		args := append([]string{"install", "--quiet"}, pkgs...)
-		cmd := exec.Command(pip, args...)
+		fmt.Printf("  Installing %d packages via uv...\n", len(pkgs))
+		args := append([]string{"pip", "install", "--quiet"}, pkgs...)
+		cmd := exec.Command(uv, args...)
+		cmd.Dir = m.ProjectDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -198,7 +199,7 @@ func (m *Manager) LoadSnapshot(name string) (*types.EnvSnapshot, error) {
 	return &snap, nil
 }
 
-// Diff compares the current venv to the lockfile.
+// Diff compares the current venv to the lockfile using uv.
 func (m *Manager) Diff() error {
 	fmt.Println("Comparing venv to lockfile...")
 
@@ -206,7 +207,7 @@ func (m *Manager) Diff() error {
 	lockData, _ := os.ReadFile(lockPath)
 	lockPackages := parseLockPackages(lockData)
 
-	// Get installed packages.
+	// Get installed packages via uv pip list.
 	installed := m.installedPackages()
 
 	diffs := 0
@@ -265,7 +266,7 @@ func (m *Manager) Validate() error {
 		}
 	}
 
-	// Check packages match lockfile.
+	// Check packages match lockfile using uv pip list.
 	lockPath := filepath.Join(m.ProjectDir, "uv.lock")
 	lockData, _ := os.ReadFile(lockPath)
 	lockPkgs := parseLockPackages(lockData)
@@ -299,7 +300,7 @@ func (m *Manager) Validate() error {
 	return nil
 }
 
-// Reset nukes and recreates the venv from the lockfile.
+// Reset nukes and recreates the venv from the lockfile using uv.
 func (m *Manager) Reset() error {
 	fmt.Println("Resetting environment...")
 
@@ -309,30 +310,34 @@ func (m *Manager) Reset() error {
 		return err
 	}
 
-	// Find correct Python.
-	pythonBin := m.activePython()
-	if pythonBin == "" {
-		return fmt.Errorf("no Python found — run 'molt python install <version>'")
-	}
-
-	fmt.Printf("  Creating venv with %s...\n", pythonBin)
-	if err := exec.Command(pythonBin, "-m", "venv", venvDir).Run(); err != nil {
-		return fmt.Errorf("create venv: %w", err)
-	}
-
-	// Sync from lockfile.
-	fmt.Println("  Syncing packages from lockfile...")
-	uvBin, err := exec.LookPath("uv")
+	uv, err := findUV()
 	if err != nil {
-		// Fall back to pip + uv.lock parsing.
-		return m.pipSyncFromLock()
+		return fmt.Errorf("uv not found — install uv first: https://github.com/astral-sh/uv")
 	}
 
-	cmd := exec.Command(uvBin, "sync", "--frozen")
+	// Determine Python version from .python-version if present.
+	uvVenvArgs := []string{"venv"}
+	if data, err := os.ReadFile(filepath.Join(m.ProjectDir, ".python-version")); err == nil {
+		uvVenvArgs = append(uvVenvArgs, "--python", strings.TrimSpace(string(data)))
+	}
+	uvVenvArgs = append(uvVenvArgs, venvDir)
+
+	fmt.Printf("  Creating venv via uv...\n")
+	cmd := exec.Command(uv, uvVenvArgs...)
 	cmd.Dir = m.ProjectDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("uv venv: %w", err)
+	}
+
+	// Sync from lockfile using uv sync --frozen.
+	fmt.Println("  Syncing packages from lockfile via uv sync --frozen...")
+	syncCmd := exec.Command(uv, "sync", "--frozen")
+	syncCmd.Dir = m.ProjectDir
+	syncCmd.Stdout = os.Stdout
+	syncCmd.Stderr = os.Stderr
+	if err := syncCmd.Run(); err != nil {
 		return fmt.Errorf("uv sync: %w", err)
 	}
 
@@ -345,7 +350,6 @@ func (m *Manager) Vars() error {
 	envFile := filepath.Join(m.ProjectDir, ".env")
 	envExample := filepath.Join(m.ProjectDir, ".env.example")
 
-	// Print .env.example as the canonical set.
 	var source string
 	if _, err := os.Stat(envFile); err == nil {
 		source = envFile
@@ -426,58 +430,17 @@ func (m *Manager) venvPython() string {
 	return p
 }
 
-func (m *Manager) venvPip() string {
-	p := filepath.Join(m.ProjectDir, ".venv", "bin", "pip")
-	if runtime.GOOS == "windows" {
-		p = filepath.Join(m.ProjectDir, ".venv", "Scripts", "pip.exe")
-	}
-	return p
-}
-
-func (m *Manager) activePython() string {
-	// Check .python-version.
-	if data, err := os.ReadFile(filepath.Join(m.ProjectDir, ".python-version")); err == nil {
-		version := strings.TrimSpace(string(data))
-		home, _ := os.UserHomeDir()
-		standalone := filepath.Join(home, ".molt", "python", version, "bin", "python3")
-		if _, err := os.Stat(standalone); err == nil {
-			return standalone
-		}
-	}
-	// System python.
-	if p, err := exec.LookPath("python3"); err == nil {
-		return p
-	}
-	return ""
-}
-
-func (m *Manager) findPythonVersion(version string) string {
-	home, _ := os.UserHomeDir()
-	standalone := filepath.Join(home, ".molt", "python", version, "bin", "python3")
-	if _, err := os.Stat(standalone); err == nil {
-		return standalone
-	}
-	// Try system python.
-	candidates := []string{"python3." + patchVersion(version), "python3", "python"}
-	for _, c := range candidates {
-		if p, err := exec.LookPath(c); err == nil {
-			return p
-		}
-	}
-	return ""
-}
-
-func patchVersion(v string) string {
-	parts := strings.Split(v, ".")
-	if len(parts) >= 2 {
-		return parts[1]
-	}
-	return v
-}
-
+// installedPackages uses `uv pip list --format=json` instead of pip.
 func (m *Manager) installedPackages() map[string]string {
-	pip := m.venvPip()
-	out, err := exec.Command(pip, "list", "--format=json").Output()
+	uv, err := findUV()
+	if err != nil {
+		return nil
+	}
+	// uv pip list operates on the active venv; point it at ours explicitly.
+	cmd := exec.Command(uv, "pip", "list", "--format=json")
+	cmd.Dir = m.ProjectDir
+	cmd.Env = uvEnvWithVenv(m.ProjectDir)
+	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
@@ -531,24 +494,6 @@ func (m *Manager) sitePackagesDir() string {
 	return ""
 }
 
-func (m *Manager) pipSyncFromLock() error {
-	lockData, err := os.ReadFile(filepath.Join(m.ProjectDir, "uv.lock"))
-	if err != nil {
-		return err
-	}
-	pkgMap := parseLockPackages(lockData)
-	pip := m.venvPip()
-	var args []string
-	args = append(args, "install", "--quiet")
-	for name, ver := range pkgMap {
-		args = append(args, fmt.Sprintf("%s==%s", name, ver))
-	}
-	cmd := exec.Command(pip, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
 func parseLockPackages(data []byte) map[string]string {
 	result := map[string]string{}
 	var name string
@@ -572,7 +517,6 @@ func parseLockPackages(data []byte) map[string]string {
 }
 
 func extractPackagesFromSnapshot(snap *types.EnvSnapshot) []string {
-	// Extract name==version from METADATA paths like "requests-2.31.0.dist-info/METADATA"
 	var pkgs []string
 	for _, f := range snap.Packages {
 		parts := strings.Split(f.Path, "/")
@@ -584,7 +528,6 @@ func extractPackagesFromSnapshot(snap *types.EnvSnapshot) []string {
 			}
 		}
 	}
-	// Deduplicate.
 	seen := map[string]bool{}
 	var unique []string
 	for _, p := range pkgs {
@@ -623,4 +566,36 @@ func hashFilePath(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// findUV locates the uv binary.
+func findUV() (string, error) {
+	if p, err := exec.LookPath("uv"); err == nil {
+		return p, nil
+	}
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".cargo", "bin", "uv"),
+		"/usr/local/bin/uv",
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("uv not found — install from https://github.com/astral-sh/uv")
+}
+
+// uvEnvWithVenv returns an environment slice that tells uv which venv to use.
+func uvEnvWithVenv(projectDir string) []string {
+	venvPath := filepath.Join(projectDir, ".venv")
+	env := os.Environ()
+	// Replace or add VIRTUAL_ENV so uv targets our venv.
+	filtered := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, "VIRTUAL_ENV=") {
+			filtered = append(filtered, e)
+		}
+	}
+	return append(filtered, "VIRTUAL_ENV="+venvPath)
 }

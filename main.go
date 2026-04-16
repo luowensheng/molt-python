@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"molt/internal/tasks"
 	"molt/internal/templates"
 	internuv "molt/internal/uv"
+	"molt/internal/uvbin"
 	"molt/internal/verifier"
 	"molt/pkg/types"
 )
@@ -1249,11 +1251,37 @@ func cmdTree(args []string) error {
 
 func cmdUV(args []string) error {
 	if len(args) == 0 {
-		return internuv.Raw(".", []string{"--help"})
+		return fmt.Errorf("usage: molt uv <install|update|remove|status|...uv-args>")
 	}
-	return internuv.Raw(".", args)
-}
 
+	switch args[0] {
+	case "install":
+		// molt uv install [version]
+		ver := uvbin.PinnedVersion
+		if len(args) > 1 {
+			ver = args[1]
+		}
+		return uvbin.Install(ver, true /* force */)
+
+	case "update":
+		// molt uv update — re-installs the pinned version (effectively upgrades
+		// if PinnedVersion has been bumped in a new molt release).
+		fmt.Printf("Updating molt-managed uv to pinned version %s...\n", uvbin.PinnedVersion)
+		return uvbin.Install(uvbin.PinnedVersion, true)
+
+	case "remove":
+		return uvbin.Remove()
+
+	case "status":
+		uvbin.Status()
+		return nil
+
+	default:
+		// Pass-through to the resolved uv binary — e.g. `molt uv lock`,
+		// `molt uv pip list`, etc.
+		return internuv.Raw(".", args)
+	}
+}
 func cmdBuild(args []string) error {
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	profile := fs.String("profile", "standard", "minimal|standard|extended|full")
@@ -1421,37 +1449,6 @@ func cmdVerify(args []string) error {
 	return nil
 }
 
-func cmdDoctor() error {
-	fmt.Printf("molt %s\n", version)
-	fmt.Printf("Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
-	fmt.Println("─────────────────────────────────────")
-
-	checks := []struct {
-		label string
-		fn    func() (string, bool)
-	}{
-		{"python3", func() (string, bool) {
-			p, e := lookPath("python3")
-			return p, e == nil
-		}},
-		{"uv", func() (string, bool) { return "found", internuv.Available() }},
-		{"go", func() (string, bool) { p, e := lookPath("go"); return p, e == nil }},
-		{"git", func() (string, bool) { p, e := lookPath("git"); return p, e == nil }},
-		{"ldd", func() (string, bool) { p, e := lookPath("ldd"); return p, e == nil }},
-		{"curl", func() (string, bool) { p, e := lookPath("curl"); return p, e == nil }},
-	}
-
-	for _, c := range checks {
-		loc, ok := c.fn()
-		sym := "✓"
-		if !ok {
-			sym = "✗"
-		}
-		fmt.Printf("  %s %-20s %s\n", sym, c.label, loc)
-	}
-	return nil
-}
-
 func cmdSBOM(args []string) error {
 	installDir := "."
 	if len(args) > 0 {
@@ -1511,4 +1508,59 @@ func countNonStandard(libs []types.SysLibInfo) int {
 		}
 	}
 	return n
+}
+
+// ── doctor (updated to show uv source) ───────────────────────────────────────
+
+func cmdDoctor() error {
+	fmt.Printf("molt %s\n", version)
+	fmt.Printf("Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Println("─────────────────────────────────────")
+
+	// uv resolution (most important — shown first with source detail).
+	uvPath, uvErr := uvbin.Find()
+	if uvErr == nil {
+		uvVer, _ := uvbin.Version()
+		managed := filepath.Join(func() string {
+			h, _ := os.UserHomeDir()
+			return h
+		}(), ".molt", "uv")
+		src := "system PATH"
+		if override := os.Getenv(uvbin.EnvOverride); override != "" {
+			src = uvbin.EnvOverride + " (override)"
+		} else if strings.HasPrefix(uvPath, managed) {
+			src = "molt-managed"
+		}
+		fmt.Printf("  ✓ %-20s %s  [%s — %s]\n", "uv", uvPath, uvVer, src)
+	} else {
+		fmt.Printf("  ✗ %-20s not found — run 'molt uv install'\n", "uv")
+	}
+
+	checks := []struct {
+		label string
+		fn    func() (string, bool)
+	}{
+		{"python3", func() (string, bool) { p, e := exec.LookPath("python3"); return p, e == nil }},
+		{"go", func() (string, bool) { p, e := exec.LookPath("go"); return p, e == nil }},
+		{"git", func() (string, bool) { p, e := exec.LookPath("git"); return p, e == nil }},
+		{"ldd", func() (string, bool) { p, e := exec.LookPath("ldd"); return p, e == nil }},
+		{"curl", func() (string, bool) { p, e := exec.LookPath("curl"); return p, e == nil }},
+	}
+	for _, c := range checks {
+		loc, ok := c.fn()
+		sym := "✓"
+		if !ok {
+			sym = "✗"
+			loc = "not found"
+		}
+		fmt.Printf("  %s %-20s %s\n", sym, c.label, loc)
+	}
+
+	// Print uv install hint if missing.
+	if uvErr != nil {
+		fmt.Println()
+		fmt.Printf("  Tip: run 'molt uv install' to install uv %s into ~/.molt/uv/\n", uvbin.PinnedVersion)
+		fmt.Printf("       or set %s=/path/to/uv to use an existing binary.\n", uvbin.EnvOverride)
+	}
+	return nil
 }

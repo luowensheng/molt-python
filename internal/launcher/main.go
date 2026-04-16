@@ -185,6 +185,82 @@ func cmdInstall(args []string) error {
 	return nil
 }
 
+func createVenv(installDir string, verbose bool) error {
+	venvDir := filepath.Join(installDir, ".venv")
+	if _, err := os.Stat(venvDir); err == nil {
+		return nil
+	}
+
+	uv, err := findUV()
+	if err != nil {
+		// Fall back to python -m venv if uv is unavailable.
+		python := findPython(installDir)
+		if python == "" {
+			var lookErr error
+			python, lookErr = exec.LookPath(pythonBinaryName())
+			if lookErr != nil {
+				return fmt.Errorf("neither uv nor python found")
+			}
+		}
+		if verbose {
+			fmt.Println("  uv not found — creating venv via python -m venv...")
+		}
+		return exec.Command(python, "-m", "venv", venvDir).Run()
+	}
+
+	if verbose {
+		fmt.Println("  Creating virtual environment via uv venv...")
+	}
+	cmd := exec.Command(uv, "venv", venvDir)
+	cmd.Dir = installDir
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("uv venv: %w", err)
+	}
+	return nil
+}
+
+// installPackages installs Python packages using `uv pip install`.
+func installPackages(installDir string, pkgs []PyPackage, verbose bool) error {
+	uv, err := findUV()
+	if err != nil {
+		return fmt.Errorf("uv not found — cannot install packages: %w", err)
+	}
+
+	if verbose {
+		fmt.Printf("  Installing %d packages via uv pip install...\n", len(pkgs))
+	}
+
+	venvPath := filepath.Join(installDir, ".venv")
+	args := []string{"pip", "install", "--quiet"}
+	for _, p := range pkgs {
+		args = append(args, fmt.Sprintf("%s==%s", p.Name, p.Version))
+	}
+
+	cmd := exec.Command(uv, args...)
+	cmd.Dir = installDir
+	// Tell uv which venv to target.
+	cmd.Env = append(os.Environ(), "VIRTUAL_ENV="+venvPath)
+	return cmd.Run()
+}
+
+// findUV locates the uv binary, checking PATH and common install locations.
+func findUV() (string, error) {
+	if p, err := exec.LookPath("uv"); err == nil {
+		return p, nil
+	}
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".cargo", "bin", "uv"),
+		"/usr/local/bin/uv",
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("uv not found — install from https://github.com/astral-sh/uv")
+}
+
 // resolveInstallDir returns the installation directory using env var overrides.
 //
 //	Priority:
@@ -248,17 +324,17 @@ func resolveCacheDir() string {
 // writeReceipt writes a small JSON file recording install metadata.
 func writeReceipt(installDir string, m *Manifest, mode string) {
 	type Receipt struct {
-		AppName    string `json:"app_name"`
-		Version    string `json:"version"`
-		Mode       string `json:"mode"`
-		InstallDir string `json:"install_dir"`
+		AppName     string `json:"app_name"`
+		Version     string `json:"version"`
+		Mode        string `json:"mode"`
+		InstallDir  string `json:"install_dir"`
 		InstalledBy string `json:"installed_by"`
 	}
 	r := Receipt{
-		AppName:    m.AppName,
-		Version:    m.Version,
-		Mode:       mode,
-		InstallDir: installDir,
+		AppName:     m.AppName,
+		Version:     m.Version,
+		Mode:        mode,
+		InstallDir:  installDir,
 		InstalledBy: os.Args[0],
 	}
 	data, _ := json.MarshalIndent(r, "", "  ")
@@ -589,40 +665,6 @@ func symlinkSystemPython(installDir string) error {
 	return os.Symlink(systemPython, dest)
 }
 
-func createVenv(installDir string, verbose bool) error {
-	venvDir := filepath.Join(installDir, ".venv")
-	if _, err := os.Stat(venvDir); err == nil {
-		return nil
-	}
-	python := findPython(installDir)
-	if python == "" {
-		var err error
-		python, err = exec.LookPath(pythonBinaryName())
-		if err != nil {
-			return fmt.Errorf("python not found")
-		}
-	}
-	if verbose {
-		fmt.Println("  Creating virtual environment...")
-	}
-	return exec.Command(python, "-m", "venv", venvDir).Run()
-}
-
-func installPackages(installDir string, pkgs []PyPackage, verbose bool) error {
-	pip := findPip(installDir)
-	if pip == "" {
-		return nil
-	}
-	if verbose {
-		fmt.Printf("  Installing %d packages...\n", len(pkgs))
-	}
-	args := []string{"install", "--quiet"}
-	for _, p := range pkgs {
-		args = append(args, fmt.Sprintf("%s==%s", p.Name, p.Version))
-	}
-	return exec.Command(pip, args...).Run()
-}
-
 // ── Environment ──────────────────────────────────────────────────────────────
 
 func buildEnv(installDir string) []string {
@@ -800,3 +842,4 @@ func flagValue(args []string, flag, def string) string {
 	}
 	return def
 }
+
