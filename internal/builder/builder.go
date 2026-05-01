@@ -1,3 +1,19 @@
+// internal/builder/builder.go
+//
+// Builder orchestrates the full build pipeline:
+//
+//   1. Load molt.yaml (if present) and apply its settings.
+//   2. Compile the launcher binary for the target platform.
+//   3. Embed the project source into a deterministic tar.gz payload.
+//      — In allowlist mode when molt.yaml has include/assets.
+//      — In legacy denylist mode otherwise.
+//   4. Compute the integrity root hash over the packaged files.
+//   5. Write the external integrity manifest (JSON) next to the binary.
+//   6. Assemble: launcher || payload || extended trailer (offset+hash+magic).
+//
+// Steps 4-6 are the new bits — the rest mirrors the original builder with
+// minor adjustments for the Result/Config shape change.
+
 package builder
 
 import (
@@ -5,8 +21,10 @@ import (
 	"compress/gzip"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +34,8 @@ import (
 	"time"
 
 	"molt/embedder"
+	"molt/internal/integrity"
+	"molt/internal/moltcfg"
 	"molt/pkg/types"
 )
 
@@ -33,7 +53,6 @@ func New(cfg types.BuildConfig) *Builder {
 	if cfg.EmbedIgnoreFile == "" {
 		cfg.EmbedIgnoreFile = ".moltignore"
 	}
-	// Strict mode enabled by default for security
 	if !cfg.EmbedStrict {
 		cfg.EmbedStrict = true
 	}
@@ -47,16 +66,39 @@ func (b *Builder) Build() error {
 			runtime.GOOS, runtime.GOARCH, b.cfg.TargetOS, b.cfg.TargetArch)
 	}
 
-	fmt.Printf("Building %s v%s (%s/%s)...\n", b.cfg.Name, b.cfg.Version, b.cfg.TargetOS, b.cfg.TargetArch)
+	// Load molt.yaml if present. Absence is not an error — we fall back to
+	// legacy behaviour so existing molt projects keep working.
+	moltCfg, err := loadMoltConfig(b.cfg.ProjectPath)
+	if err != nil {
+		return err
+	}
+	// molt.yaml values override the CLI-supplied name/version if both are
+	// present. Principle: the file is the source of truth; flags are the
+	// override mechanism. We invert here to: flags supplied → respect;
+	// else → use the file.
+	if moltCfg != nil {
+		if b.cfg.Name == "" || b.cfg.Name == filepath.Base(b.cfg.ProjectPath) {
+			b.cfg.Name = moltCfg.Project.Name
+		}
+		if b.cfg.Version == "0.1.0" && moltCfg.Project.Version != "" {
+			b.cfg.Version = moltCfg.Project.Version
+		}
+	}
 
-	// Step 1: Compile the launcher binary for target platform
+	fmt.Printf("Building %s v%s (%s/%s)...\n",
+		b.cfg.Name, b.cfg.Version, b.cfg.TargetOS, b.cfg.TargetArch)
+	if moltCfg != nil {
+		fmt.Printf("  Config: %s\n", moltCfg.SourcePath)
+	}
+
+	// 1. Compile launcher.
 	launcherPath, err := compileLauncher(b.cfg.TargetOS, b.cfg.TargetArch)
 	if err != nil {
 		return fmt.Errorf("compile launcher: %w", err)
 	}
 	defer os.Remove(launcherPath)
 
-	// Step 2: Build manifest
+	// 2. Build manifest.
 	m := &types.Manifest{
 		AppName:    b.cfg.Name,
 		Version:    b.cfg.Version,
@@ -67,20 +109,45 @@ func (b *Builder) Build() error {
 		BuildTime:  time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// Step 3: Create strict payload using embedder
-	payloadPath, err := b.createStrictPayload(m)
+	// 3. Create payload and capture the packaged-file list for integrity.
+	payloadPath, embedResult, err := b.createPayload(m, moltCfg)
 	if err != nil {
 		return fmt.Errorf("create payload: %w", err)
 	}
 	defer os.Remove(payloadPath)
 
-	// Step 4: Assemble final binary
+	// Surface oversized-file warnings.
+	for _, w := range embedResult.SizeWarnings {
+		fmt.Printf("  ⚠ %s\n", w)
+	}
+
+	// 4. Build integrity manifest (root_hash + external manifest file).
+	integrityManifest := buildIntegrityManifest(b.cfg, moltCfg, embedResult)
+	rootHash := integrityManifest.RootHash
+
+	// 5. Write external manifest file next to the binary (if enabled).
+	manifestPath := b.resolveManifestPath(moltCfg)
+	if integrityEnabled(moltCfg) {
+		if err := integrity.WriteManifest(integrityManifest, manifestPath); err != nil {
+			return fmt.Errorf("write integrity manifest: %w", err)
+		}
+		fmt.Printf("  ✓ Integrity manifest: %s\n", manifestPath)
+	}
+
+	// Also embed a condensed copy of the integrity manifest INSIDE the
+	// binary at .molt/integrity.json, so `molt inspect` works offline and
+	// the launcher can access its audit record without the sidecar file.
+	if err := reinjectIntegrityIntoPayload(payloadPath, integrityManifest); err != nil {
+		return fmt.Errorf("embed integrity into payload: %w", err)
+	}
+
+	// 6. Assemble: launcher + payload + extended trailer with root_hash.
 	suffix := ""
 	if b.cfg.TargetOS == "windows" {
 		suffix = ".exe"
 	}
 	outputPath := b.cfg.OutputPath + suffix
-	if err := assembleBinary(launcherPath, payloadPath, outputPath); err != nil {
+	if err := assembleBinary(launcherPath, payloadPath, outputPath, rootHash); err != nil {
 		return fmt.Errorf("assemble binary: %w", err)
 	}
 
@@ -89,53 +156,257 @@ func (b *Builder) Build() error {
 	if info != nil {
 		sizeMB = float64(info.Size()) / 1_000_000
 	}
-	fmt.Printf("  Created: %s (%.1fMB)\n", outputPath, sizeMB)
-	fmt.Printf("  Install: molt_INSTALL_BASE=/opt ./%s install\n", filepath.Base(outputPath))
+	fmt.Printf("  ✓ Created: %s (%.1fMB)\n", outputPath, sizeMB)
+	fmt.Printf("    root_hash: %s\n", rootHash)
+	fmt.Printf("    files:     %d   total: %.1fMB\n",
+		len(embedResult.Files), float64(embedResult.TotalBytes)/1_000_000)
+	fmt.Printf("    install:   molt_INSTALL_BASE=/opt ./%s install\n",
+		filepath.Base(outputPath))
 	return nil
 }
 
-// createStrictPayload uses the embedder package to create a filtered tar.gz payload.
-func (b *Builder) createStrictPayload(m *types.Manifest) (string, error) {
+// loadMoltConfig returns the project's molt.yaml or nil if absent. Any
+// parse/validation error is fatal — we don't proceed with a half-understood
+// config.
+func loadMoltConfig(dir string) (*types.MoltConfig, error) {
+	cfg, err := moltcfg.Load(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load molt.yaml: %w", err)
+	}
+	return cfg, nil
+}
+
+// createPayload invokes the embedder with the right mode (allowlist from
+// molt.yaml if present; legacy otherwise). Also writes the .molt/manifest.json
+// into the project temporarily so it gets swept up as part of the payload.
+func (b *Builder) createPayload(
+	m *types.Manifest,
+	moltCfg *types.MoltConfig,
+) (string, *embedder.Result, error) {
 	tmp, err := os.CreateTemp("", "molt-payload-*.tar.gz")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	tmp.Close()
 	payloadPath := tmp.Name()
 
-	// First, write the manifest to a temp file so embedder can include it
+	// Write the Go-side manifest (application descriptor) into .molt/ so
+	// the embedder picks it up. We clean it up afterwards.
 	manifestDir := filepath.Join(b.cfg.ProjectPath, ".molt")
 	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	manifestPath := filepath.Join(manifestDir, "manifest.json")
 	manifestData, _ := json.MarshalIndent(m, "", "  ")
 	if err := os.WriteFile(manifestPath, manifestData, 0o644); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	defer os.Remove(manifestPath) // clean up temp manifest
+	defer os.Remove(manifestPath)
 
-	cfg := embedder.Config{
+	// Also serialise molt.yaml (if any) into .molt/ so the LAUNCHER can
+	// read runtime commands and hook definitions without needing the
+	// original file on disk.
+	if moltCfg != nil {
+		cfgJSON, _ := json.MarshalIndent(moltCfg, "", "  ")
+		cfgPath := filepath.Join(manifestDir, "config.json")
+		if err := os.WriteFile(cfgPath, cfgJSON, 0o644); err != nil {
+			return "", nil, err
+		}
+		defer os.Remove(cfgPath)
+	}
+
+	ecfg := embedder.Config{
 		RootDir:         b.cfg.ProjectPath,
 		OutputFile:      payloadPath,
-		PrefixInTar:     "src/", // matches launcher extraction logic
+		PrefixInTar:     "src/",
 		IgnoreFile:      b.cfg.EmbedIgnoreFile,
 		FailOnSensitive: b.cfg.EmbedStrict,
 	}
-
-	fmt.Printf("  → Embedding files (strict=%v)...\n", b.cfg.EmbedStrict)
-	if err := embedder.Run(cfg); err != nil {
-		return "", fmt.Errorf("embed payload: %w", err)
+	if moltCfg != nil {
+		// Allowlist mode. Include globs replace the default ignore list.
+		// We augment with ".molt/**" so our own metadata files ship.
+		ecfg.IncludeGlobs = append(ecfg.IncludeGlobs, moltCfg.Include...)
+		if len(ecfg.IncludeGlobs) > 0 {
+			ecfg.IncludeGlobs = append(ecfg.IncludeGlobs, ".molt/**")
+		}
+		ecfg.ExcludeGlobs = moltCfg.Exclude
+		if moltCfg.Assets != nil {
+			ecfg.Assets = moltCfg.Assets.Files
+			ecfg.MaxFileSizeMB = moltCfg.Assets.MaxFileSizeMB
+			ecfg.MaxTotalSizeMB = moltCfg.Assets.MaxTotalSizeMB
+		}
 	}
 
-	// Verify payload isn't empty
+	fmt.Printf("  → Embedding files (strict=%v%s)...\n",
+		b.cfg.EmbedStrict,
+		func() string {
+			if len(ecfg.IncludeGlobs) > 0 {
+				return ", allowlist mode"
+			}
+			return ", legacy denylist"
+		}(),
+	)
+	res, err := embedder.Run(ecfg)
+	if err != nil {
+		return "", nil, fmt.Errorf("embed payload: %w", err)
+	}
+
 	info, err := os.Stat(payloadPath)
 	if err != nil || info.Size() == 0 {
-		return "", fmt.Errorf("payload is empty — check .moltignore rules")
+		return "", nil, fmt.Errorf("payload is empty")
 	}
-	fmt.Printf("  ✓ Payload: %.1f KB\n", float64(info.Size())/1024)
-	return payloadPath, nil
+	fmt.Printf("  ✓ Payload: %.1f KB (%d files)\n",
+		float64(info.Size())/1024, len(res.Files))
+
+	return payloadPath, res, nil
 }
+
+// buildIntegrityManifest constructs the JSON audit record.
+func buildIntegrityManifest(
+	cfg types.BuildConfig,
+	moltCfg *types.MoltConfig,
+	res *embedder.Result,
+) *types.IntegrityManifest {
+	opts := integrity.ManifestOptions{
+		MoltVersion: "dev",
+	}
+	if moltCfg != nil && moltCfg.Deps != nil {
+		opts.Deps = &types.IntegrityDeps{
+			Strategy: string(moltCfg.Deps.Strategy),
+		}
+	}
+	return integrity.BuildManifest(
+		types.IntegrityApp{Name: cfg.Name, Version: cfg.Version},
+		res.Files,
+		opts,
+	)
+}
+
+// resolveManifestPath returns where the external integrity manifest should
+// be written. Honors molt.yaml's `integrity.output` template, defaulting to
+// a path alongside the binary.
+func (b *Builder) resolveManifestPath(moltCfg *types.MoltConfig) string {
+	outDir := filepath.Dir(b.cfg.OutputPath)
+	base := fmt.Sprintf("%s-v%s.manifest.json", b.cfg.Name, b.cfg.Version)
+	if moltCfg != nil && moltCfg.Integrity != nil && moltCfg.Integrity.Output != "" {
+		base = moltcfg.ResolveOutputName(moltCfg)
+	}
+	return filepath.Join(outDir, base)
+}
+
+func integrityEnabled(moltCfg *types.MoltConfig) bool {
+	if moltCfg == nil || moltCfg.Integrity == nil || moltCfg.Integrity.Enabled == nil {
+		return true // default on
+	}
+	return *moltCfg.Integrity.Enabled
+}
+
+// reinjectIntegrityIntoPayload appends .molt/integrity.json to the tar.gz.
+// This is slightly wasteful (we rewrite the archive) but gives the launcher
+// offline access to the full audit manifest — useful for `molt inspect`
+// on a binary that's been moved away from its sidecar file.
+func reinjectIntegrityIntoPayload(payloadPath string, m *types.IntegrityManifest) error {
+	// Read existing payload into memory. Payloads are typically small
+	// (tens of MB); if we ever ship gigabyte payloads we'll switch to a
+	// streaming rewrite, but the simpler code wins for now.
+	origData, err := os.ReadFile(payloadPath)
+	if err != nil {
+		return err
+	}
+
+	newFile, err := os.Create(payloadPath)
+	if err != nil {
+		return err
+	}
+	defer newFile.Close()
+
+	// Write the original entries, then our extra file, into a fresh tar.gz.
+	gzr, err := gzip.NewReader(strings.NewReader(string(origData)))
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+
+	gzw := gzip.NewWriter(newFile)
+	defer gzw.Close()
+	tw := tar.NewWriter(gzw)
+	defer tw.Close()
+
+	tr := tar.NewReader(gzr)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if err := tw.WriteHeader(h); err != nil {
+			return err
+		}
+		if _, err := io.Copy(tw, tr); err != nil {
+			return err
+		}
+	}
+
+	// Append integrity.json under the same prefix as other .molt metadata.
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	hdr := &tar.Header{
+		Name:    "src/.molt/integrity.json",
+		Mode:    0o644,
+		Size:    int64(len(data)),
+		ModTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		return err
+	}
+	if _, err := tw.Write(data); err != nil {
+		return err
+	}
+	return nil
+}
+
+// assembleBinary writes launcher+payload+extendedTrailer. The trailer carries
+// the payload offset, the integrity root hash, and the magic bytes that tell
+// the launcher this is a v1-formatted binary.
+func assembleBinary(launcherPath, archivePath, outputPath, rootHash string) error {
+	launcher, err := os.ReadFile(launcherPath)
+	if err != nil {
+		return err
+	}
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		return err
+	}
+	out, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := out.Write(launcher); err != nil {
+		return err
+	}
+	archiveOffset := int64(len(launcher))
+	if _, err := out.Write(archive); err != nil {
+		return err
+	}
+
+	// Write extended trailer: offset, root_hash, magic.
+	if err := integrity.WriteExtendedTrailer(out, archiveOffset, rootHash); err != nil {
+		return fmt.Errorf("write trailer: %w", err)
+	}
+
+	return out.Chmod(0o755)
+}
+
+// ── Capture / Assemble (unchanged in intent — included for completeness) ─────
 
 func Capture(cfg types.CaptureConfig) error {
 	if cfg.TargetOS == "" {
@@ -194,8 +465,6 @@ func (a *Assembler) Assemble(name, version string) error {
 	}
 	defer os.Remove(launcherPath)
 
-	// For assembler, we assume the manifest already contains the payload info
-	// or we re-embed from the captured project path
 	payloadPath, err := a.createPayload(&m)
 	if err != nil {
 		return err
@@ -206,7 +475,10 @@ func (a *Assembler) Assemble(name, version string) error {
 	if a.cfg.TargetOS == "windows" {
 		suffix = ".exe"
 	}
-	return assembleBinary(launcherPath, payloadPath, a.cfg.OutputPath+suffix)
+	// Empty payload → empty-root hash; still use extended trailer for
+	// consistency with `build`.
+	return assembleBinary(launcherPath, payloadPath,
+		a.cfg.OutputPath+suffix, integrity.ComputeRootHash(nil))
 }
 
 func (a *Assembler) createPayload(m *types.Manifest) (string, error) {
@@ -216,17 +488,21 @@ func (a *Assembler) createPayload(m *types.Manifest) (string, error) {
 	}
 	tmp.Close()
 
-	// Write manifest into payload
 	manifestData, _ := json.MarshalIndent(m, "", "  ")
-	gz := gzip.NewWriter(tmp)
+	gz := gzip.NewWriter(mustOpenWrite(tmp.Name()))
 	tw := tar.NewWriter(gz)
 	_ = addToTar(tw, ".molt/manifest.json", manifestData)
 	tw.Close()
 	gz.Close()
-	tmp.Close()
-
 	return tmp.Name(), nil
 }
+
+func mustOpenWrite(path string) *os.File {
+	f, _ := os.Create(path)
+	return f
+}
+
+// ── Launcher compilation (unchanged) ─────────────────────────────────────────
 
 func compileLauncher(targetOS, targetArch string) (string, error) {
 	if err := installGOIfNotInstalled(); err != nil {
@@ -281,34 +557,6 @@ func compileLauncher(targetOS, targetArch string) (string, error) {
 	return tmp.Name(), nil
 }
 
-func assembleBinary(launcherPath, archivePath, outputPath string) error {
-	launcher, err := os.ReadFile(launcherPath)
-	if err != nil {
-		return err
-	}
-	archive, err := os.ReadFile(archivePath)
-	if err != nil {
-		return err
-	}
-	out, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := out.Write(launcher); err != nil {
-		return err
-	}
-	archiveOffset := int64(len(launcher))
-	if _, err := out.Write(archive); err != nil {
-		return err
-	}
-	if err := binary.Write(out, binary.LittleEndian, archiveOffset); err != nil {
-		return err
-	}
-	return out.Chmod(0o755)
-}
-
 func addToTar(tw *tar.Writer, name string, data []byte) error {
 	if err := tw.WriteHeader(&tar.Header{
 		Name: name,
@@ -320,6 +568,14 @@ func addToTar(tw *tar.Writer, name string, data []byte) error {
 	_, err := tw.Write(data)
 	return err
 }
+
+// AssembleLegacy is a stub kept to maintain compatibility with the older
+// binary.Write-based trailer. Callers should prefer assembleBinary().
+func writeLegacyTrailer(out *os.File, archiveOffset int64) error {
+	return binary.Write(out, binary.LittleEndian, archiveOffset)
+}
+
+// ── Go toolchain bootstrap (unchanged) ────────────────────────────────────────
 
 const goVersion = "1.24.1"
 
@@ -344,19 +600,16 @@ func installGOIfNotInstalled() error {
 func downloadAndExtractGo(version, destDir, hostOS, hostArch string) error {
 	platform := fmt.Sprintf("%s-%s", hostOS, hostArch)
 	url := fmt.Sprintf("https://go.dev/dl/go%s.%s.tar.gz", version, platform)
-
 	resp, err := http.Get(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
 	gz, err := gzip.NewReader(resp.Body)
 	if err != nil {
 		return err
 	}
 	defer gz.Close()
-
 	tr := tar.NewReader(gz)
 	for {
 		hdr, err := tr.Next()

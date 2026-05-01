@@ -1,44 +1,48 @@
-// Command launcher is the target-side runner embedded inside every molt binary.
-// It reads molt_INSTALL_BASE to determine where to install.
+// Command launcher is the target-side runner embedded into every molt binary.
 //
-// Environment variables:
+// Responsibilities:
+//   - install: unpack payload, set up Python venv, install deps, run post_install hooks
+//   - run:     execute a named command from molt.yaml (or legacy -m fallback)
+//   - verify:  recompute root hash over extracted payload, compare to trailer
+//   - uninstall / info / version
 //
-//	molt_INSTALL_BASE   Override the base installation directory.
-//	                      e.g. molt_INSTALL_BASE=/opt ./myapp-v1.0.0 install
-//	                      installs to /opt/myapp/1.0.0/
-//
-//	molt_INSTALL_DIR    Override the full installation directory (skips appName/version suffix).
-//	                      e.g. molt_INSTALL_DIR=/opt/myapp ./myapp-v1.0.0 install
-//
-//	molt_CACHE_DIR      Override the cache directory for downloaded artifacts.
+// Self-contained: no imports from the rest of the molt codebase (builder /
+// deps / etc.) because this binary ships alone. The small bits of logic
+// shared with the main molt CLI (trailer parsing, manifest shapes) are
+// re-implemented here rather than pulling in the integrity package, to
+// keep the launcher binary tiny.
 package main
 
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
-	"molt/internal/uvbin"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
 
-// Manifest mirrors types.Manifest but is self-contained (no imports from main molt).
+// ── Types mirroring pkg/types (kept in sync manually) ────────────────────────
+
 type Manifest struct {
-	AppName    string      `json:"app_name"`
-	Version    string      `json:"version"`
-	MainModule string      `json:"main_module"`
-	Python     PythonSpec  `json:"python"`
-	SystemDeps []SystemDep `json:"system_deps"`
-	PyPackages []PyPackage `json:"py_packages"`
-	Profile    string      `json:"profile"`
+	AppName            string      `json:"app_name"`
+	Version            string      `json:"version"`
+	MainModule         string      `json:"main_module"`
+	Python             PythonSpec  `json:"python"`
+	SystemDeps         []SystemDep `json:"system_deps"`
+	PyPackages         []PyPackage `json:"py_packages"`
+	Profile            string      `json:"profile"`
+	MoltConfigSnapshot *MoltConfig `json:"molt_config,omitempty"`
 }
 
 type PythonSpec struct {
@@ -62,82 +66,94 @@ type PyPackage struct {
 	Embedded bool   `json:"embedded"`
 }
 
-const trailerSize = 8
-
-// ── Logger ────────────────────────────────────────────────────────────────────
-
-// logger is a small helper that gates verbose output and tracks timing.
-type logger struct {
-	verbose bool
-	start   time.Time
+// MoltConfig mirrors types.MoltConfig — only the subset the launcher uses
+// at runtime (commands, env, hooks, integrity policy, deps strategy).
+type MoltConfig struct {
+	Version        int                    `json:"version"`
+	Project        MoltProject            `json:"project"`
+	Deps           *MoltDeps              `json:"deps,omitempty"`
+	Commands       map[string]MoltCommand `json:"commands,omitempty"`
+	Env            map[string]string      `json:"env,omitempty"`
+	Hooks          MoltHooks              `json:"hooks,omitempty"`
+	Integrity      *MoltIntegrity         `json:"integrity,omitempty"`
+	DefaultCommand string                 `json:"default_command,omitempty"`
 }
 
-func newLogger(verbose bool) *logger {
-	return &logger{verbose: verbose, start: time.Now()}
+type MoltProject struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Python  string `json:"python,omitempty"`
 }
 
-// log prints a message only when verbose is enabled.
-func (l *logger) log(format string, args ...any) {
-	if l.verbose {
-		fmt.Printf("  "+format+"\n", args...)
-	}
+type MoltDeps struct {
+	Strategy  string   `json:"strategy"`
+	Files     []string `json:"files,omitempty"`
+	ExtraArgs []string `json:"extra_args,omitempty"`
 }
 
-// logCmd prints the exact command that is about to be executed.
-// Format:  $ /path/to/binary arg1 arg2  (cwd: /some/dir)
-func (l *logger) logCmd(cmd *exec.Cmd) {
-	if !l.verbose {
-		return
-	}
-	parts := make([]string, 0, len(cmd.Args))
-	for _, a := range cmd.Args {
-		if strings.ContainsAny(a, " \t\"'") {
-			parts = append(parts, fmt.Sprintf("%q", a))
-		} else {
-			parts = append(parts, a)
-		}
-	}
-	cwd := cmd.Dir
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
-	fmt.Printf("  $ %s  (cwd: %s)\n", strings.Join(parts, " "), cwd)
+type MoltCommand struct {
+	Exec        []string          `json:"exec,omitempty"`
+	Script      string            `json:"script,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	Dir         string            `json:"dir,omitempty"`
 }
 
-// elapsed prints the wall-clock time since the logger was created.
-func (l *logger) elapsed(label string) {
-	if l.verbose {
-		fmt.Printf("  ✓ %s (%.1fs)\n", label, time.Since(l.start).Seconds())
-	}
+type MoltHooks struct {
+	PreInstall  []string `json:"pre_install,omitempty"`
+	PostInstall []string `json:"post_install,omitempty"`
 }
 
-// step prints a named step header regardless of verbose level.
-func step(format string, args ...any) {
-	fmt.Printf("[molt] "+format+"\n", args...)
+type MoltIntegrity struct {
+	Enabled         *bool  `json:"enabled,omitempty"`
+	VerifyOnLaunch  bool   `json:"verify_on_launch,omitempty"`
+	VerifyOnInstall bool   `json:"verify_on_install,omitempty"`
+	Algorithm       string `json:"algorithm,omitempty"`
 }
 
-// execCmd runs cmd, optionally streaming stdout/stderr, and always logs the
-// exact invocation when verbose is enabled.
-func execCmd(cmd *exec.Cmd, l *logger) error {
-	l.logCmd(cmd)
-	if l.verbose {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("command %q failed: %w", cmd.Args[0], err)
-	}
-	return nil
+// IntegrityManifest mirrors types.IntegrityManifest (payload-only subset).
+type IntegrityManifest struct {
+	Schema    string          `json:"schema"`
+	App       ManifestApp     `json:"app"`
+	RootHash  string          `json:"root_hash"`
+	Algorithm string          `json:"algorithm"`
+	Payload   ManifestPayload `json:"payload"`
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+type ManifestApp struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type ManifestPayload struct {
+	TotalFiles int64          `json:"total_files"`
+	TotalBytes int64          `json:"total_bytes"`
+	Files      []PackagedFile `json:"files"`
+}
+
+type PackagedFile struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+	Source string `json:"source"`
+}
+
+// ── Trailer constants (must match pkg/types) ─────────────────────────────────
+
+const (
+	TrailerMagic      = "MOLT0001"
+	TrailerV1Size     = 48
+	LegacyTrailerSize = 8
+	RootHashBytes     = 32
+)
+
+// ── Entry ────────────────────────────────────────────────────────────────────
 
 func main() {
 	if len(os.Args) < 2 {
 		usage()
-		os.Exit(1)
+		os.Exit(2)
 	}
-
 	var err error
 	switch os.Args[1] {
 	case "install":
@@ -148,13 +164,15 @@ func main() {
 		err = cmdVerify(os.Args[2:])
 	case "uninstall":
 		err = cmdUninstall(os.Args[2:])
-	case "version":
-		err = cmdVersion()
 	case "info":
 		err = cmdInfo()
+	case "version", "--version", "-v":
+		err = cmdVersion()
+	case "help", "--help", "-h":
+		usage()
 	default:
 		usage()
-		os.Exit(1)
+		os.Exit(2)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -164,402 +182,479 @@ func main() {
 
 func usage() {
 	self := filepath.Base(os.Args[0])
-	fmt.Fprintf(os.Stderr, `Usage: %s <command> [flags]
+	fmt.Fprintf(os.Stderr, `Usage: %s <command> [args...]
 
 Commands:
-  install    [--prefix DIR] [--mode MODE] [--offline] [--verbose]
-  run        [-- args...]
-  verify
-  uninstall
-  version
-  info
+  install [--prefix DIR] [--offline] [--verbose] [--no-verify]
+            Extract payload and set up hermetic environment.
+
+  run [COMMAND] [args...]
+            Execute COMMAND (from molt.yaml). Without COMMAND, run the
+            default command; without a default, fall back to "python -m
+            <app>.main".
+
+  verify    Recompute payload root hash and compare to trailer.
+  uninstall Remove the installation.
+  info      Print install metadata.
+  version   Print app name and version.
 
 Environment variables:
-  molt_INSTALL_BASE   Base directory for installation (default: platform data dir)
-                        The app is installed to $molt_INSTALL_BASE/<app>/<version>/
-                        Example: molt_INSTALL_BASE=/opt %s install
+  MOLT_INSTALL_BASE   Base directory ($BASE/<app>/<version>/ install dir).
+  MOLT_INSTALL_DIR    Full install dir (overrides MOLT_INSTALL_BASE).
+  MOLT_CACHE_DIR      Cache for downloaded artefacts.
+  MOLT_SKIP_VERIFY    "1" to skip the install-time integrity check.
 
-  molt_INSTALL_DIR    Full installation directory (overrides molt_INSTALL_BASE).
-                        Example: molt_INSTALL_DIR=/opt/myapp %s install
-
-  molt_CACHE_DIR      Directory for downloaded artifacts cache.
-                        Example: molt_CACHE_DIR=/var/cache/molt %s install
-
-`, self, self, self, self)
+`, self)
 }
 
 // ── Install ──────────────────────────────────────────────────────────────────
 
 func cmdInstall(args []string) error {
-	l := newLogger(hasFlag(args, "--verbose", "-v"))
+	verbose := hasFlag(args, "--verbose", "-v")
 	offline := hasFlag(args, "--offline")
-	mode := flagValue(args, "--mode", "standalone")
+	skipVerify := hasFlag(args, "--no-verify") || os.Getenv("MOLT_SKIP_VERIFY") == "1"
 
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate self: %w", err)
 	}
-	l.log("binary path: %s", self)
 
-	m, err := readManifest(self)
+	trailer, err := readTrailer(self)
+	if err != nil {
+		return fmt.Errorf("read trailer: %w", err)
+	}
+
+	m, err := readManifest(self, trailer.PayloadOffset)
 	if err != nil {
 		return fmt.Errorf("read manifest: %w", err)
 	}
-	l.log("manifest loaded: app=%s version=%s profile=%s", m.AppName, m.Version, m.Profile)
 
 	installDir := flagValue(args, "--prefix", "")
 	if installDir == "" {
 		installDir = resolveInstallDir(m.AppName, m.Version)
 	}
-	installDir, err = filepath.Abs(installDir)
-	if err != nil {
-		return fmt.Errorf("resolve absolute install dir: %w", err)
-	}
+	installDir, _ = filepath.Abs(installDir)
 
-	l.log("install base: %s", filepath.Dir(filepath.Dir(installDir)))
-	l.log("install dir:  %s", installDir)
-	l.log("mode: %s  offline: %v", mode, offline)
-
-	step("Installing %s v%s (%s mode)", m.AppName, m.Version, mode)
-	fmt.Printf("  → %s\n", installDir)
+	step("Installing %s v%s → %s", m.AppName, m.Version, installDir)
+	logv(verbose, "offline=%v  skipVerify=%v  has_integrity=%v",
+		offline, skipVerify, trailer.HasIntegrity)
 
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
 	}
-	l.log("created install dir")
 
-	// CRITICAL: Install UV first for all Python operations.
-	if !offline {
-		step("Ensuring uv is installed...")
-		if err := ensureUVInstalled(installDir, l); err != nil {
-			return fmt.Errorf("install uv: %w", err)
-		}
-	} else {
-		l.log("offline mode — skipping uv download")
-	}
-
+	// 1. Extract payload.
 	step("Extracting payload...")
-	if err := extractPayload(self, installDir, l); err != nil {
+	if err := extractPayload(self, trailer.PayloadOffset, installDir, verbose); err != nil {
 		return fmt.Errorf("extract: %w", err)
 	}
 
-	step("Installing Python %s...", m.Python.Version)
-	if err := installPython(installDir, m, offline, l); err != nil {
+	// 2. Install-time integrity check. This runs BEFORE we execute any
+	// hooks so a tampered binary can't induce hook execution.
+	shouldVerify := !skipVerify && trailer.HasIntegrity && shouldVerifyOnInstall(m)
+	if shouldVerify {
+		step("Verifying integrity...")
+		if err := verifyExtracted(installDir, trailer.RootHash); err != nil {
+			// Remove the extracted tree so a tampered payload doesn't linger.
+			os.RemoveAll(installDir)
+			return fmt.Errorf("integrity check failed (install aborted): %w", err)
+		}
+		logv(verbose, "✓ payload matches trailer root_hash")
+	} else if !trailer.HasIntegrity {
+		fmt.Fprintln(os.Stderr, "  ⚠ Legacy binary without integrity — skipping check")
+	}
+
+	// 3. Set up Python (download + venv).
+	if err := installPython(installDir, m, offline, verbose); err != nil {
 		return fmt.Errorf("install python: %w", err)
 	}
-
-	staleVenv := filepath.Join(installDir, ".venv")
-	if _, err := os.Stat(staleVenv); err == nil {
-		l.log("removing stale .venv extracted from payload")
-		if err := os.RemoveAll(staleVenv); err != nil {
-			return fmt.Errorf("remove stale venv: %w", err)
-		}
-	}
-
-	step("Creating virtual environment...")
-	if err := createVenv(installDir, l); err != nil {
+	if err := createVenv(installDir, verbose); err != nil {
 		return fmt.Errorf("create venv: %w", err)
 	}
 
-	step("Syncing Python dependencies...")
+	// 4. Install dependencies via the chosen strategy.
 	if !offline {
-		if err := syncPythonDeps(installDir, l); err != nil {
-			// Non-fatal — warn and continue (packages are best-effort)
-			fmt.Fprintf(os.Stderr, "  warning: dependency sync failed: %v\n", err)
+		if err := installDependencies(installDir, m, verbose); err != nil {
+			fmt.Fprintf(os.Stderr, "  ⚠ dep install failed: %v\n", err)
 		}
-	} else {
-		l.log("offline mode — skipping dependency sync")
 	}
 
-	writeReceipt(installDir, m, mode)
-
-	l.elapsed("total install time")
-	fmt.Printf("\n✓ Installation complete: %s\n", installDir)
-	fmt.Printf("\nTo run:       %s run\n", os.Args[0])
-	fmt.Printf("To uninstall: %s uninstall\n", os.Args[0])
-	return nil
-}
-
-// syncPythonDeps runs uv sync --frozen if uv.lock exists.
-// This allows manifests to omit py_packages when bundling uv.lock.
-// syncPythonDeps runs uv sync --frozen if uv.lock exists.
-func syncPythonDeps(installDir string, l *logger) error {
-	uv, err := findUV(installDir)
-	if err != nil {
-		return fmt.Errorf("uv not found: %w", err)
-	}
-
-	lockPath := filepath.Join(installDir, "uv.lock")
-	if _, err := os.Stat(lockPath); err == nil {
-		l.log("found uv.lock — running uv sync --frozen")
-		cmd := exec.Command(uv, "sync", "--frozen")
-		cmd.Dir = installDir
-
-		// uv auto-detects .venv in cwd. We explicitly set VIRTUAL_ENV
-		// to avoid mismatch warnings from parent shells.
-		venvDir := filepath.Join(installDir, ".venv")
-		env := os.Environ()
-		cleanEnv := make([]string, 0, len(env)+1)
-		for _, e := range env {
-			if !strings.HasPrefix(e, "VIRTUAL_ENV=") {
-				cleanEnv = append(cleanEnv, e)
+	// 5. Hooks.
+	if m.MoltConfigSnapshot != nil {
+		for _, h := range m.MoltConfigSnapshot.Hooks.PostInstall {
+			fmt.Printf("  [hook] %s\n", h)
+			if err := runShell(h, installDir, buildExecEnv(installDir, m, nil)); err != nil {
+				return fmt.Errorf("post_install hook %q failed: %w", h, err)
 			}
 		}
-		cleanEnv = append(cleanEnv, "VIRTUAL_ENV="+venvDir)
-		cmd.Env = cleanEnv
-
-		return execCmd(cmd, l)
 	}
+
+	writeReceipt(installDir, m)
+	fmt.Printf("\n✓ Installed to %s\n", installDir)
+	fmt.Printf("  Run:       %s run\n", filepath.Base(os.Args[0]))
+	fmt.Printf("  Uninstall: %s uninstall\n", filepath.Base(os.Args[0]))
 	return nil
 }
 
-func createVenv(installDir string, l *logger) error {
-	venvDir := filepath.Join(installDir, ".venv")
-	if _, err := os.Stat(venvDir); err == nil {
-		l.log("virtual environment already exists at %s — skipping", venvDir)
-		return nil
+// shouldVerifyOnInstall consults the embedded MoltConfig. Defaults to TRUE
+// if the config is absent — free-by-default authentication.
+func shouldVerifyOnInstall(m *Manifest) bool {
+	if m.MoltConfigSnapshot == nil || m.MoltConfigSnapshot.Integrity == nil {
+		return true
 	}
+	i := m.MoltConfigSnapshot.Integrity
+	if i.Enabled != nil && !*i.Enabled {
+		return false
+	}
+	return i.VerifyOnInstall
+}
 
-	uv, err := findUV(installDir)
+// shouldVerifyOnLaunch is the same but for every `run` invocation.
+func shouldVerifyOnLaunch(m *Manifest) bool {
+	if m.MoltConfigSnapshot == nil || m.MoltConfigSnapshot.Integrity == nil {
+		return false
+	}
+	i := m.MoltConfigSnapshot.Integrity
+	if i.Enabled != nil && !*i.Enabled {
+		return false
+	}
+	return i.VerifyOnLaunch
+}
+
+// ── Run ──────────────────────────────────────────────────────────────────────
+
+func cmdRun(args []string) error {
+	verbose := hasFlag(args, "--verbose", "-v")
+	args = filterFlags(args, "--verbose", "-v")
+
+	self, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("uv not found: %w", err)
+		return err
 	}
-	l.log("uv binary: %s", uv)
-	l.log("venv target: %s", venvDir)
-
-	cmd := exec.Command(uv, "venv", venvDir)
-	cmd.Dir = installDir
-	return execCmd(cmd, l)
-}
-
-func installPackages(installDir string, pkgs []PyPackage, l *logger) error {
-	uv, err := findUV(installDir)
+	trailer, err := readTrailer(self)
 	if err != nil {
-		return fmt.Errorf("uv not found: %w", err)
+		return err
 	}
-	l.log("uv binary: %s", uv)
-
-	venvDir := filepath.Join(installDir, ".venv")
-	l.log("VIRTUAL_ENV: %s", venvDir)
-
-	cmd := exec.Command(uv, "sync", "--frozen")
-	cmd.Dir = installDir
-	cmd.Env = append(os.Environ(), "VIRTUAL_ENV="+venvDir)
-	if err := execCmd(cmd, l); err != nil {
-		return fmt.Errorf("uv sync: %w", err)
+	m, err := readManifest(self, trailer.PayloadOffset)
+	if err != nil {
+		return err
 	}
-	return nil
-}
 
-// resolveInstallDir returns the installation directory using env var overrides.
-//
-//	Priority:
-//	  molt_INSTALL_DIR  →  use as-is
-//	  molt_INSTALL_BASE →  base/<appName>/<version>
-//	  platform default    →  ~/.local/share/<appName>/<version>  (Linux)
-func resolveInstallDir(appName, version string) string {
-	if dir := os.Getenv("molt_INSTALL_DIR"); dir != "" {
-		return dir
+	installDir := resolveInstallDir(m.AppName, m.Version)
+	installDir, _ = filepath.Abs(installDir)
+	if _, err := os.Stat(filepath.Join(installDir, ".molt", "receipt.json")); err != nil {
+		return fmt.Errorf("not installed at %s — run %q first",
+			installDir, filepath.Base(os.Args[0])+" install")
 	}
-	base := os.Getenv("molt_INSTALL_BASE")
-	if base == "" {
-		base = defaultInstallBase()
-	}
-	return filepath.Join(base, appName, version)
-}
 
-// defaultInstallBase returns the platform-appropriate base directory.
-func defaultInstallBase() string {
-	switch runtime.GOOS {
-	case "windows":
-		if d := os.Getenv("APPDATA"); d != "" {
-			return d
+	// Optional launch-time integrity check.
+	if trailer.HasIntegrity && shouldVerifyOnLaunch(m) {
+		if err := verifyExtracted(installDir, trailer.RootHash); err != nil {
+			return fmt.Errorf("launch-time integrity check failed: %w", err)
 		}
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, "AppData", "Roaming")
-	case "darwin":
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, "Library", "Application Support")
-	default:
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".local", "share")
+		logv(verbose, "✓ launch-time integrity OK")
 	}
-}
 
-// resolveCacheDir returns the cache directory, respecting molt_CACHE_DIR.
-func resolveCacheDir() string {
-	if dir := os.Getenv("molt_CACHE_DIR"); dir != "" {
-		return dir
-	}
-	switch runtime.GOOS {
-	case "windows":
-		d := os.Getenv("LOCALAPPDATA")
-		if d == "" {
-			home, _ := os.UserHomeDir()
-			d = filepath.Join(home, "AppData", "Local")
+	// Resolve the command to run.
+	var cmdName string
+	var cmdArgs []string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		// First positional arg may be a command name from molt.yaml.
+		if m.MoltConfigSnapshot != nil {
+			if _, ok := m.MoltConfigSnapshot.Commands[args[0]]; ok {
+				cmdName = args[0]
+				cmdArgs = args[1:]
+			}
 		}
-		return filepath.Join(d, "molt", "cache")
-	case "darwin":
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, "Library", "Caches", "molt")
-	default:
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".cache", "molt")
 	}
+	if cmdName == "" && m.MoltConfigSnapshot != nil {
+		cmdName = resolveDefaultCommand(m.MoltConfigSnapshot)
+		cmdArgs = args
+	}
+
+	if cmdName != "" {
+		return executeCommand(m, installDir, cmdName, cmdArgs, verbose)
+	}
+
+	// Legacy fallback: `python -m <app>.main`.
+	logv(verbose, "no command defined — falling back to 'python -m %s'", m.MainModule)
+	return executeLegacyMain(m, installDir, args, verbose)
 }
 
-// writeReceipt writes a small JSON file recording install metadata.
-func writeReceipt(installDir string, m *Manifest, mode string) {
-	type Receipt struct {
-		AppName     string `json:"app_name"`
-		Version     string `json:"version"`
-		Mode        string `json:"mode"`
-		InstallDir  string `json:"install_dir"`
-		InstalledBy string `json:"installed_by"`
+func resolveDefaultCommand(cfg *MoltConfig) string {
+	if cfg.DefaultCommand != "" {
+		if _, ok := cfg.Commands[cfg.DefaultCommand]; ok {
+			return cfg.DefaultCommand
+		}
 	}
-	r := Receipt{
-		AppName:     m.AppName,
-		Version:     m.Version,
-		Mode:        mode,
-		InstallDir:  installDir,
-		InstalledBy: os.Args[0],
+	for _, try := range []string{"run", "start"} {
+		if _, ok := cfg.Commands[try]; ok {
+			return try
+		}
 	}
-	data, _ := json.MarshalIndent(r, "", "  ")
-	receiptPath := filepath.Join(installDir, ".molt", "receipt.json")
-	receiptPath, _ = filepath.Abs(receiptPath)
-	os.MkdirAll(filepath.Dir(receiptPath), 0o755)
-	os.WriteFile(receiptPath, data, 0o644)
+	if len(cfg.Commands) == 1 {
+		for n := range cfg.Commands {
+			return n
+		}
+	}
+	return ""
 }
 
-// ── Verify ───────────────────────────────────────────────────────────────────
+// executeCommand runs a named command from molt.yaml in the installed env.
+func executeCommand(m *Manifest, installDir, name string, extraArgs []string, verbose bool) error {
+	cmd := m.MoltConfigSnapshot.Commands[name]
+	env := buildExecEnv(installDir, m, cmd.Env)
+
+	workDir := installDir
+	if cmd.Dir != "" {
+		workDir = filepath.Join(installDir, cmd.Dir)
+	}
+
+	switch {
+	case len(cmd.Exec) > 0:
+		argv := append([]string{}, cmd.Exec...)
+		argv = append(argv, extraArgs...)
+		// Resolve argv[0] against venv/bin first so users can say `exec: [pytest, ...]`
+		// without full paths.
+		resolved := resolveInVenv(installDir, argv[0])
+		if resolved != "" {
+			argv[0] = resolved
+		}
+		logv(verbose, "exec: %s (cwd=%s)", strings.Join(argv, " "), workDir)
+		c := exec.Command(argv[0], argv[1:]...)
+		c.Dir = workDir
+		c.Env = env
+		c.Stdin = os.Stdin
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		return c.Run()
+
+	case cmd.Script != "":
+		full := cmd.Script
+		if len(extraArgs) > 0 {
+			full += " " + strings.Join(extraArgs, " ")
+		}
+		logv(verbose, "script: %s (cwd=%s)", full, workDir)
+		return runShell(full, workDir, env)
+	}
+	return fmt.Errorf("command %q has neither exec nor script", name)
+}
+
+// executeLegacyMain replicates the pre-molt.yaml behaviour: `python -m <app>.main`.
+func executeLegacyMain(m *Manifest, installDir string, args []string, verbose bool) error {
+	pythonBin := findPython(installDir)
+	if pythonBin == "" {
+		return fmt.Errorf("python not found in %s", installDir)
+	}
+	mainModule := m.MainModule
+	if mainModule == "" {
+		mainModule = m.AppName + ".main"
+	}
+	cmdArgs := append([]string{"-m", mainModule}, args...)
+	c := exec.Command(pythonBin, cmdArgs...)
+	c.Dir = installDir
+	c.Env = buildExecEnv(installDir, m, nil)
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	logv(verbose, "legacy exec: %s %s", pythonBin, strings.Join(cmdArgs, " "))
+	applyIsolation(c)
+	return c.Run()
+}
+
+// ── Verify / info / uninstall ────────────────────────────────────────────────
 
 func cmdVerify(args []string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	m, err := readManifest(self)
+	trailer, err := readTrailer(self)
 	if err != nil {
 		return err
 	}
-
-	installDir := resolveInstallDir(m.AppName, m.Version)
-	if p := flagValue(args, "--prefix", ""); p != "" {
-		installDir = p
+	if !trailer.HasIntegrity {
+		return fmt.Errorf("binary has no integrity trailer (legacy build)")
 	}
-
-	manifestPath := filepath.Join(installDir, ".molt", "manifest.json")
-	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-		return fmt.Errorf("not installed at %s\nRun: %s install", installDir, os.Args[0])
-	}
-	fmt.Printf("  ✓ Installation verified: %s\n", installDir)
-	return nil
-}
-
-// ── Uninstall ────────────────────────────────────────────────────────────────
-
-func cmdUninstall(args []string) error {
-	self, err := os.Executable()
+	m, err := readManifest(self, trailer.PayloadOffset)
 	if err != nil {
 		return err
 	}
-	m, err := readManifest(self)
-	if err != nil {
-		return err
+	installDir := flagValue(args, "--prefix", "")
+	if installDir == "" {
+		installDir = resolveInstallDir(m.AppName, m.Version)
 	}
-
-	installDir := resolveInstallDir(m.AppName, m.Version)
-	if p := flagValue(args, "--prefix", ""); p != "" {
-		installDir = p
-	}
-
-	if _, err := os.Stat(installDir); os.IsNotExist(err) {
+	installDir, _ = filepath.Abs(installDir)
+	if _, err := os.Stat(installDir); err != nil {
 		return fmt.Errorf("not installed at %s", installDir)
 	}
-
-	step("Uninstalling %s v%s", m.AppName, m.Version)
-	fmt.Printf("  → removing %s\n", installDir)
-	if err := os.RemoveAll(installDir); err != nil {
+	if err := verifyExtracted(installDir, trailer.RootHash); err != nil {
 		return err
 	}
-	fmt.Printf("  ✓ Uninstalled\n")
+	fmt.Println("✓ Integrity verified")
 	return nil
 }
-
-// ── Version ──────────────────────────────────────────────────────────────────
-
-func cmdVersion() error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	m, err := readManifest(self)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("%s v%s\n", m.AppName, m.Version)
-	return nil
-}
-
-// ── Info ─────────────────────────────────────────────────────────────────────
 
 func cmdInfo() error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	m, err := readManifest(self)
+	trailer, err := readTrailer(self)
 	if err != nil {
 		return err
 	}
-
+	m, err := readManifest(self, trailer.PayloadOffset)
+	if err != nil {
+		return err
+	}
 	installDir := resolveInstallDir(m.AppName, m.Version)
 	installed := "no"
-	if _, err := os.Stat(filepath.Join(installDir, ".molt", "manifest.json")); err == nil {
+	if _, err := os.Stat(filepath.Join(installDir, ".molt", "receipt.json")); err == nil {
 		installed = "yes"
 	}
-
-	fmt.Printf("App:          %s\n", m.AppName)
-	fmt.Printf("Version:      %s\n", m.Version)
-	fmt.Printf("Profile:      %s\n", m.Profile)
-	fmt.Printf("Python:       %s\n", m.Python.Version)
-	fmt.Printf("Packages:     %d\n", len(m.PyPackages))
-	fmt.Printf("System deps:  %d\n", len(m.SystemDeps))
-	fmt.Println()
-	fmt.Printf("Install dir:  %s\n", installDir)
-	fmt.Printf("Installed:    %s\n", installed)
-	fmt.Println()
-	fmt.Println("Override install location:")
-	fmt.Printf("  molt_INSTALL_BASE=/opt %s install\n", filepath.Base(os.Args[0]))
-	fmt.Printf("  molt_INSTALL_DIR=/opt/%s %s install\n", m.AppName, filepath.Base(os.Args[0]))
+	fmt.Printf("App:        %s v%s\n", m.AppName, m.Version)
+	fmt.Printf("Python:     %s\n", m.Python.Version)
+	fmt.Printf("Integrity:  %v\n", trailer.HasIntegrity)
+	if trailer.HasIntegrity {
+		fmt.Printf("Root hash:  %s\n", hex.EncodeToString(trailer.RootHash[:]))
+	}
+	fmt.Printf("Installed:  %s (%s)\n", installed, installDir)
+	if m.MoltConfigSnapshot != nil && len(m.MoltConfigSnapshot.Commands) > 0 {
+		fmt.Println()
+		fmt.Println("Commands:")
+		names := make([]string, 0, len(m.MoltConfigSnapshot.Commands))
+		for n := range m.MoltConfigSnapshot.Commands {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		def := resolveDefaultCommand(m.MoltConfigSnapshot)
+		for _, n := range names {
+			marker := "  "
+			if n == def {
+				marker = "* "
+			}
+			c := m.MoltConfigSnapshot.Commands[n]
+			desc := c.Description
+			if desc == "" {
+				if len(c.Exec) > 0 {
+					desc = strings.Join(c.Exec, " ")
+				} else {
+					desc = c.Script
+				}
+			}
+			fmt.Printf("  %s%-15s %s\n", marker, n, desc)
+		}
+	}
 	return nil
 }
 
-// ── Payload extraction ───────────────────────────────────────────────────────
+func cmdUninstall(args []string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	trailer, err := readTrailer(self)
+	if err != nil {
+		return err
+	}
+	m, err := readManifest(self, trailer.PayloadOffset)
+	if err != nil {
+		return err
+	}
+	installDir := resolveInstallDir(m.AppName, m.Version)
+	installDir, _ = filepath.Abs(installDir)
+	if _, err := os.Stat(installDir); err != nil {
+		return fmt.Errorf("not installed at %s", installDir)
+	}
+	if err := os.RemoveAll(installDir); err != nil {
+		return err
+	}
+	fmt.Printf("✓ Uninstalled %s\n", installDir)
+	return nil
+}
 
-func readManifest(binaryPath string) (*Manifest, error) {
+func cmdVersion() error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	trailer, err := readTrailer(self)
+	if err != nil {
+		return err
+	}
+	m, err := readManifest(self, trailer.PayloadOffset)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s %s\n", m.AppName, m.Version)
+	return nil
+}
+
+// ── Trailer / manifest extraction ────────────────────────────────────────────
+
+type trailerInfo struct {
+	PayloadOffset int64
+	RootHash      [RootHashBytes]byte
+	HasIntegrity  bool
+}
+
+func readTrailer(path string) (*trailerInfo, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	if size < LegacyTrailerSize {
+		return nil, fmt.Errorf("file too small")
+	}
+	// V1 first: check magic at the end.
+	if size >= int64(TrailerV1Size) {
+		buf := make([]byte, TrailerV1Size)
+		if _, err := f.ReadAt(buf, size-int64(TrailerV1Size)); err != nil {
+			return nil, err
+		}
+		magic := buf[TrailerV1Size-len(TrailerMagic):]
+		if string(magic) == TrailerMagic {
+			ti := &trailerInfo{HasIntegrity: true}
+			ti.PayloadOffset = int64(binary.LittleEndian.Uint64(buf[0:8]))
+			copy(ti.RootHash[:], buf[8:8+RootHashBytes])
+			return ti, nil
+		}
+	}
+	// Legacy 8-byte offset-only.
+	buf := make([]byte, LegacyTrailerSize)
+	if _, err := f.ReadAt(buf, size-int64(LegacyTrailerSize)); err != nil {
+		return nil, err
+	}
+	return &trailerInfo{
+		PayloadOffset: int64(binary.LittleEndian.Uint64(buf)),
+		HasIntegrity:  false,
+	}, nil
+}
+
+// readManifest streams the payload tar and pulls out .molt/manifest.json.
+func readManifest(binaryPath string, offset int64) (*Manifest, error) {
 	f, err := os.Open(binaryPath)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-
-	offset, err := readPayloadOffset(f)
-	if err != nil {
-		return nil, fmt.Errorf("read payload offset: %w", err)
-	}
-
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
-
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return nil, fmt.Errorf("gzip: %w", err)
+		return nil, err
 	}
 	defer gz.Close()
-
 	tr := tar.NewReader(gz)
+	targets := []string{".molt/manifest.json", "src/.molt/manifest.json"}
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -568,117 +663,450 @@ func readManifest(binaryPath string) (*Manifest, error) {
 		if err != nil {
 			return nil, err
 		}
-
-		// Handle both prefixed (src/.molt/manifest.json) and unprefixed paths
-		manifestPath := hdr.Name
-		if strings.HasPrefix(manifestPath, "src/") {
-			manifestPath = strings.TrimPrefix(manifestPath, "src/")
-		}
-		if manifestPath == ".molt/manifest.json" {
-			var m Manifest
-			if err := json.NewDecoder(tr).Decode(&m); err != nil {
-				return nil, err
+		name := filepath.ToSlash(hdr.Name)
+		for _, t := range targets {
+			if name == t {
+				data, err := io.ReadAll(tr)
+				if err != nil {
+					return nil, err
+				}
+				var m Manifest
+				if err := json.Unmarshal(data, &m); err != nil {
+					return nil, err
+				}
+				return &m, nil
 			}
-			return &m, nil
 		}
 	}
 	return nil, fmt.Errorf("manifest not found in payload")
 }
 
-func readPayloadOffset(f *os.File) (int64, error) {
-	info, err := f.Stat()
+// readIntegrityManifest streams the payload tar and pulls out
+// .molt/integrity.json (if present). Returns nil, nil if not found.
+func readIntegrityManifest(binaryPath string, offset int64) (*IntegrityManifest, error) {
+	f, err := os.Open(binaryPath)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	if info.Size() < trailerSize {
-		return 0, fmt.Errorf("binary too small")
+	defer f.Close()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
 	}
-	if _, err := f.Seek(-trailerSize, io.SeekEnd); err != nil {
-		return 0, err
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
 	}
-	var offset int64
-	if err := binary.Read(f, binary.LittleEndian, &offset); err != nil {
-		return 0, err
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	targets := []string{".molt/integrity.json", "src/.molt/integrity.json"}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		name := filepath.ToSlash(hdr.Name)
+		for _, t := range targets {
+			if name == t {
+				data, err := io.ReadAll(tr)
+				if err != nil {
+					return nil, err
+				}
+				var im IntegrityManifest
+				if err := json.Unmarshal(data, &im); err != nil {
+					return nil, err
+				}
+				return &im, nil
+			}
+		}
 	}
-	return offset, nil
+	return nil, nil
 }
 
-// ── Python management ────────────────────────────────────────────────────────
+// ── Payload extraction ───────────────────────────────────────────────────────
 
-func installPython(installDir string, m *Manifest, offline bool, l *logger) error {
-	pythonDir := filepath.Join(installDir, "python")
-	pyBin := filepath.Join(pythonDir, "bin", pythonBinaryName())
-	if runtime.GOOS == "windows" {
-		pyBin = filepath.Join(pythonDir, "python.exe")
-	}
-
-	if _, err := os.Stat(pyBin); err == nil {
-		l.log("Python %s already present at %s — skipping download", m.Python.Version, pyBin)
-		return nil
-	}
-
-	if m.Python.Embedded {
-		l.log("Python is embedded in payload — no separate install needed")
-		return nil
-	}
-
-	if offline {
-		l.log("offline mode — symlinking system Python")
-		return symlinkSystemPython(installDir, l)
-	}
-
-	if m.Python.URL == "" {
-		l.log("no Python URL in manifest — symlinking system Python")
-		return symlinkSystemPython(installDir, l)
-	}
-
-	l.log("Python %s not found — downloading from %s", m.Python.Version, m.Python.URL)
-	cacheDir := resolveCacheDir()
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		l.log("warning: could not create cache dir %s: %v", cacheDir, err)
-	}
-
-	tmp, err := os.CreateTemp(cacheDir, "python-*.tar.gz")
+func extractPayload(binaryPath string, offset int64, installDir string, verbose bool) error {
+	f, err := os.Open(binaryPath)
 	if err != nil {
-		l.log("cache dir unavailable, falling back to system temp")
-		tmp, err = os.CreateTemp("", "python-*.tar.gz")
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return err
+	}
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+
+	count := 0
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
 			return err
 		}
+		rel := filepath.FromSlash(hdr.Name)
+		// Strip the "src/" prefix the builder adds.
+		if strings.HasPrefix(hdr.Name, "src/") {
+			rel = filepath.FromSlash(strings.TrimPrefix(hdr.Name, "src/"))
+		} else if hdr.Name == "src" {
+			continue
+		}
+		if rel == "" {
+			continue
+		}
+		// Refuse absolute and traversal paths — belt and braces against a
+		// tampered tar.
+		if filepath.IsAbs(rel) || strings.Contains(rel, "..") {
+			return fmt.Errorf("unsafe path in payload: %s", hdr.Name)
+		}
+		target := filepath.Join(installDir, rel)
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			out, err := os.Create(target)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return err
+			}
+			out.Close()
+			if err := os.Chmod(target, os.FileMode(hdr.Mode)); err != nil {
+				return err
+			}
+			count++
+		case tar.TypeSymlink:
+			os.Remove(target)
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return err
+			}
+		}
 	}
-	l.log("downloading to temp file: %s", tmp.Name())
-	defer os.Remove(tmp.Name())
-
-	if err := downloadFile(m.Python.URL, tmp, l); err != nil {
-		tmp.Close()
-		return fmt.Errorf("download python: %w", err)
-	}
-	tmp.Close()
-
-	l.log("extracting Python archive to %s", pythonDir)
-	os.MkdirAll(pythonDir, 0o755)
-	return extractTarGz(tmp.Name(), pythonDir)
+	logv(verbose, "extracted %d files to %s", count, installDir)
+	return nil
 }
 
-func symlinkSystemPython(installDir string, l *logger) error {
-	systemPython, err := exec.LookPath(pythonBinaryName())
-	if err != nil {
-		return fmt.Errorf("python not found (tried standalone + system lookup)")
-	}
-	l.log("system Python found at %s", systemPython)
+// ── Integrity verification ───────────────────────────────────────────────────
 
-	binDir := filepath.Join(installDir, "python", "bin")
-	os.MkdirAll(binDir, 0o755)
-	dest := filepath.Join(binDir, pythonBinaryName())
-	if _, err := os.Stat(dest); err == nil {
-		l.log("symlink already exists at %s — skipping", dest)
+// verifyExtracted reconstructs the root hash by walking the extracted tree
+// and hashing every file, then compares against the trailer's expected hash.
+//
+// The embedded IntegrityManifest at .molt/integrity.json is the ground
+// truth for what files SHOULD be there. We iterate that list rather than
+// walking the disk, so missing files produce a clear "missing X" error
+// rather than a silent hash mismatch.
+func verifyExtracted(installDir string, expected [RootHashBytes]byte) error {
+	// Try to read the embedded integrity manifest.
+	manifestPath := filepath.Join(installDir, ".molt", "integrity.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("missing integrity manifest at %s: %w", manifestPath, err)
+	}
+	var im IntegrityManifest
+	if err := json.Unmarshal(data, &im); err != nil {
+		return fmt.Errorf("parse integrity manifest: %w", err)
+	}
+
+	// Re-hash every file listed in the manifest.
+	actual := make([]PackagedFile, 0, len(im.Payload.Files))
+	for _, f := range im.Payload.Files {
+		path := filepath.Join(installDir, filepath.FromSlash(f.Path))
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("missing file %s", f.Path)
+		}
+		if info.Size() != f.Size {
+			return fmt.Errorf("size mismatch for %s: expected %d, got %d",
+				f.Path, f.Size, info.Size())
+		}
+		h, err := hashFile(path)
+		if err != nil {
+			return fmt.Errorf("hash %s: %w", f.Path, err)
+		}
+		actual = append(actual, PackagedFile{Path: f.Path, Size: info.Size(), SHA256: h})
+	}
+
+	got := computeRootHash(actual)
+	expectedHex := hex.EncodeToString(expected[:])
+	if got != expectedHex {
+		return fmt.Errorf("root hash mismatch: computed %s, expected %s",
+			shortHash(got), shortHash(expectedHex))
+	}
+	return nil
+}
+
+// computeRootHash mirrors integrity.ComputeRootHash — kept duplicated here
+// so the launcher binary doesn't need to import the integrity package.
+//
+// Algorithm: sort by Path, for each file feed sha256(path||0x00||hash) to
+// an outer sha256, hex-encode the outer digest.
+func computeRootHash(files []PackagedFile) string {
+	sorted := make([]PackagedFile, len(files))
+	copy(sorted, files)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
+
+	outer := sha256.New()
+	for _, f := range sorted {
+		inner := sha256.New()
+		inner.Write([]byte(f.Path))
+		inner.Write([]byte{0x00})
+		raw, err := hex.DecodeString(f.SHA256)
+		if err != nil || len(raw) != sha256.Size {
+			inner.Write([]byte("INVALID:" + f.SHA256))
+		} else {
+			inner.Write(raw)
+		}
+		outer.Write(inner.Sum(nil))
+	}
+	return hex.EncodeToString(outer.Sum(nil))
+}
+
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// ── Python install ───────────────────────────────────────────────────────────
+
+func installPython(installDir string, m *Manifest, offline, verbose bool) error {
+	pyDir := filepath.Join(installDir, "python")
+	pyBin := filepath.Join(pyDir, "bin", pythonBinaryName())
+	if runtime.GOOS == "windows" {
+		pyBin = filepath.Join(pyDir, "python.exe")
+	}
+	if _, err := os.Stat(pyBin); err == nil {
+		logv(verbose, "python already present — skipping")
 		return nil
 	}
-	l.log("creating symlink %s → %s", dest, systemPython)
-	return os.Symlink(systemPython, dest)
+	// Fall back to system python — this is the path for minimal profiles
+	// and for offline mode. We don't try to download Python from here.
+	sys, err := exec.LookPath(pythonBinaryName())
+	if err != nil {
+		return fmt.Errorf("no bundled python and system %s not found", pythonBinaryName())
+	}
+	os.MkdirAll(filepath.Join(pyDir, "bin"), 0o755)
+	return os.Symlink(sys, pyBin)
 }
 
-// ── Path helpers ──────────────────────────────────────────────────────────────
+// createVenv is optional: if the payload already contained a venv (rare),
+// skip; otherwise use `python -m venv`.
+func createVenv(installDir string, verbose bool) error {
+	venvDir := filepath.Join(installDir, ".venv")
+	if _, err := os.Stat(filepath.Join(venvDir, "bin")); err == nil {
+		logv(verbose, "venv already present — skipping")
+		return nil
+	}
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(filepath.Join(venvDir, "Scripts")); err == nil {
+			return nil
+		}
+	}
+
+	py := findPython(installDir)
+	if py == "" {
+		return fmt.Errorf("python not found to create venv")
+	}
+	c := exec.Command(py, "-m", "venv", venvDir)
+	if verbose {
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+	}
+	return c.Run()
+}
+
+// ── Dependency install ───────────────────────────────────────────────────────
+
+// installDependencies dispatches on the MoltConfig deps strategy. All modes
+// operate against the venv pip — we don't assume uv is present on the
+// target. For legacy builds (no MoltConfig), falls back to installing the
+// PyPackages from the manifest.
+func installDependencies(installDir string, m *Manifest, verbose bool) error {
+	pip := findPip(installDir)
+	if pip == "" {
+		return fmt.Errorf("pip not found in venv")
+	}
+
+	// Legacy: no molt.yaml snapshot → use m.PyPackages.
+	if m.MoltConfigSnapshot == nil || m.MoltConfigSnapshot.Deps == nil {
+		return installFromPyPackages(pip, m.PyPackages, verbose)
+	}
+
+	d := m.MoltConfigSnapshot.Deps
+	switch d.Strategy {
+	case "none":
+		logv(verbose, "deps.strategy=none — skipping")
+		return nil
+
+	case "pyproject":
+		// Prefer pyproject.toml that we unpacked. If uv.lock is present,
+		// install from that via `pip install -r <(uv export)`? Too fragile.
+		// Fall back to `pip install -e .` which respects pyproject deps.
+		args := []string{"install", "-e", "."}
+		args = append(args, d.ExtraArgs...)
+		return runPip(pip, args, installDir, verbose)
+
+	case "requirements":
+		if len(d.Files) == 0 {
+			return fmt.Errorf("requirements strategy has no files")
+		}
+		for _, rf := range d.Files {
+			args := []string{"install", "-r", rf}
+			args = append(args, d.ExtraArgs...)
+			if err := runPip(pip, args, installDir, verbose); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "poetry", "pipenv":
+		// Without poetry/pipenv on the target we can't use their native
+		// tooling; both should have been exported to requirements.txt at
+		// build time by the builder (a known TODO). Warn and no-op here.
+		fmt.Fprintf(os.Stderr, "  ⚠ deps.strategy=%s needs requirements export at build time\n",
+			d.Strategy)
+		return nil
+
+	default:
+		return fmt.Errorf("unknown deps strategy %q", d.Strategy)
+	}
+}
+
+func installFromPyPackages(pip string, pkgs []PyPackage, verbose bool) error {
+	if len(pkgs) == 0 {
+		return nil
+	}
+	args := []string{"install"}
+	for _, p := range pkgs {
+		args = append(args, fmt.Sprintf("%s==%s", p.Name, p.Version))
+	}
+	return runPip(pip, args, "", verbose)
+}
+
+func runPip(pip string, args []string, cwd string, verbose bool) error {
+	c := exec.Command(pip, args...)
+	if cwd != "" {
+		c.Dir = cwd
+	}
+	if verbose {
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+	}
+	return c.Run()
+}
+
+// ── Env / path helpers ───────────────────────────────────────────────────────
+
+// buildExecEnv constructs the environment for a subprocess running inside
+// the hermetic install. Strips PYTHONHOME (breaks venv stdlib), prepends
+// venv/bin to PATH, applies molt.yaml env block then per-command overrides.
+func buildExecEnv(installDir string, m *Manifest, overrides map[string]string) []string {
+	srcDir := installDir
+	venvDir := filepath.Join(installDir, ".venv")
+	venvBin := filepath.Join(venvDir, "bin")
+	if runtime.GOOS == "windows" {
+		venvBin = filepath.Join(venvDir, "Scripts")
+	}
+
+	out := make([]string, 0, 32)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "PYTHONHOME=") ||
+			strings.HasPrefix(e, "PYTHONPATH=") ||
+			strings.HasPrefix(e, "VIRTUAL_ENV=") {
+			continue
+		}
+		out = append(out, e)
+	}
+
+	// PATH: venv/bin first.
+	sep := ":"
+	if runtime.GOOS == "windows" {
+		sep = ";"
+	}
+	pathVal := venvBin + sep + os.Getenv("PATH")
+	setEnvVar(&out, "PATH", pathVal)
+	setEnvVar(&out, "VIRTUAL_ENV", venvDir)
+	setEnvVar(&out, "PYTHONPATH", srcDir)
+	setEnvVar(&out, "PYTHONNOUSERSITE", "1")
+	setEnvVar(&out, "PYTHONDONTWRITEBYTECODE", "1")
+
+	// molt.yaml env block — applied before per-command to let commands override.
+	if m.MoltConfigSnapshot != nil {
+		for k, v := range m.MoltConfigSnapshot.Env {
+			setEnvVar(&out, k, v)
+		}
+	}
+	for k, v := range overrides {
+		setEnvVar(&out, k, v)
+	}
+	return out
+}
+
+func setEnvVar(env *[]string, key, val string) {
+	prefix := key + "="
+	for i, e := range *env {
+		if strings.HasPrefix(e, prefix) {
+			(*env)[i] = prefix + val
+			return
+		}
+	}
+	*env = append(*env, prefix+val)
+}
+
+func findPython(installDir string) string {
+	candidates := []string{
+		filepath.Join(installDir, ".venv", "bin", pythonBinaryName()),
+		filepath.Join(installDir, ".venv", "Scripts", pythonBinaryName()),
+		filepath.Join(installDir, "python", "bin", pythonBinaryName()),
+		filepath.Join(installDir, "python", pythonBinaryName()),
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	// Recursive fallback.
+	var found string
+	filepath.WalkDir(installDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || found != "" {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if filepath.Base(p) == pythonBinaryName() {
+			dir := filepath.Base(filepath.Dir(p))
+			if dir == "bin" || dir == "Scripts" {
+				found = p
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return found
+}
 
 func findPip(installDir string) string {
 	name := "pip"
@@ -696,6 +1124,27 @@ func findPip(installDir string) string {
 	return ""
 }
 
+// resolveInVenv returns the absolute path to a binary inside the venv's
+// bin/Scripts directory, or "" if not there. Lets `exec: [pytest, ...]`
+// find the right pytest.
+func resolveInVenv(installDir, name string) string {
+	if filepath.IsAbs(name) {
+		return ""
+	}
+	for _, sub := range []string{"bin", "Scripts"} {
+		p := filepath.Join(installDir, ".venv", sub, name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+		if runtime.GOOS == "windows" {
+			if _, err := os.Stat(p + ".exe"); err == nil {
+				return p + ".exe"
+			}
+		}
+	}
+	return ""
+}
+
 func pythonBinaryName() string {
 	if runtime.GOOS == "windows" {
 		return "python.exe"
@@ -703,78 +1152,70 @@ func pythonBinaryName() string {
 	return "python3"
 }
 
-// ── Download / extract helpers ────────────────────────────────────────────────
+// ── Install dir resolution ───────────────────────────────────────────────────
 
-func downloadFile(url string, dst *os.File, l *logger) error {
-	for _, tool := range []string{"curl", "wget"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			l.log("%s not found in PATH — trying next", tool)
-			continue
-		}
-		var args []string
-		if tool == "curl" {
-			args = []string{"-L", "-o", dst.Name(), url}
-		} else {
-			args = []string{"-O", dst.Name(), url}
-		}
-		cmd := exec.Command(tool, args...)
-		l.logCmd(cmd)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%s download failed: %w", tool, err)
-		}
-		return nil
+func resolveInstallDir(appName, version string) string {
+	if d := os.Getenv("MOLT_INSTALL_DIR"); d != "" {
+		return d
 	}
-	return fmt.Errorf("curl or wget required to download Python")
+	base := os.Getenv("MOLT_INSTALL_BASE")
+	if base == "" {
+		base = defaultInstallBase()
+	}
+	return filepath.Join(base, appName, version)
 }
 
-func extractTarGz(src, dst string) error {
-	f, err := os.Open(src)
-	if err != nil {
-		return err
+func defaultInstallBase() string {
+	home, _ := os.UserHomeDir()
+	switch runtime.GOOS {
+	case "windows":
+		if d := os.Getenv("APPDATA"); d != "" {
+			return d
+		}
+		return filepath.Join(home, "AppData", "Roaming")
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support")
+	default:
+		return filepath.Join(home, ".local", "share")
 	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		parts := strings.SplitN(filepath.ToSlash(hdr.Name), "/", 2)
-		if len(parts) < 2 || parts[1] == "" {
-			continue
-		}
-		target := filepath.Join(dst, filepath.FromSlash(parts[1]))
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			os.MkdirAll(target, 0o755)
-		case tar.TypeReg:
-			os.MkdirAll(filepath.Dir(target), 0o755)
-			out, err := os.Create(target)
-			if err != nil {
-				return err
-			}
-			_, copyErr := io.Copy(out, tr)
-			out.Close()
-			if copyErr != nil {
-				return copyErr
-			}
-			os.Chmod(target, os.FileMode(hdr.Mode))
-		case tar.TypeSymlink:
-			os.Symlink(hdr.Linkname, target)
-		}
-	}
-	return nil
 }
 
-// ── Argument helpers ──────────────────────────────────────────────────────────
+// ── Receipt ──────────────────────────────────────────────────────────────────
+
+func writeReceipt(installDir string, m *Manifest) {
+	type receipt struct {
+		AppName    string    `json:"app_name"`
+		Version    string    `json:"version"`
+		InstallDir string    `json:"install_dir"`
+		InstalledAt time.Time `json:"installed_at"`
+	}
+	r := receipt{
+		AppName:     m.AppName,
+		Version:     m.Version,
+		InstallDir:  installDir,
+		InstalledAt: time.Now().UTC(),
+	}
+	data, _ := json.MarshalIndent(r, "", "  ")
+	p := filepath.Join(installDir, ".molt", "receipt.json")
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	os.WriteFile(p, data, 0o644)
+}
+
+// ── Shell / arg helpers ──────────────────────────────────────────────────────
+
+func runShell(cmd, cwd string, env []string) error {
+	shell, flag := "/bin/sh", "-c"
+	if runtime.GOOS == "windows" {
+		shell, flag = "cmd", "/C"
+	}
+	c := exec.Command(shell, flag, cmd)
+	c.Dir = cwd
+	c.Env = env
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
+}
 
 func hasFlag(args []string, flags ...string) bool {
 	for _, a := range args {
@@ -799,313 +1240,6 @@ func flagValue(args []string, flag, def string) string {
 	return def
 }
 
-func findUV(installDir string) (string, error) {
-	// 1. MOLT_UV override (strict)
-	if override := os.Getenv(uvbin.EnvOverride); override != "" {
-		if _, err := os.Stat(override); err == nil {
-			return override, nil
-		}
-		return "", fmt.Errorf("%s=%q: file not found", uvbin.EnvOverride, override)
-	}
-
-	// 2. Local install-dir copy (placed there by ensureUVInstalled).
-	localUV := filepath.Join(installDir, "uv", "bin", "uv")
-	if runtime.GOOS == "windows" {
-		localUV += ".exe"
-	}
-	if _, err := os.Stat(localUV); err == nil {
-		return localUV, nil
-	}
-
-	// 3. Managed global install via uvbin.Ensure().
-	return uvbin.Ensure()
-}
-
-// findPython returns the absolute path to the Python binary inside installDir.
-// It checks standard locations first, then falls back to a recursive walk.
-func findPython(installDir string) string {
-	absInstallDir, err := filepath.Abs(installDir)
-	if err != nil {
-		absInstallDir = installDir
-	}
-
-	candidates := []string{
-		filepath.Join(absInstallDir, ".venv", "bin", pythonBinaryName()),
-		filepath.Join(absInstallDir, ".venv", "Scripts", pythonBinaryName()),
-		filepath.Join(absInstallDir, "python", "bin", pythonBinaryName()),
-		filepath.Join(absInstallDir, "python", pythonBinaryName()),
-	}
-	for _, p := range candidates {
-		if absP, err := filepath.Abs(p); err == nil {
-			if _, err := os.Stat(absP); err == nil {
-				return absP
-			}
-		}
-	}
-
-	// Fallback: recursive search for python* under bin/ or Scripts/.
-	var found string
-	filepath.WalkDir(absInstallDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || found != "" {
-			return filepath.SkipDir
-		}
-		if d.IsDir() {
-			return nil
-		}
-		base := filepath.Base(path)
-		if base == pythonBinaryName() || base == "python3" || base == "python" {
-			dir := filepath.Dir(path)
-			if filepath.Base(dir) == "bin" || filepath.Base(dir) == "Scripts" {
-				if absPath, err := filepath.Abs(path); err == nil {
-					found = absPath
-					return filepath.SkipAll
-				}
-			}
-		}
-		return nil
-	})
-	return found
-}
-
-// buildEnv constructs the subprocess environment: no PYTHONHOME, absolute venv paths.
-func buildEnv(installDir string) []string {
-	absInstallDir, err := filepath.Abs(installDir)
-	if err != nil {
-		absInstallDir = installDir
-	}
-
-	srcDir := filepath.Join(absInstallDir, "src")
-	venvDir := filepath.Join(absInstallDir, ".venv")
-	venvBin := filepath.Join(venvDir, "bin")
-
-	env := os.Environ()
-	filtered := make([]string, 0, len(env)+6)
-
-	for _, e := range env {
-		// CRITICAL: Remove PYTHONHOME — breaks venv stdlib discovery.
-		if strings.HasPrefix(e, "PYTHONHOME=") {
-			continue
-		}
-		// Remove existing PYTHONPATH — we set our own below.
-		if strings.HasPrefix(e, "PYTHONPATH=") {
-			continue
-		}
-		filtered = append(filtered, e)
-	}
-
-	filtered = append(filtered, "VIRTUAL_ENV="+venvDir)
-	filtered = append(filtered, "PYTHONPATH="+srcDir)
-
-	pathVal := venvBin
-	if orig := os.Getenv("PATH"); orig != "" {
-		sep := ":"
-		if runtime.GOOS == "windows" {
-			sep = ";"
-		}
-		pathVal += sep + orig
-	}
-	pathSet := false
-	for i, e := range filtered {
-		if strings.HasPrefix(e, "PATH=") {
-			filtered[i] = "PATH=" + pathVal
-			pathSet = true
-			break
-		}
-	}
-	if !pathSet {
-		filtered = append(filtered, "PATH="+pathVal)
-	}
-
-	filtered = append(filtered,
-		"PYTHONNOUSERSITE=1",
-		"PYTHONDONTWRITEBYTECODE=1",
-	)
-
-	return filtered
-}
-
-// ── Run ──────────────────────────────────────────────────────────────────────
-
-func cmdRun(args []string) error {
-	l := newLogger(hasFlag(args, "--verbose", "-v"))
-
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	m, err := readManifest(self)
-	if err != nil {
-		return err
-	}
-
-	installDir := resolveInstallDir(m.AppName, m.Version)
-	installDir, err = filepath.Abs(installDir)
-	if err != nil {
-		return fmt.Errorf("resolve absolute install dir: %w", err)
-	}
-	l.log("install dir: %s", installDir)
-
-	manifestPath := filepath.Join(installDir, ".molt", "manifest.json")
-	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Not installed. Run first:\n%s install\n", os.Args[0])
-		return fmt.Errorf("not installed at %s", installDir)
-	}
-
-	pythonBin := findPython(installDir)
-	if pythonBin == "" {
-		return fmt.Errorf("python not found in %s — run install first", installDir)
-	}
-	l.log("python binary: %s", pythonBin)
-
-	mainModule := m.MainModule
-	if mainModule == "" {
-		mainModule = m.AppName + ".main"
-	}
-	l.log("main module: %s", mainModule)
-
-	// Strip our own --verbose flag before forwarding args to the app.
-	forwardArgs := filterFlags(args, "--verbose", "-v")
-	cmdArgs := append([]string{"-m", mainModule}, forwardArgs...)
-
-	cmd := exec.Command(pythonBin, cmdArgs...)
-	cmd.Dir = installDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	cmd.Env = buildEnv(installDir)
-
-	l.logCmd(cmd)
-	if l.verbose {
-		fmt.Printf("  env overrides:\n")
-		for _, e := range cmd.Env {
-			if strings.HasPrefix(e, "VIRTUAL_ENV=") ||
-				strings.HasPrefix(e, "PYTHONPATH=") ||
-				strings.HasPrefix(e, "PYTHONNOUSERSITE=") ||
-				strings.HasPrefix(e, "PYTHONDONTWRITEBYTECODE=") {
-				fmt.Printf("    %s\n", e)
-			}
-		}
-	}
-
-	applyIsolation(cmd)
-	return cmd.Run()
-}
-
-// ── Payload extraction ───────────────────────────────────────────────────────
-
-// extractPayload strips the leading "src/" prefix so files land in installDir.
-func extractPayload(binaryPath, installDir string, l *logger) error {
-	f, err := os.Open(binaryPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	offset, err := readPayloadOffset(f)
-	if err != nil {
-		return err
-	}
-	l.log("payload offset: %d bytes", offset)
-
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return err
-	}
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	fileCount := 0
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		relPath := filepath.FromSlash(hdr.Name)
-		if strings.HasPrefix(relPath, "src"+string(filepath.Separator)) {
-			relPath = strings.TrimPrefix(relPath, "src"+string(filepath.Separator))
-		} else if relPath == "src" {
-			continue
-		}
-
-		target := filepath.Join(installDir, relPath)
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			out, err := os.Create(target)
-			if err != nil {
-				return err
-			}
-			_, copyErr := io.Copy(out, tr)
-			out.Close()
-			if copyErr != nil {
-				return copyErr
-			}
-			if err := os.Chmod(target, os.FileMode(hdr.Mode)); err != nil {
-				return err
-			}
-			fileCount++
-			l.log("extracted: %s", hdr.Name)
-		case tar.TypeSymlink:
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return err
-			}
-			l.log("symlink:   %s → %s", hdr.Name, hdr.Linkname)
-		}
-	}
-	l.log("extracted %d file(s) to %s", fileCount, installDir)
-	return nil
-}
-
-// ensureUVInstalled downloads UV into the install directory for self-containment.
-func ensureUVInstalled(installDir string, l *logger) error {
-	uvDir := filepath.Join(installDir, "uv")
-	uvBin := filepath.Join(uvDir, "bin", "uv")
-	if runtime.GOOS == "windows" {
-		uvBin = filepath.Join(uvDir, "bin", "uv.exe")
-	}
-
-	if _, err := os.Stat(uvBin); err == nil {
-		l.log("uv already present at %s — skipping", uvBin)
-		return nil
-	}
-
-	l.log("uv not found — downloading pinned version %s via uvbin.Ensure()", uvbin.PinnedVersion)
-
-	managedUV, err := uvbin.Ensure()
-	if err != nil {
-		return fmt.Errorf("ensure uv: %w", err)
-	}
-	l.log("managed uv binary: %s", managedUV)
-
-	if err := os.MkdirAll(filepath.Dir(uvBin), 0o755); err != nil {
-		return err
-	}
-	l.log("copying uv to local install dir: %s", uvBin)
-	data, err := os.ReadFile(managedUV)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(uvBin, data, 0o755); err != nil {
-		return err
-	}
-	l.log("✓ uv installed at %s", uvBin)
-	return nil
-}
-
-// filterFlags removes exact-match flags from a slice without mutating it.
 func filterFlags(args []string, flags ...string) []string {
 	out := make([]string, 0, len(args))
 	for _, a := range args {
@@ -1121,4 +1255,34 @@ func filterFlags(args []string, flags ...string) []string {
 		}
 	}
 	return out
+}
+
+func step(format string, a ...any) { fmt.Printf("[molt] "+format+"\n", a...) }
+
+func logv(verbose bool, format string, a ...any) {
+	if verbose {
+		fmt.Printf("  "+format+"\n", a...)
+	}
+}
+
+func shortHash(h string) string {
+	if len(h) > 16 {
+		return h[:16] + "…"
+	}
+	return h
+}
+
+// readIntegrityManifestFromDisk tries .molt/integrity.json next to the
+// binary (fallback for older extracted trees). Not currently called —
+// present as a future hook for a --deep verify.
+func readIntegrityManifestFromDisk(path string) (*IntegrityManifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var im IntegrityManifest
+	if err := json.Unmarshal(data, &im); err != nil {
+		return nil, err
+	}
+	return &im, nil
 }
