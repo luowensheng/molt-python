@@ -13,20 +13,49 @@ so everyone follows the same workflow regardless of their local Python setup.
 ```bash
 $ mkdir gitflow && cd gitflow
 $ molt init
-✔ Created pyproject.toml
-✔ Created src/gitflow/__init__.py
-✔ Initialized uv environment
+Initialising project "gitflow"...
+Initialized project `gitflow`
+Using CPython 3.11.14
+Resolved 1 package in 11ms
+✓ Done.
+```
 
+`molt init` creates a flat scaffold (`.python-version`, `README.md`, `hello.py`,
+`pyproject.toml`, `uv.lock`). Set up the `src/` layout:
+
+```bash
+$ rm hello.py
+$ mkdir -p src/gitflow/templates tests
+$ touch src/gitflow/__init__.py src/gitflow/__main__.py src/gitflow/cli.py \
+        src/gitflow/commits.py src/gitflow/changelog.py src/gitflow/pr_description.py
+$ touch src/gitflow/templates/changelog.md.j2 src/gitflow/templates/pr_description.md.j2
+$ touch tests/conftest.py tests/test_commits.py tests/test_changelog.py tests/test_pr_description.py
+```
+
+Replace `pyproject.toml` with the config in section 2, then add deps:
+
+```bash
+$ molt add click gitpython openai rich jinja2
+$ molt add --dev pytest pytest-mock ruff responses
+Using CPython 3.11.14
+Resolved 58 packages in 187ms
+  ↓ install click 8.1.7 (click-8.1.7-py3-none-any.whl)
+  ↓ install gitpython 3.1.43 (gitpython-3.1.43-py3-none-any.whl)
+  ↓ install openai 1.23.2 (openai-1.23.2-py3-none-any.whl)
+  ↓ install rich 13.7.0 (rich-13.7.0-py3-none-any.whl)
+  ↓ install jinja2 3.1.3 (jinja2-3.1.3-py3-none-any.whl)
+  ...
+✓ 58 package(s); store=/Users/you/.molt/pkg
+```
+
+A re-run hits the cache:
+
+```bash
 $ molt sync
-✔ Resolved 58 packages
-✔ Installed click==8.1.7
-✔ Installed gitpython==3.1.43
-✔ Installed openai==1.23.2
-✔ Installed rich==13.7.0
-✔ Installed jinja2==3.1.3
-✔ Installed pytest==8.1.1
-✔ Installed pytest-mock==3.12.0
-Environment ready in .venv/
+  ✓ cached  click 8.1.7
+  ✓ cached  gitpython 3.1.43
+  ...
+✓ 58 package(s); store=/Users/you/.molt/pkg
 ```
 
 ---
@@ -47,8 +76,8 @@ dependencies = [
     "jinja2>=3.1.3",
 ]
 
-[project.optional-dependencies]
-dev = [
+[tool.uv]
+dev-dependencies = [
     "pytest>=8.1.1",
     "pytest-mock>=3.12.0",
     "ruff>=0.3.2",
@@ -74,11 +103,15 @@ testpaths = ["tests"]
 
 ---
 
-## 3. Project Structure
+## 3. Final Project Structure
+
+After scaffolding (see section 1) and adding all application files:
 
 ```
 gitflow/
+├── .python-version
 ├── pyproject.toml
+├── uv.lock
 ├── molt.yaml
 ├── src/
 │   └── gitflow/

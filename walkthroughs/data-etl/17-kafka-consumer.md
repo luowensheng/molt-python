@@ -13,19 +13,49 @@ production cluster.
 ```bash
 $ mkdir event-processor && cd event-processor
 $ molt init
-✔ Created pyproject.toml
-✔ Created src/processor/__init__.py
-✔ Initialized uv environment
+Initialising project "event-processor"...
+Initialized project `event-processor`
+Using CPython 3.11.14
+Resolved 1 package in 11ms
+✓ Done.
+```
 
+`molt init` creates a flat scaffold (`.python-version`, `README.md`, `hello.py`,
+`pyproject.toml`, `uv.lock`). Set up the `src/` layout:
+
+```bash
+$ rm hello.py
+$ mkdir -p src/processor tests/bench config
+$ touch src/processor/__init__.py src/processor/__main__.py \
+        src/processor/consumer.py src/processor/models.py \
+        src/processor/clickhouse_writer.py src/processor/metrics.py
+$ touch tests/conftest.py tests/test_consumer.py tests/test_models.py \
+        tests/test_writer.py tests/bench/test_bench_throughput.py
+```
+
+Replace `pyproject.toml` with the config in section 2, then add deps:
+
+```bash
+$ molt add confluent-kafka clickhouse-driver pydantic prometheus-client
+$ molt add --dev pytest pytest-mock ruff pytest-asyncio "testcontainers[kafka]"
+Using CPython 3.11.14
+Resolved 52 packages in 198ms
+  ↓ install confluent-kafka 2.3.0 (confluent_kafka-2.3.0-cp311-cp311-...whl)
+  ↓ install clickhouse-driver 0.2.7 (clickhouse_driver-0.2.7-cp311-cp311-...whl)
+  ↓ install pydantic 2.6.1 (pydantic-2.6.1-py3-none-any.whl)
+  ↓ install prometheus-client 0.20.0 (prometheus_client-0.20.0-py3-none-any.whl)
+  ...
+✓ 52 package(s); store=/Users/you/.molt/pkg
+```
+
+A re-run hits the cache:
+
+```bash
 $ molt sync
-✔ Resolved 52 packages
-✔ Installed confluent-kafka==2.3.0
-✔ Installed clickhouse-driver==0.2.7
-✔ Installed pydantic==2.6.1
-✔ Installed prometheus-client==0.20.0
-✔ Installed pytest==8.1.1
-✔ Installed pytest-asyncio==0.23.6
-Environment ready in .venv/
+  ✓ cached  confluent-kafka 2.3.0
+  ✓ cached  clickhouse-driver 0.2.7
+  ...
+✓ 52 package(s); store=/Users/you/.molt/pkg
 ```
 
 ---
@@ -45,8 +75,8 @@ dependencies = [
     "prometheus-client>=0.20.0",
 ]
 
-[project.optional-dependencies]
-dev = [
+[tool.uv]
+dev-dependencies = [
     "pytest>=8.1.1",
     "pytest-mock>=3.12.0",
     "ruff>=0.3.2",
@@ -71,11 +101,15 @@ asyncio_mode = "auto"
 
 ---
 
-## 3. Project Structure
+## 3. Final Project Structure
+
+After scaffolding (see section 1) and adding all application files:
 
 ```
 event-processor/
+├── .python-version
 ├── pyproject.toml
+├── uv.lock
 ├── molt.yaml
 ├── config/
 │   └── processor.yaml

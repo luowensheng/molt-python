@@ -13,19 +13,51 @@ a managed Airflow environment (MWAA or a self-hosted cluster).
 ```bash
 $ mkdir warehouse-dags && cd warehouse-dags
 $ molt init
-✔ Created pyproject.toml
-✔ Created dags/__init__.py
-✔ Initialized uv environment
+Initialising project "warehouse-dags"...
+Initialized project `warehouse-dags`
+Using CPython 3.11.14
+Resolved 1 package in 11ms
+✓ Done.
+```
 
+`molt init` creates a flat scaffold (`.python-version`, `README.md`, `hello.py`,
+`pyproject.toml`, `uv.lock`). Set up the Airflow layout:
+
+```bash
+$ rm hello.py
+$ mkdir -p dags plugins/operators plugins/hooks scripts tests
+$ touch dags/__init__.py dags/orders_pipeline.py dags/users_sync.py dags/weekly_report.py
+$ touch plugins/operators/__init__.py plugins/operators/redshift_upsert_operator.py \
+        plugins/operators/s3_parquet_operator.py
+$ touch plugins/hooks/__init__.py plugins/hooks/redshift_hook.py
+$ touch scripts/validate_dags.py
+$ touch tests/conftest.py tests/test_operators.py tests/test_dags.py
+```
+
+Replace `pyproject.toml` with the config in section 2, then add deps:
+
+```bash
+$ molt add apache-airflow pandas sqlalchemy boto3 slack-sdk
+$ molt add --dev pytest pytest-mock ruff "apache-airflow[amazon]"
+Using CPython 3.11.14
+Resolved 218 packages in 1.4s
+  ↓ install apache-airflow 2.9.0 (apache_airflow-2.9.0-py3-none-any.whl)
+  ↓ install pandas 2.2.1 (pandas-2.2.1-cp311-cp311-...whl)
+  ↓ install sqlalchemy 2.0.29 (sqlalchemy-2.0.29-cp311-cp311-...whl)
+  ↓ install boto3 1.34.11 (boto3-1.34.11-py3-none-any.whl)
+  ↓ install slack-sdk 3.27.1 (slack_sdk-3.27.1-py2.py3-none-any.whl)
+  ...
+✓ 218 package(s); store=/Users/you/.molt/pkg
+```
+
+A re-run hits the cache:
+
+```bash
 $ molt sync
-✔ Resolved 218 packages
-✔ Installed apache-airflow==2.9.0
-✔ Installed pandas==2.2.1
-✔ Installed sqlalchemy==2.0.29
-✔ Installed boto3==1.34.11
-✔ Installed slack-sdk==3.27.1
-✔ Installed pytest==8.1.1
-Environment ready in .venv/
+  ✓ cached  apache-airflow 2.9.0
+  ✓ cached  pandas 2.2.1
+  ...
+✓ 218 package(s); store=/Users/you/.molt/pkg
 ```
 
 ---
@@ -46,8 +78,8 @@ dependencies = [
     "slack-sdk>=3.27.1",
 ]
 
-[project.optional-dependencies]
-dev = [
+[tool.uv]
+dev-dependencies = [
     "pytest>=8.1.1",
     "pytest-mock>=3.12.0",
     "ruff>=0.3.2",
@@ -70,11 +102,15 @@ testpaths = ["tests"]
 
 ---
 
-## 3. Project Structure
+## 3. Final Project Structure
+
+After scaffolding (see section 1) and adding all application files:
 
 ```
 warehouse-dags/
+├── .python-version
 ├── pyproject.toml
+├── uv.lock
 ├── molt.yaml
 ├── dags/
 │   ├── orders_pipeline.py

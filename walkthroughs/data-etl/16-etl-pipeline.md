@@ -13,20 +13,50 @@ it as a cron job on an EC2 instance.
 ```bash
 $ mkdir data-pipeline && cd data-pipeline
 $ molt init
-✔ Created pyproject.toml
-✔ Created src/pipeline/__init__.py
-✔ Initialized uv environment
+Initialising project "data-pipeline"...
+Initialized project `data-pipeline`
+Using CPython 3.11.14
+Resolved 1 package in 11ms
+✓ Done.
+```
 
+`molt init` creates a flat scaffold (`.python-version`, `README.md`, `hello.py`,
+`pyproject.toml`, `uv.lock`). Set up the `src/` layout:
+
+```bash
+$ rm hello.py
+$ mkdir -p src/pipeline tests config/expectations
+$ touch src/pipeline/__init__.py src/pipeline/__main__.py src/pipeline/extract.py \
+        src/pipeline/transform.py src/pipeline/validate.py src/pipeline/load.py \
+        src/pipeline/backfill.py
+$ touch tests/conftest.py tests/test_extract.py tests/test_transform.py tests/test_load.py
+```
+
+Replace `pyproject.toml` with the config in section 2, then add deps:
+
+```bash
+$ molt add pandas sqlalchemy psycopg2-binary boto3 pyarrow great-expectations
+$ molt add --dev pytest pytest-mock ruff "moto[s3,redshift]" "testcontainers[postgres]"
+Using CPython 3.11.14
+Resolved 103 packages in 412ms
+  ↓ install pandas 2.2.1 (pandas-2.2.1-cp311-cp311-...whl)
+  ↓ install sqlalchemy 2.0.29 (sqlalchemy-2.0.29-cp311-cp311-...whl)
+  ↓ install psycopg2-binary 2.9.9 (psycopg2-binary-2.9.9-cp311-cp311-...whl)
+  ↓ install boto3 1.34.11 (boto3-1.34.11-py3-none-any.whl)
+  ↓ install pyarrow 15.0.1 (pyarrow-15.0.1-cp311-cp311-...whl)
+  ↓ install great-expectations 0.18.12 (great_expectations-0.18.12-py3-none-any.whl)
+  ...
+✓ 103 package(s); store=/Users/you/.molt/pkg
+```
+
+A re-run hits the cache:
+
+```bash
 $ molt sync
-✔ Resolved 103 packages
-✔ Installed pandas==2.2.1
-✔ Installed sqlalchemy==2.0.29
-✔ Installed psycopg2-binary==2.9.9
-✔ Installed boto3==1.34.11
-✔ Installed pyarrow==15.0.1
-✔ Installed great-expectations==0.18.12
-✔ Installed pytest==8.1.1
-Environment ready in .venv/
+  ✓ cached  pandas 2.2.1
+  ✓ cached  sqlalchemy 2.0.29
+  ...
+✓ 103 package(s); store=/Users/you/.molt/pkg
 ```
 
 ---
@@ -48,8 +78,8 @@ dependencies = [
     "great-expectations>=0.18.12",
 ]
 
-[project.optional-dependencies]
-dev = [
+[tool.uv]
+dev-dependencies = [
     "pytest>=8.1.1",
     "pytest-mock>=3.12.0",
     "ruff>=0.3.2",
@@ -74,11 +104,15 @@ testpaths = ["tests"]
 
 ---
 
-## 3. Project Structure
+## 3. Final Project Structure
+
+After scaffolding (see section 1) and adding all application files:
 
 ```
 data-pipeline/
+├── .python-version
 ├── pyproject.toml
+├── uv.lock
 ├── molt.yaml
 ├── config/
 │   ├── pipeline.yaml

@@ -12,19 +12,62 @@ how to distribute a zero-dependency binary to teammates who may not have Python 
 ```bash
 $ mkdir devkit && cd devkit
 $ molt init
-✔ Created pyproject.toml
-✔ Created src/devkit/__init__.py
-✔ Initialized uv environment
+Initialising project "devkit"...
+Initialized project `devkit`
+Using CPython 3.11.14
+Resolved 1 package in 11ms
+✓ Done.
+```
 
+`molt init` runs `uv init` in the current directory, giving you a minimal working
+project:
+
+```
+devkit/
+├── .python-version
+├── README.md
+├── hello.py          # uv placeholder — delete this
+├── pyproject.toml
+└── uv.lock
+```
+
+Set up the `src/` layout and create the application skeleton:
+
+```bash
+$ rm hello.py
+$ mkdir -p src/devkit tests
+$ touch src/devkit/__init__.py src/devkit/__main__.py src/devkit/cli.py \
+        src/devkit/scaffold.py src/devkit/snippets.py
+$ touch tests/conftest.py tests/test_scaffold.py tests/test_snippets.py
+```
+
+Replace the generated `pyproject.toml` with the config in section 2, then add deps:
+
+```bash
+$ molt add "typer[all]" rich jinja2 gitpython
+$ molt add --dev pytest pytest-mock ruff
+Using CPython 3.11.14
+Resolved 62 packages in 209ms
+  ↓ install typer 0.12.3 (typer-0.12.3-py3-none-any.whl)
+  ↓ install rich 13.7.0 (rich-13.7.0-py3-none-any.whl)
+  ↓ install jinja2 3.1.3 (jinja2-3.1.3-py3-none-any.whl)
+  ↓ install gitpython 3.1.43 (gitpython-3.1.43-py3-none-any.whl)
+  ↓ install pytest 8.1.1 (pytest-8.1.1-py3-none-any.whl)
+  ↓ install ruff 0.3.2 (ruff-0.3.2-py3-none-any.whl)
+  ✓ cached  pytest-mock 3.12.0
+  ...
+✓ 62 package(s); store=/Users/you/.molt/pkg
+```
+
+A re-run hits the cache:
+
+```bash
 $ molt sync
-✔ Resolved 62 packages
-✔ Installed typer[all]==0.12.3
-✔ Installed rich==13.7.0
-✔ Installed jinja2==3.1.3
-✔ Installed gitpython==3.1.43
-✔ Installed pytest==8.1.1
-✔ Installed ruff==0.3.2
-Environment ready in .venv/
+  ✓ cached  typer 0.12.3
+  ✓ cached  rich 13.7.0
+  ✓ cached  jinja2 3.1.3
+  ...
+✓ 62 package(s); store=/Users/you/.molt/pkg
 ```
 
 ---
@@ -44,8 +87,8 @@ dependencies = [
     "gitpython>=3.1.43",
 ]
 
-[project.optional-dependencies]
-dev = [
+[tool.uv]
+dev-dependencies = [
     "pytest>=8.1.1",
     "pytest-mock>=3.12.0",
     "ruff>=0.3.2",
@@ -72,10 +115,14 @@ addopts   = "-q"
 
 ---
 
-## 3. Project Structure
+## 3. Final Project Structure
+
+After scaffolding (see section 1) and adding all application files:
 
 ```
 devkit/
+├── .python-version
+├── uv.lock
 ├── pyproject.toml
 ├── molt.yaml
 ├── src/

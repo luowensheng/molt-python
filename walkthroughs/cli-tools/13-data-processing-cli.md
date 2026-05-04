@@ -13,21 +13,61 @@ machine that has no pandas or Python installed.
 ```bash
 $ mkdir dataflow && cd dataflow
 $ molt init
-✔ Created pyproject.toml
-✔ Created src/dataflow/__init__.py
-✔ Initialized uv environment
+Initialising project "dataflow"...
+Initialized project `dataflow`
+Using CPython 3.11.14
+Resolved 1 package in 11ms
+✓ Done.
+```
 
+`molt init` creates a flat scaffold:
+
+```
+dataflow/
+├── .python-version
+├── README.md
+├── hello.py
+├── pyproject.toml
+└── uv.lock
+```
+
+Set up the `src/` layout:
+
+```bash
+$ rm hello.py
+$ mkdir -p src/dataflow tests/bench tests/fixtures
+$ touch src/dataflow/__init__.py src/dataflow/__main__.py src/dataflow/cli.py \
+        src/dataflow/reader.py src/dataflow/transforms.py \
+        src/dataflow/aggregations.py src/dataflow/writers.py
+$ touch tests/test_transforms.py tests/test_aggregations.py \
+        tests/bench/test_bench_transforms.py
+```
+
+Replace `pyproject.toml` with the config in section 2, then add deps:
+
+```bash
+$ molt add click pandas polars rich openpyxl pyarrow
+$ molt add --dev pytest pytest-benchmark ruff hypothesis
+Using CPython 3.11.14
+Resolved 89 packages in 312ms
+  ↓ install click 8.1.7 (click-8.1.7-py3-none-any.whl)
+  ↓ install pandas 2.2.1 (pandas-2.2.1-cp311-cp311-...whl)
+  ↓ install polars 0.20.15 (polars-0.20.15-cp311-cp311-...whl)
+  ↓ install rich 13.7.0 (rich-13.7.0-py3-none-any.whl)
+  ↓ install openpyxl 3.1.2 (openpyxl-3.1.2-py2.py3-none-any.whl)
+  ↓ install pyarrow 15.0.1 (pyarrow-15.0.1-cp311-cp311-...whl)
+  ...
+✓ 89 package(s); store=/Users/you/.molt/pkg
+```
+
+A re-run hits the cache:
+
+```bash
 $ molt sync
-✔ Resolved 89 packages
-✔ Installed click==8.1.7
-✔ Installed pandas==2.2.1
-✔ Installed polars==0.20.15
-✔ Installed rich==13.7.0
-✔ Installed openpyxl==3.1.2
-✔ Installed pyarrow==15.0.1
-✔ Installed pytest==8.1.1
-✔ Installed pytest-benchmark==4.0.0
-Environment ready in .venv/
+  ✓ cached  click 8.1.7
+  ✓ cached  pandas 2.2.1
+  ...
+✓ 89 package(s); store=/Users/you/.molt/pkg
 ```
 
 ---
@@ -49,8 +89,8 @@ dependencies = [
     "pyarrow>=15.0.1",
 ]
 
-[project.optional-dependencies]
-dev = [
+[tool.uv]
+dev-dependencies = [
     "pytest>=8.1.1",
     "pytest-benchmark>=4.0.0",
     "ruff>=0.3.2",
@@ -76,11 +116,15 @@ testpaths = ["tests"]
 
 ---
 
-## 3. Project Structure
+## 3. Final Project Structure
+
+After scaffolding (see section 1) and adding all application files:
 
 ```
 dataflow/
+├── .python-version
 ├── pyproject.toml
+├── uv.lock
 ├── molt.yaml
 ├── src/
 │   └── dataflow/

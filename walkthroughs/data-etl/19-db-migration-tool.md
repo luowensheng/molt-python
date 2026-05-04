@@ -12,19 +12,48 @@ walkthrough covers development with molt and running migrations in a CI/CD pipel
 ```bash
 $ mkdir migrate-tool && cd migrate-tool
 $ molt init
-✔ Created pyproject.toml
-✔ Created src/migrate/__init__.py
-✔ Initialized uv environment
+Initialising project "migrate-tool"...
+Initialized project `migrate-tool`
+Using CPython 3.11.14
+Resolved 1 package in 11ms
+✓ Done.
+```
 
+`molt init` creates a flat scaffold (`.python-version`, `README.md`, `hello.py`,
+`pyproject.toml`, `uv.lock`). Set up the `src/` layout:
+
+```bash
+$ rm hello.py
+$ mkdir -p src/migrate tests migrations/versions seeds
+$ touch src/migrate/__init__.py src/migrate/__main__.py src/migrate/cli.py \
+        src/migrate/runner.py src/migrate/tenants.py
+$ touch tests/conftest.py
+```
+
+Replace `pyproject.toml` with the config in section 2, then add deps:
+
+```bash
+$ molt add click alembic sqlalchemy psycopg2-binary rich
+$ molt add --dev pytest pytest-mock ruff "testcontainers[postgres]"
+Using CPython 3.11.14
+Resolved 44 packages in 178ms
+  ↓ install click 8.1.7 (click-8.1.7-py3-none-any.whl)
+  ↓ install alembic 1.13.1 (alembic-1.13.1-py3-none-any.whl)
+  ↓ install sqlalchemy 2.0.29 (sqlalchemy-2.0.29-cp311-cp311-...whl)
+  ↓ install psycopg2-binary 2.9.9 (psycopg2-binary-2.9.9-cp311-cp311-...whl)
+  ↓ install rich 13.7.0 (rich-13.7.0-py3-none-any.whl)
+  ...
+✓ 44 package(s); store=/Users/you/.molt/pkg
+```
+
+A re-run hits the cache:
+
+```bash
 $ molt sync
-✔ Resolved 44 packages
-✔ Installed click==8.1.7
-✔ Installed alembic==1.13.1
-✔ Installed sqlalchemy==2.0.29
-✔ Installed psycopg2-binary==2.9.9
-✔ Installed rich==13.7.0
-✔ Installed pytest==8.1.1
-Environment ready in .venv/
+  ✓ cached  click 8.1.7
+  ✓ cached  alembic 1.13.1
+  ...
+✓ 44 package(s); store=/Users/you/.molt/pkg
 ```
 
 ---
@@ -45,8 +74,8 @@ dependencies = [
     "rich>=13.7.0",
 ]
 
-[project.optional-dependencies]
-dev = [
+[tool.uv]
+dev-dependencies = [
     "pytest>=8.1.1",
     "pytest-mock>=3.12.0",
     "ruff>=0.3.2",
@@ -74,11 +103,15 @@ testpaths = ["tests"]
 
 ---
 
-## 3. Project Structure
+## 3. Final Project Structure
+
+After scaffolding (see section 1) and adding all application files:
 
 ```
 migrate-tool/
+├── .python-version
 ├── pyproject.toml
+├── uv.lock
 ├── molt.yaml
 ├── alembic.ini
 ├── migrations/
