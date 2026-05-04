@@ -63,7 +63,7 @@ commands:
         script: |-
             set -e
             {{Run}} build_mac --version {{.version}}
-            {{Run}} build_linux_amd --version {{.version}}
+            # {{Run}} build_linux_amd --version {{.version}}
 
     codebase:
         script: |-
