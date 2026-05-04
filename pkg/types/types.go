@@ -161,3 +161,23 @@ type SBOM struct {
 	SystemDeps   []SystemDep
 	PyPackages   []PyPackage
 }
+
+// ── Python version management ─────────────────────────────────────────────────
+
+type PythonVersion struct {
+	Version   string `json:"version"`
+	Installed bool   `json:"installed"`
+	Active    bool   `json:"active"`
+	Path      string `json:"path,omitempty"`
+	Source    string `json:"source,omitempty"` // "standalone", "system", "pyenv"
+}
+
+// ── Tasks ─────────────────────────────────────────────────────────────────────
+
+type Task struct {
+	Name        string   `toml:"name" json:"name"`
+	Command     string   `toml:"command" json:"command"`
+	Description string   `toml:"description,omitempty" json:"description,omitempty"`
+	Env         []string `toml:"env,omitempty" json:"env,omitempty"`
+	Dir         string   `toml:"dir,omitempty" json:"dir,omitempty"`
+}
