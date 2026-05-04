@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
@@ -91,7 +92,29 @@ func main() {
 	case "info":
 		err = cmdInfo()
 	case "version", "--version":
-		fmt.Printf("molt version=%q date=%q commit=%q\n", version, date, commit)
+		v, d, c := version, date, commit
+		if v == "" {
+			v = "dev"
+		}
+		if d == "" {
+			d = "unknown"
+		}
+		if c == "" {
+			if info, ok := debug.ReadBuildInfo(); ok {
+				for _, s := range info.Settings {
+					if s.Key == "vcs.revision" && s.Value != "" {
+						c = s.Value
+						if len(c) > 12 {
+							c = c[:12]
+						}
+					}
+				}
+			}
+			if c == "" {
+				c = "unknown"
+			}
+		}
+		fmt.Printf("molt %s (commit %s, built %s)\n", v, c, d)
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -629,20 +652,32 @@ func cmdTask(args []string) error {
 func cmdInfo() error {
 	dir := cwd()
 
-	name, ver := "unknown", "unknown"
-	if data, err := os.ReadFile(filepath.Join(dir, "pyproject.toml")); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "name = ") {
-				name = strings.Trim(strings.TrimPrefix(line, "name = "), `"`)
-			}
-			if strings.HasPrefix(line, "version = ") {
-				ver = strings.Trim(strings.TrimPrefix(line, "version = "), `"`)
-			}
-		}
+	pyprojectPath := filepath.Join(dir, "pyproject.toml")
+	data, err := os.ReadFile(pyprojectPath)
+	if err != nil {
+		fmt.Printf("\nNo molt project here (%s)\n", dir)
+		fmt.Println("Run 'molt init' to scaffold one.")
+		return nil
 	}
 
-	pyVer := "unknown"
+	name, ver := "", ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "name = ") {
+			name = strings.Trim(strings.TrimPrefix(line, "name = "), `"`)
+		}
+		if strings.HasPrefix(line, "version = ") {
+			ver = strings.Trim(strings.TrimPrefix(line, "version = "), `"`)
+		}
+	}
+	if name == "" {
+		name = filepath.Base(dir)
+	}
+	if ver == "" {
+		ver = "(no version)"
+	}
+
+	pyVer := "(unset — run 'molt python use <version>')"
 	if data, err := os.ReadFile(filepath.Join(dir, ".python-version")); err == nil {
 		pyVer = strings.TrimSpace(string(data))
 	}
@@ -656,16 +691,17 @@ func cmdInfo() error {
 	fmt.Printf("Directory:  %s\n", dir)
 
 	if spec, err := syspath.Load(dir); err == nil {
-		fmt.Printf("Env:        %d package(s) linked from ~/.molt/pkg\n", len(spec.Syspath))
+		fmt.Printf("Env:        %d store path(s); store=~/.molt/pkg\n", len(spec.Syspath))
 		fmt.Printf("Python bin: %s\n", spec.Python)
 	} else {
-		fmt.Println("Env:        not synced (run 'molt sync')")
-	}
-
-	if _, err := os.Stat(filepath.Join(dir, ".molt-deps.lock")); err == nil {
-		fmt.Println("Hash lock:  present (.molt-deps.lock)")
-	} else {
-		fmt.Println("Hash lock:  missing")
+		// Differentiate "no deps yet" from "deps declared but not synced".
+		// `dependencies = []` (empty array) counts as "no deps yet"; only a
+		// non-empty array means we should prompt for sync.
+		if hasNonEmptyDeps(string(data)) {
+			fmt.Println("Env:        not synced (run 'molt sync')")
+		} else {
+			fmt.Println("Env:        no dependencies declared yet")
+		}
 	}
 
 	if len(taskList) > 0 {
@@ -677,6 +713,22 @@ func cmdInfo() error {
 	}
 	fmt.Println()
 	return nil
+}
+
+// hasNonEmptyDeps reports whether the pyproject.toml content has at least one
+// dependency listed under [project] dependencies. Avoids false positives from
+// `dependencies = []` (an empty array, no deps yet).
+func hasNonEmptyDeps(content string) bool {
+	idx := strings.Index(content, "dependencies = [")
+	if idx < 0 {
+		return false
+	}
+	rest := content[idx+len("dependencies = ["):]
+	end := strings.Index(rest, "]")
+	if end < 0 {
+		return true // malformed — assume deps to be safe
+	}
+	return strings.TrimSpace(rest[:end]) != ""
 }
 
 // ── uv ────────────────────────────────────────────────────────────────────────
@@ -711,13 +763,18 @@ func cmdUV(args []string) error {
 // ── doctor ────────────────────────────────────────────────────────────────────
 
 func cmdDoctor() error {
-	fmt.Printf("molt %s\n", version)
+	v := version
+	if v == "" {
+		v = "dev"
+	}
+	fmt.Printf("molt %s\n", v)
 	fmt.Printf("Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Println("─────────────────────────────────────")
 
 	uvPath, uvErr := uvbin.Find()
 	if uvErr == nil {
 		uvVer, _ := uvbin.Version()
+		uvVer = strings.TrimSpace(uvVer)
 		managed := filepath.Join(func() string {
 			h, _ := os.UserHomeDir()
 			return h

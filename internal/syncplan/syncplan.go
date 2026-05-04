@@ -338,6 +338,16 @@ func writeConsoleShims(projectDir, pyExe string, syspathDirs []string, items []i
 	}
 	pythonPath := strings.Join(append([]string{filepath.Join(projectDir, syspath.DirName)}, syspathDirs...), string(os.PathListSeparator))
 
+	// Always create python/python3 shims so tasks like `python -m foo` work
+	// when run via molt run / molt task. Without these, the shell only sees
+	// the system `python` (or none at all), missing the global store.
+	if err := writePythonShim(binDir, "python", pyExe, pythonPath); err != nil {
+		return err
+	}
+	if err := writePythonShim(binDir, "python3", pyExe, pythonPath); err != nil {
+		return err
+	}
+
 	for _, it := range items {
 		if it.key.Name == "" {
 			continue // editable / path source — no .meta.json
@@ -379,6 +389,26 @@ export PYTHONPATH=%s
 unset VIRTUAL_ENV PYTHONHOME
 exec %s -c 'import sys; from %s import %s as _m; sys.exit(_m())' "$@"
 `, shellQuote(pythonPath), shellQuote(pyExe), module, attr)
+	return os.WriteFile(path, []byte(body), 0o755)
+}
+
+// writePythonShim generates a name (`python` / `python3`) shim that execs the
+// project's interpreter with PYTHONPATH set, forwarding all args verbatim.
+// Unlike console-script shims this does NOT wrap a specific entry point —
+// `python <args...>` works exactly as if invoked directly.
+func writePythonShim(binDir, name, pyExe, pythonPath string) error {
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(binDir, name+".cmd")
+		body := fmt.Sprintf("@echo off\r\nset PYTHONPATH=%s\r\nset VIRTUAL_ENV=\r\nset PYTHONHOME=\r\n\"%s\" %%*\r\n",
+			pythonPath, pyExe)
+		return os.WriteFile(path, []byte(body), 0o755)
+	}
+	path := filepath.Join(binDir, name)
+	body := fmt.Sprintf(`#!/bin/sh
+export PYTHONPATH=%s
+unset VIRTUAL_ENV PYTHONHOME
+exec %s "$@"
+`, shellQuote(pythonPath), shellQuote(pyExe))
 	return os.WriteFile(path, []byte(body), 0o755)
 }
 

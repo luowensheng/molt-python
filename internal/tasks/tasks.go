@@ -67,14 +67,26 @@ func (r *Runner) Add(name, command, description string) error {
 		return err
 	}
 
+	// Reject duplicate.
+	if existing, _ := r.List(); existing != nil {
+		for _, t := range existing {
+			if t.Name == name {
+				return fmt.Errorf("task %q already exists; remove it first or pick a different name", name)
+			}
+		}
+	}
+
 	content := string(data)
-	entry := fmt.Sprintf("%s = \"%s\"\n", name, command)
+	entry := fmt.Sprintf("%s = %s\n", name, tomlString(command))
 
 	if strings.Contains(content, "[tool.molt.tasks]") {
 		// Insert after the section header.
 		content = strings.Replace(content, "[tool.molt.tasks]\n",
 			"[tool.molt.tasks]\n"+entry, 1)
 	} else {
+		if !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
 		content += "\n[tool.molt.tasks]\n" + entry
 	}
 
@@ -85,7 +97,52 @@ func (r *Runner) Add(name, command, description string) error {
 	return nil
 }
 
-// Remove removes a task from pyproject.toml.
+// unescapeBasicTOMLString reverses the escapes applied by tomlString for
+// basic (double-quoted) strings. Sufficient for the subset we ever emit.
+func unescapeBasicTOMLString(s string) string {
+	r := strings.NewReplacer(
+		`\\`, `\`,
+		`\"`, `"`,
+		`\n`, "\n",
+		`\r`, "\r",
+		`\t`, "\t",
+	)
+	return r.Replace(s)
+}
+
+// tomlString quotes s as a valid TOML string literal. It prefers single-
+// quoted literal strings (no escape processing — perfect for shell commands
+// containing double quotes); falls back to a basic string with escapes if
+// the command itself contains an apostrophe.
+func tomlString(s string) string {
+	if !strings.ContainsAny(s, "'\n\r") {
+		return "'" + s + "'"
+	}
+	// Basic string: escape backslash, double-quote, and control chars.
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// Remove removes a task from pyproject.toml. Returns an error if the task
+// does not exist so callers (and CI) can fail loudly on typos.
 func (r *Runner) Remove(name string) error {
 	tomlPath := filepath.Join(r.ProjectDir, "pyproject.toml")
 	data, err := os.ReadFile(tomlPath)
@@ -93,12 +150,32 @@ func (r *Runner) Remove(name string) error {
 		return err
 	}
 
+	// Confirm it actually exists before pretending to remove it.
+	existing, _ := r.List()
+	found := false
+	for _, t := range existing {
+		if t.Name == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("task %q not found", name)
+	}
+
 	var lines []string
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(strings.TrimSpace(line), name+" =") {
-			continue
+		// Match `<name> = ...` only when name is not a substring prefix of a
+		// longer task name. e.g. removing "test" must not delete "test-cov".
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, name) {
+			rest := strings.TrimPrefix(trimmed, name)
+			rest = strings.TrimLeft(rest, " ")
+			if strings.HasPrefix(rest, "=") {
+				continue
+			}
 		}
 		lines = append(lines, line)
 	}
@@ -269,8 +346,15 @@ func (r *Runner) loadTasks() ([]types.Task, error) {
 
 		task := types.Task{Name: name}
 		if strings.HasPrefix(rest, `"`) {
-			// Simple string form.
-			task.Command = strings.Trim(rest, `"`)
+			// Basic string form — last quote terminates.
+			if end := strings.LastIndex(rest, `"`); end > 0 {
+				task.Command = unescapeBasicTOMLString(rest[1:end])
+			}
+		} else if strings.HasPrefix(rest, `'`) {
+			// Literal string form — last apostrophe terminates, no escapes.
+			if end := strings.LastIndex(rest, `'`); end > 0 {
+				task.Command = rest[1:end]
+			}
 		} else if strings.HasPrefix(rest, "{") {
 			// Inline table form — extract command.
 			if idx := strings.Index(rest, `"command"`); idx >= 0 {

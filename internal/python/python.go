@@ -73,15 +73,31 @@ func (m *Manager) List() ([]types.PythonVersion, error) {
 		if ver == "" {
 			continue
 		}
-		// Second field is the path, possibly with parentheses.
+		// Skip download-only entries — they aren't installed locally.
+		if strings.HasPrefix(parts[1], "<download") {
+			continue
+		}
+		// Second field is the path, possibly with parentheses or a symlink
+		// target after `->`. Strip both.
 		path = strings.Trim(parts[1], "()")
-		// Determine source.
+		// Determine source from path location.
 		home, _ := os.UserHomeDir()
-		standaloneBase := filepath.Join(home, ".molt", "python")
-		if strings.HasPrefix(path, standaloneBase) {
-			source = "standalone"
-		} else {
+		moltStandalone := filepath.Join(home, ".molt", "python")
+		uvStandalone := filepath.Join(home, ".local", "share", "uv", "python")
+		switch {
+		case strings.HasPrefix(path, moltStandalone):
+			source = "molt-managed"
+		case strings.HasPrefix(path, uvStandalone):
+			source = "uv-managed"
+		case strings.HasPrefix(path, "/opt/homebrew") || strings.HasPrefix(path, "/usr/local/Cellar"):
+			source = "homebrew"
+		case strings.HasPrefix(path, "/Applications/Xcode") ||
+			strings.HasPrefix(path, "/Library/Developer/CommandLineTools"):
+			source = "xcode"
+		case strings.HasPrefix(path, "/usr/"):
 			source = "system"
+		default:
+			source = "other"
 		}
 		versions = append(versions, types.PythonVersion{
 			Version:   ver,

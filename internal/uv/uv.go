@@ -7,9 +7,11 @@ package uv
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"molt/internal/syncplan"
 	"molt/internal/uvbin"
@@ -45,10 +47,63 @@ func run(dir string, args ...string) error {
 	}
 	cmd := exec.Command(uv, args...)
 	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Filter out implementation-detail noise: messages about uv's project
+	// env (which we redirected into .molt/) are not useful to molt users —
+	// they manage the global store, not a venv. The lock-resolution and
+	// install summaries from uv stay visible.
+	cmd.Stdout = newUVStreamFilter(os.Stdout)
+	cmd.Stderr = newUVStreamFilter(os.Stderr)
 	cmd.Env = projectEnv(dir)
 	return cmd.Run()
+}
+
+// uvStreamFilter is an io.Writer that drops lines describing uv's internal
+// project environment lifecycle. Everything else passes through unchanged.
+type uvStreamFilter struct {
+	dst io.Writer
+	buf []byte
+}
+
+func newUVStreamFilter(dst io.Writer) *uvStreamFilter {
+	return &uvStreamFilter{dst: dst}
+}
+
+func (f *uvStreamFilter) Write(p []byte) (int, error) {
+	f.buf = append(f.buf, p...)
+	for {
+		i := -1
+		for j, b := range f.buf {
+			if b == '\n' {
+				i = j
+				break
+			}
+		}
+		if i < 0 {
+			break
+		}
+		line := f.buf[:i+1]
+		f.buf = f.buf[i+1:]
+		if !shouldSuppress(line) {
+			if _, err := f.dst.Write(line); err != nil {
+				return len(p), err
+			}
+		}
+	}
+	return len(p), nil
+}
+
+func shouldSuppress(line []byte) bool {
+	s := string(line)
+	trimmed := strings.TrimSpace(s)
+	switch {
+	case strings.HasPrefix(trimmed, "Creating virtual environment at:"):
+		return true
+	case strings.HasPrefix(trimmed, "Using CPython") && strings.Contains(trimmed, ".11"):
+		// Drop the redundant interpreter-version line — uv prints it on
+		// every command. Users who want it can run `molt python which`.
+		return false // keep for now; just suppress the venv line
+	}
+	return false
 }
 
 // projectEnv builds the env passed to uv. It redirects UV_PROJECT_ENVIRONMENT
