@@ -1,45 +1,32 @@
 # molt
 
-**Ship Python projects as single, verifiable, hermetic binaries.**
-
-molt packages a Python project — source, dependencies, assets, Python interpreter itself — into one executable that installs itself on the target machine, sets up a hermetic environment, and runs. No `pip install` on the target. No "works on my machine." No guessing which `requirements.txt` you meant.
+**The hermetic Python toolchain.** Manage Python versions and dependencies with a shared global package store — then ship as a single verifiable binary.
 
 ```bash
-$ molt build
-  ✓ Created: myapp-v2.3.1 (42.1 MB)
-  root_hash: 3f8a2c1b…d21c
+# Development: packages live once in ~/.molt/pkg/, shared across all projects
+molt init myapp && cd myapp
+molt add fastapi uvicorn
+molt run dev                        # exec under store PYTHONPATH — no venv activation
 
-$ scp myapp-v2.3.1 prod:/usr/local/bin/
-$ ssh prod './myapp-v2.3.1 install && ./myapp-v2.3.1 run'
+# Distribution: package as a self-contained binary
+molt build                          # → myapp-v0.1.0 (42 MB, integrity-verified)
+scp myapp-v0.1.0 prod:/usr/local/bin/
+ssh prod './myapp-v0.1.0 install && ./myapp-v0.1.0 run'
 ```
-
-That's it. The binary carries everything it needs.
 
 ---
 
-## What's in the binary
+## Why molt
 
-```
-┌─────────────────────────────┐
-│  launcher (Go)              │  install / run / verify / uninstall
-├─────────────────────────────┤
-│  payload (tar.gz)           │  your code, molt.yaml, deps manifest,
-│    src/ ...                 │  integrity record, optional assets
-│    .molt/manifest.json      │
-│    .molt/integrity.json     │
-├─────────────────────────────┤
-│  trailer                    │  [payload offset][root_hash][magic]
-└─────────────────────────────┘
-```
+Python packaging is fragmented. You need `pyenv` for Python versions, `uv`/`pip` for packages, each project gets its own `.venv` with duplicate copies of every dependency, and shipping to a server still requires Python and pip on the target machine.
 
-At install time the launcher extracts the payload, creates a venv, installs dependencies per the declared strategy (`requirements` / `pyproject` / `poetry` / `pipenv` / `none`), and verifies the SHA-256 root hash matches what's baked into the binary's trailer. Any tampering with the payload fails the check before a single line of app code runs.
+molt unifies the development and distribution sides under one tool:
 
-## Who this is for
+- **Global package store** — wheels are unpacked once into `~/.molt/pkg/{name}/{version}/{abi}/` and shared across every project. `molt sync` populates it; a second project with the same dep hits the cache with zero download or disk cost.
+- **No per-project `.venv`** — `molt run` builds `PYTHONPATH` directly from the global store. Switch Python versions with `molt python use 3.13` and re-sync; no venv rebuild needed.
+- **Hermetic binaries** — `molt build` packages your source, dependencies, and optionally the Python interpreter into one self-installing executable with a SHA-256 integrity trailer. Ship it anywhere, no Python or pip required on the target.
 
-- **Shipping Python to servers you don't control** — customer boxes, isolated networks, air-gapped environments
-- **Reproducible deploys** — a hashed artifact anyone can audit file-by-file
-- **Adopting existing projects** — Django apps, Flask APIs, Celery workers, data pipelines. No restructuring required.
-- **Not a replacement for PyPI/wheels** — if you publish a library, keep using those
+---
 
 ## Install
 
@@ -47,37 +34,191 @@ At install time the launcher extracts the payload, creates a venv, installs depe
 # macOS / Linux
 curl -sSf https://molt.dev/install.sh | sh
 
-# From source
-go install molt@latest
+# From source (requires Go 1.22+)
+git clone https://github.com/yourorg/molt && cd molt
+go build -o molt . && mv molt /usr/local/bin/
 ```
 
-Requires uv (auto-installed on first use) and a working Go toolchain when cross-compiling.
+Requires [uv](https://github.com/astral-sh/uv) (auto-downloaded on first use).
 
-## 30-second tour
+---
+
+## Quick start
+
+### New project
 
 ```bash
-# New project (greenfield)
-molt new project myapp --type api
+molt init myapp
 cd myapp
-molt build                         # → myapp-v0.1.0
-
-# Existing project (adopt)
-cd my-existing-django-app
-molt adopt                         # interactive — generates molt.yaml
-molt build                         # → my-existing-django-app-v1.0.0
-
-# Inspect any molt binary
-molt inspect ./myapp-v0.1.0        # summary
-molt inspect ./myapp-v0.1.0 --files  # full packaged-file table
-molt verify-binary ./myapp-v0.1.0 --deep  # re-hash every file
-
-# Compare two builds
-molt diff ./myapp-v1.0.0 ./myapp-v1.1.0
+molt add requests black pytest      # → installs into ~/.molt/pkg/, writes .molt/syspath.json
+molt run python -c 'import requests; print(requests.__version__)'
+molt run pytest
 ```
 
-## molt.yaml at a glance
+### Existing project
 
-One file describes everything molt needs to package and run your app:
+```bash
+cd my-existing-project              # must have pyproject.toml + uv.lock
+molt sync                           # populate ~/.molt/pkg/ from uv.lock
+molt run python                     # your project's Python, store PYTHONPATH applied
+```
+
+### Ship as a binary
+
+```bash
+molt adopt                          # generate molt.yaml from your project layout
+molt build                          # → myapp-v1.0.0 (self-installing binary)
+```
+
+---
+
+## The global package store
+
+Packages live in `~/.molt/pkg/` keyed by `(name, version, py-abi-platform)`:
+
+```
+~/.molt/
+├── pkg/
+│   ├── requests/2.32.3/py3-none-any/       ← shared across every project
+│   ├── black/24.4.2/cp312-cp312-macosx_11_0_arm64/
+│   └── ...
+├── python/3.12.3/                           ← standalone interpreters
+└── registry.json                            ← GC manifest
+```
+
+Per project:
+
+```
+myproject/
+├── pyproject.toml
+├── uv.lock
+└── .molt/
+    ├── syspath.json          ← interpreter path + ordered store dirs
+    ├── sitecustomize.py      ← processes .pth files in each store dir
+    └── bin/
+        ├── black             ← console-script shim (absolute paths baked in)
+        └── pytest
+```
+
+**How `molt run` works** — no venv activation, no `source .venv/bin/activate`:
+
+1. Loads `.molt/syspath.json`
+2. Sets `PYTHONPATH=<project>/.molt:<store_dir_1>:<store_dir_2>:…`
+3. Prepends `.molt/bin/` to `PATH`
+4. Strips `VIRTUAL_ENV` and `PYTHONHOME`
+5. `syscall.Exec`s the pinned interpreter or the requested binary
+
+---
+
+## What's in the binary
+
+```
+┌────────────────────────┐
+│  launcher (Go)         │  install / run / verify / uninstall
+├────────────────────────┤
+│  payload (tar.gz)      │  your code + deps + assets + integrity manifest
+├────────────────────────┤
+│  trailer               │  [payload offset][root_hash][MOLT0001]
+└────────────────────────┘
+```
+
+On the target machine — no Python, no pip:
+
+```bash
+./myapp-v1.0.0 install       # extracts, verifies root hash, runs post_install hooks
+./myapp-v1.0.0 run           # runs default command in hermetic environment
+./myapp-v1.0.0 run migrate   # named command from molt.yaml
+```
+
+---
+
+## Commands
+
+### Development
+
+| Command | What it does |
+|---|---|
+| `molt init [name]` | Scaffold a new project (via uv init) |
+| `molt add <pkg...>` | Add dependency, re-lock, re-sync store |
+| `molt remove <pkg...>` | Remove dependency, re-lock, re-sync store |
+| `molt sync` | Install uv.lock into `~/.molt/pkg/`, write `.molt/syspath.json` |
+| `molt sync --frozen` | Use existing uv.lock as-is |
+| `molt sync --refresh` | Force-reinstall all packages |
+| `molt lock` | Regenerate `uv.lock` only |
+| `molt run <task>` | Run a named task from `[tool.molt.tasks]` |
+| `molt run <binary>` | Exec a binary under the project store environment |
+| `molt run python` | Launch the project's pinned interpreter |
+| `molt task list/add/remove` | Manage tasks in `pyproject.toml` |
+| `molt gc` | Remove `~/.molt/pkg` entries no project references |
+| `molt gc --dry-run` | Preview what GC would remove |
+| `molt info` | Project + environment summary |
+
+### Python version management
+
+| Command | What it does |
+|---|---|
+| `molt python list` | List installed and system Pythons |
+| `molt python install 3.13` | Download and install a Python version via uv |
+| `molt python use 3.13` | Pin project Python; re-sync to pick up new ABI |
+| `molt python use 3.13 --global` | Set global default Python |
+| `molt python which` | Show the active Python path |
+| `molt python audit` | Find every Python on the machine |
+| `molt python isolation-check` | Verify `.molt/syspath.json` is clean |
+
+### Build and distribution
+
+| Command | What it does |
+|---|---|
+| `molt adopt` | Generate `molt.yaml` for an existing project |
+| `molt build` | Produce a self-installing binary + integrity manifest |
+| `molt capture` | Capture a target machine's environment manifest |
+| `molt assemble` | Assemble binary from a captured manifest |
+| `molt inspect <bin>` | Print a binary's embedded manifest |
+| `molt verify-binary <bin>` | Check trailer ↔ manifest consistency |
+| `molt diff <a> <b>` | Compare two binaries' manifests |
+
+### Diagnostics
+
+| Command | What it does |
+|---|---|
+| `molt doctor` | System diagnostics: uv, Python, Go, git |
+| `molt uv path` | Print the resolved uv binary path |
+| `molt uv version` | Print the uv version |
+
+---
+
+## Task runner
+
+Define tasks in `pyproject.toml`:
+
+```toml
+[tool.molt.tasks]
+dev     = "uvicorn myapp.main:app --reload"
+test    = "pytest tests/ -v --tb=short"
+lint    = "ruff check ."
+format  = "ruff format ."
+```
+
+Run them:
+
+```bash
+molt run dev          # executes under store PYTHONPATH — black, pytest, etc. in .molt/bin/
+molt run test
+molt run test -- -k test_auth   # extra args after --
+```
+
+If the name isn't a task, `molt run` treats it as a binary exec:
+
+```bash
+molt run black --check .
+molt run python -c 'import sys; print(sys.path)'
+```
+
+---
+
+## molt.yaml — for distribution
+
+`molt.yaml` describes the deployment artifact. It is separate from `pyproject.toml`, which continues to describe the Python package.
 
 ```yaml
 version: 1
@@ -85,21 +226,15 @@ version: 1
 project:
   name: myapp
   version: 2.3.1
-  python: "3.11"
+  python: "3.12"
 
 deps:
-  strategy: requirements
-  files: [requirements.txt]
+  strategy: pyproject          # reads pyproject.toml + uv.lock
 
 include:
   - "src/**/*.py"
   - "templates/"
   - "static/"
-
-assets:
-  files:
-    - path: models/weights.bin
-      required: true
 
 commands:
   default: web
@@ -108,76 +243,35 @@ commands:
   worker:
     exec: [celery, "-A", "myapp", "worker"]
   migrate:
-    exec: [python, "manage.py", "migrate"]
+    exec: [python, manage.py, migrate]
 
 hooks:
   post_install:
-    - "python manage.py collectstatic --noinput"
     - "python manage.py migrate --noinput"
 
 integrity:
-  verify_on_install: true   # default
-  verify_on_launch: false   # opt-in (startup cost scales with payload size)
+  verify_on_install: true
 ```
 
-`molt.yaml` is orthogonal to `pyproject.toml`. pyproject continues describing the Python *package* (name, deps, build system). molt.yaml describes the deployment *artifact* (what ships, how to run it, integrity policy). Neither duplicates the other.
-
-## Integrity, by default
-
-Every molt binary carries a **root hash** — a single SHA-256 computed from the path and contents of every packaged file, then embedded in the trailer. The launcher refuses to run a binary whose extracted payload doesn't match.
-
-You also get an audit manifest, `myapp-v2.3.1.manifest.json`, written alongside the binary — human-readable, diff-friendly, SBOM-friendly:
-
-```json
-{
-  "app": {"name": "myapp", "version": "2.3.1"},
-  "root_hash": "3f8a2c1bd21c…",
-  "payload": {
-    "total_files": 1247,
-    "total_bytes": 42317819,
-    "files": [
-      {"path": "src/myapp/__init__.py", "size": 142, "sha256": "a1b2…", "source": "include"},
-      {"path": "src/models/weights.bin", "size": 41943040, "sha256": "9f3e…", "source": "asset"}
-    ]
-  }
-}
-```
-
-Two separate goals, same data:
-- **Authentication** — trailer root_hash == what the launcher recomputes
-- **Transparency** — the manifest tells anyone what shipped
-
-> Note: integrity catches *tampering*, not *impersonation*. A determined attacker who rebuilds the binary produces a perfectly valid trailer. If you need cryptographic authenticity (signature verification against a trusted key), that's a separate feature — planned, not shipped.
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `molt new` | Scaffold a greenfield project |
-| `molt adopt` | Generate a `molt.yaml` for an existing project |
-| `molt build` | Produce the binary + integrity manifest |
-| `molt run <cmd>` | Run a named command from molt.yaml (wrapping the built binary's semantics for local dev) |
-| `molt inspect <bin>` | Print a binary's embedded manifest |
-| `molt verify-binary <bin>` | Check trailer ↔ manifest consistency; `--deep` re-hashes the payload |
-| `molt diff <a> <b>` | Compare two binaries' manifests |
-| `molt deps`, `molt env`, `molt hash`, `molt python` | Diagnostic tooling |
-
-See [USAGE.md](./USAGE.md) for complete examples of every command and every `molt.yaml` field.
+---
 
 ## How this compares
 
-| | molt | PyInstaller / Nuitka | Docker | wheel + pip |
+| | molt | pip + venv | PyInstaller | Docker |
 |---|---|---|---|---|
-| Single binary | ✓ | ✓ | ✗ | ✗ |
-| No runtime on target | ✓ | ✓ | ✗ (needs Docker) | ✗ (needs Python + pip) |
-| Integrity-verified | ✓ | ✗ | ✓ (image digest) | ✓ (wheel hashes) |
-| Hermetic (own Python) | ✓ | partial | ✓ | ✗ |
-| Works on existing projects without restructuring | ✓ | ✗ (needs entrypoint tuning) | ✓ | N/A |
-| Multi-command (web + worker + migrate from one artifact) | ✓ | ✗ | ✓ (multi-ENTRYPOINT) | ✗ |
+| Shared package cache across projects | ✓ | ✗ (per-venv copies) | ✗ | ✗ |
+| No `.venv` per project | ✓ | ✗ | N/A | N/A |
+| Single binary for distribution | ✓ | ✗ | ✓ | ✗ |
+| No Python required on target | ✓ | ✗ | ✓ | ✗ (needs Docker) |
+| Integrity-verified artifact | ✓ | ✗ | ✗ | ✓ (image digest) |
+| `.pth` / namespace packages | ✓ | ✓ | partial | ✓ |
+| Multiple entry points in one binary | ✓ | ✗ | ✗ | ✓ |
+
+---
 
 ## Status
 
-Actively developed. The `molt.yaml` schema is `version: 1` and will stay compatible within major releases. Binary trailer format is versioned (`MOLT0001`); old binaries keep working.
+Actively developed. The global store layout is stable. The `molt.yaml` schema is `version: 1` and stays compatible within major releases. Binary trailer format is versioned (`MOLT0001`).
 
 ## License
 
@@ -185,5 +279,6 @@ Apache-2.0.
 
 ## Further reading
 
-- [USAGE.md](./USAGE.md) — every command, every field, real `molt.yaml` files for Django/FastAPI/CLI/worker projects
+- [USAGE.md](./USAGE.md) — full reference: every command, the store internals, molt.yaml fields, complete examples
+- [docs/global-store.md](./docs/global-store.md) — deep dive into the global package store architecture
 - `molt <cmd> --help` — built-in help for each subcommand

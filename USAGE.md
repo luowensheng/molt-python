@@ -4,96 +4,325 @@ A practical handbook. Every section leads with a working example; reference mate
 
 **Table of contents:**
 
-1. [What molt does](#1-what-molt-does)
-2. [Quick start — your first binary](#2-quick-start--your-first-binary)
-3. [Adopting an existing project](#3-adopting-an-existing-project)
-4. [molt.yaml reference](#4-moltyaml-reference)
-5. [Building](#5-building)
-6. [Cross-compiling](#6-cross-compiling)
-7. [Advanced builds: capture + assemble](#7-advanced-builds-capture--assemble)
-8. [Assets: shipping non-code files](#8-assets-shipping-non-code-files)
-9. [Commands: multiple entrypoints from one binary](#9-commands-multiple-entrypoints-from-one-binary)
-10. [Hooks: pre/post install](#10-hooks-prepost-install)
-11. [Integrity: verify, inspect, diff](#11-integrity-verify-inspect-diff)
-12. [uv integration](#12-uv-integration)
-13. [Environment variables](#13-environment-variables)
-14. [Complete molt.yaml examples](#14-complete-moltyaml-examples)
-15. [Troubleshooting](#15-troubleshooting)
+**Development workflow (global package store)**
+1. [Quick start — new project](#1-quick-start--new-project)
+2. [Syncing an existing project](#2-syncing-an-existing-project)
+3. [Adding and removing dependencies](#3-adding-and-removing-dependencies)
+4. [Running your project](#4-running-your-project)
+5. [Task runner](#5-task-runner)
+6. [Python version management](#6-python-version-management)
+7. [The global package store](#7-the-global-package-store)
+8. [Garbage collection](#8-garbage-collection)
+
+**Distribution workflow (hermetic binaries)**
+9. [Adopting an existing project](#9-adopting-an-existing-project)
+10. [molt.yaml reference](#10-moltyaml-reference)
+11. [Building](#11-building)
+12. [Cross-compiling](#12-cross-compiling)
+13. [Advanced builds: capture + assemble](#13-advanced-builds-capture--assemble)
+14. [Assets: shipping non-code files](#14-assets-shipping-non-code-files)
+15. [Commands: multiple entrypoints from one binary](#15-commands-multiple-entrypoints-from-one-binary)
+16. [Hooks: pre/post install](#16-hooks-prepost-install)
+17. [Integrity: verify, inspect, diff](#17-integrity-verify-inspect-diff)
+
+**Reference**
+18. [uv integration](#18-uv-integration)
+19. [Environment variables](#19-environment-variables)
+20. [Complete molt.yaml examples](#20-complete-moltyaml-examples)
+21. [Troubleshooting](#21-troubleshooting)
 
 ---
 
-## 1. What molt does
-
-molt packages a Python project into a single self-contained binary. The binary ships everything needed to install and run the application — Python interpreter (or a reference to one), dependencies, source code, static assets. On the target machine the user runs the binary directly; it installs itself and then runs.
-
-**The build pipeline:**
-
-```
-your Python project
-       │
-       ▼
-  molt build
-       │
-       ├─ 1. compile launcher (tiny Go binary)
-       ├─ 2. embed payload: source + assets → deterministic tar.gz
-       ├─ 3. compute integrity root hash (SHA-256 over all packaged files)
-       ├─ 4. write external .manifest.json sidecar
-       └─ 5. assemble: launcher ‖ payload ‖ trailer (payload offset + root hash + magic)
-       │
-       ▼
- myapp-v1.0.0   ← single executable, ships to users
-```
-
-On the target machine:
-
-```
-./myapp-v1.0.0 install   ← extracts payload, verifies integrity, runs post_install hooks
-./myapp-v1.0.0 run       ← runs default command in the hermetic venv
-./myapp-v1.0.0 run web   ← runs named command
-```
-
----
-
-## 2. Quick start — your first binary
-
-Assuming you have an existing Python project with a `pyproject.toml`:
+## 1. Quick start — new project
 
 ```bash
-# Step 1: scaffold molt.yaml interactively
-$ molt adopt
-molt adopt — detected existing project layout
+# Bootstrap
+molt init myapp
+cd myapp
 
-  pyproject.toml: yes (myapp 1.0.0)
-  Python:         3.12 (.python-version)
-  strategy:       pyproject
+# Add dependencies
+molt add fastapi uvicorn httpx
+molt add --dev pytest ruff mypy
 
-Project name [myapp]:
-Version [1.0.0]:
-Python version [3.12]:
-
-✓ Wrote molt.yaml
-
-# Step 2: build the binary
-$ molt build
-Building myapp v1.0.0 (linux/amd64)...
-  Config:   ./molt.yaml
-  ✓ Payload: 4.2 MB (97 files)
-  ✓ Integrity manifest: myapp-v1.0.0.manifest.json
-  ✓ Created: myapp-v1.0.0 (12.1 MB)
-    root_hash: 3f8a2c1bd21c…
-
-# Step 3: ship the binary to a target machine, install, run
-$ scp myapp-v1.0.0 myapp-v1.0.0.manifest.json user@target:~/
-$ ssh user@target
-$ ./myapp-v1.0.0 install
-$ ./myapp-v1.0.0 run
+# Run
+molt run dev                     # task defined in pyproject.toml
+molt run python                  # your project's pinned Python
+molt run pytest tests/ -v        # any binary, under store environment
 ```
 
-If you prefer not to use a `molt.yaml` at all, `molt build` still works — it reads `name` and `version` from `pyproject.toml` and uses a legacy denylist to decide what ships. This is the backward-compatible mode; a `molt.yaml` gives you explicit control.
+Under the hood, `molt init` calls `uv init`, then `molt add` calls `uv add`, re-locks, and syncs the global store. No `.venv` is created.
 
 ---
 
-## 3. Adopting an existing project
+## 2. Syncing an existing project
+
+Any project with a `pyproject.toml` and `uv.lock` can be synced:
+
+```bash
+cd /path/to/existing-project
+molt sync
+```
+
+**What `molt sync` does:**
+
+```
+1. Ensure uv binary (download once to ~/.molt/uv/ if not found)
+2. Resolve interpreter from .python-version or ~/.molt/.python-version
+   └─ auto-install if version set but not installed
+3. Regenerate uv.lock if pyproject.toml is newer (skipped with --frozen)
+4. Parse uv.lock → list of (name, version, wheels[])
+5. Detect interpreter ABI → py_tag, abi_tag, platform_tags[]
+6. Acquire ~/.molt/pkg.lock (flock — concurrent syncs serialize here)
+7. For each package:
+   a. Select best wheel per PEP 425 ABI matching
+   b. Compute store key from wheel filename (PEP 427)
+   c. If store entry has .ok → skip (cache hit, sub-millisecond)
+   d. Else: find wheel in uv's cache or download it
+   e. Unpack into .tmp/{rand}/, write .ok, rename atomically to final key
+8. Topo-sort packages by dependency graph
+9. Write .molt/syspath.json  (interpreter path + ordered store dirs)
+10. Write .molt/sitecustomize.py  (calls site.addsitedir() for .pth support)
+11. Regenerate .molt/bin/<script> shims for every console_scripts entry point
+12. Update ~/.molt/registry.json  (used for GC)
+```
+
+**Flags:**
+
+| Flag | Effect |
+|---|---|
+| `molt sync` | Re-lock if stale, then install |
+| `molt sync --frozen` | Skip `uv lock`; fail if uv.lock is missing |
+| `molt sync --refresh` | Force-reinstall all packages even if cached |
+
+**Second sync is instant:** all store entries have `.ok`; `molt sync` just re-writes `syspath.json` and shims.
+
+---
+
+## 3. Adding and removing dependencies
+
+```bash
+molt add requests         # adds to pyproject.toml, re-locks, re-syncs
+molt add --dev pytest     # dev dependency
+molt remove requests      # removes, re-locks, re-syncs
+```
+
+These are thin wrappers around `uv add`/`uv remove` followed by `molt sync`. The store is updated but orphaned packages are not immediately deleted — run `molt gc` to clean them up.
+
+---
+
+## 4. Running your project
+
+`molt run` never activates a venv. It builds the environment from `.molt/syspath.json` and execs:
+
+```bash
+molt run <task-name>          # task from [tool.molt.tasks] in pyproject.toml
+molt run python               # project's pinned interpreter
+molt run python script.py     # script under store PYTHONPATH
+molt run pytest tests/ -v     # binary from .molt/bin/ or PATH
+molt run black --check .       # console-script shim in .molt/bin/
+```
+
+**Environment built by `molt run`:**
+
+| Variable | Value |
+|---|---|
+| `PYTHONPATH` | `<project>/.molt:<store_dir_1>:<store_dir_2>:…` |
+| `PATH` | `<project>/.molt/bin:$PATH` |
+| `VIRTUAL_ENV` | unset |
+| `PYTHONHOME` | unset |
+
+The `.molt/` directory is first on `PYTHONPATH` so `sitecustomize.py` is imported before any user code. `sitecustomize.py` calls `site.addsitedir(d)` for each store dir, which processes `.pth` files — this is how `setuptools`, `pkg_resources`, and namespace packages work.
+
+**Special cases:**
+- `molt run python` / `molt run python3` → resolves to `spec.Python` from `syspath.json`
+- `molt run <name>` → checks `.molt/bin/` first, then `PATH`, then errors
+
+**Require a sync first:** if `.molt/syspath.json` doesn't exist, `molt run` prints `run 'molt sync' first` and exits 1.
+
+---
+
+## 5. Task runner
+
+Define tasks in `pyproject.toml`:
+
+```toml
+[tool.molt.tasks]
+dev      = "uvicorn myapp.main:app --reload"
+test     = "pytest tests/ -v --tb=short --cov"
+lint     = "ruff check ."
+format   = "ruff format ."
+typecheck = "mypy myapp/"
+seed     = "python scripts/seed.py"
+migrate  = "alembic upgrade head"
+```
+
+Or inline table form with description and working directory:
+
+```toml
+[tool.molt.tasks]
+docker-build = { command = "docker build -t myapp .", description = "Build Docker image" }
+```
+
+**Using tasks:**
+
+```bash
+molt run dev                       # run by name
+molt run test                      # tasks run under .molt/syspath.json environment
+molt run test -- -k test_auth      # extra args after --
+molt run test -- --watch           # watch flag passed to pytest
+
+molt task list                     # show all tasks + commands
+molt task add bench "python -m cProfile -o prof.out scripts/bench.py"
+molt task remove bench
+```
+
+**Fallthrough:** if the name is not a known task, `molt run` treats it as a binary to exec. So `molt run black --check .` works even without a `black` task entry.
+
+---
+
+## 6. Python version management
+
+```bash
+molt python list                   # show all installed + system Pythons
+molt python install 3.13           # download via uv python install
+molt python use 3.13               # pin .python-version; re-sync required
+molt python use 3.13 --global      # set ~/.molt/.python-version
+molt python which                  # show active Python path
+molt python remove 3.11            # uninstall a standalone Python
+molt python audit                  # find every Python on the machine
+molt python conflicts              # check for PYTHONPATH/PYTHONHOME pollution
+molt python isolation-check        # verify .molt/syspath.json is clean
+```
+
+**Switching Python versions:**
+
+```bash
+molt python install 3.13
+molt python use 3.13               # writes .python-version
+molt sync                          # picks new interpreter, populates ABI-specific store entries
+                                   # e.g. ~/.molt/pkg/black/24.4.2/cp313-cp313-macosx_11_0_arm64/
+```
+
+Console-script shims in `.molt/bin/` are regenerated on every sync with the new interpreter path baked in. Old ABI-specific entries (e.g. the `cp312` wheels) remain in the store until `molt gc`.
+
+**`molt python list` output:**
+
+```
+  3.13.2       standalone   /Users/you/.molt/python/3.13.2/bin/python3  ← active
+  3.12.3       standalone   /Users/you/.molt/python/3.12.3/bin/python3
+  3.11.9       system       /usr/bin/python3.11
+```
+
+---
+
+## 7. The global package store
+
+### Layout
+
+```
+~/.molt/
+├── pkg/
+│   ├── requests/
+│   │   └── 2.32.3/
+│   │       └── py3-none-any/
+│   │           ├── requests/              ← importable directly
+│   │           ├── requests-2.32.3.dist-info/
+│   │           ├── .ok                    ← sentinel; presence = install is complete
+│   │           └── .meta.json             ← {wheel_filename, source_sha256, entry_points}
+│   ├── black/
+│   │   └── 24.4.2/
+│   │       └── cp312-cp312-macosx_11_0_arm64/
+│   │           ├── black/
+│   │           ├── ...
+│   │           ├── .ok
+│   │           └── .meta.json
+│   └── .tmp/                              ← staging; cleaned after each install
+├── python/                                ← standalone interpreters
+├── pkg.lock                               ← flock file; prevents concurrent installs
+└── registry.json                          ← {projectDir: lockHash}; used by gc
+```
+
+### Store key
+
+The directory path is `~/.molt/pkg/{name}/{version}/{py_tag}-{abi_tag}-{platform_tag}/`.
+
+- Name is PEP 503-normalized (lowercase; runs of `_`, `.`, `-` collapsed to `-`)
+- Tags come from the wheel filename per PEP 427
+
+Two projects that need `requests==2.32.3` share exactly one directory. Two projects that need `black==24.4.2` but use different Python versions get separate ABI-keyed directories.
+
+### Wheel selection
+
+When a package has multiple wheels in `uv.lock`, molt picks the best one for the active interpreter:
+
+| Score | Condition |
+|---|---|
+| 0 (best) | Exact match: `py_tag` and `abi_tag` both match interpreter |
+| 10 | abi3 wheel: `abi3` tag, CPython, wheel's minimum version ≤ interpreter |
+| 20 | Pure-Python: `none` abi + `py3` or matching py_tag |
+
+Within a score, platform-specific (`macosx_14_0_arm64`) beats `any`.
+
+### Atomic install
+
+1. Unpack wheel into `~/.molt/pkg/.tmp/{rand}/`
+2. Write `.meta.json`
+3. Write `.ok` (last)
+4. `os.Rename` to final path
+
+If two processes race, the second sees `.ok` already present and discards its temp dir. No partial installs are ever visible.
+
+### Console-script shims
+
+`molt sync` generates `.molt/bin/<name>` for every `console_scripts` entry point in any installed package. Example for `black`:
+
+```sh
+#!/bin/sh
+export PYTHONPATH='/home/you/myproject/.molt:/home/you/.molt/pkg/black/24.4.2/cp312-cp312-linux_x86_64:...'
+unset VIRTUAL_ENV PYTHONHOME
+exec '/home/you/.molt/python/3.12.3/bin/python3' \
+  -c 'import sys; from black import patched_main as _m; sys.exit(_m())' "$@"
+```
+
+Paths are absolute. Shims are regenerated on every `molt sync`.
+
+---
+
+## 8. Garbage collection
+
+Packages accumulate when you switch Python versions, remove dependencies, or delete projects. `molt gc` cleans up:
+
+```bash
+molt gc --dry-run          # show what would be removed
+molt gc                    # remove it
+```
+
+**How GC works:**
+1. Reads `~/.molt/registry.json` to find all registered project dirs
+2. For each live project, parses its `uv.lock` to collect referenced `(name, version, abi)` keys
+3. Walks `~/.molt/pkg/`, removes entries not in the referenced set
+4. Purges registry entries whose project directory no longer exists
+
+GC is safe to run while other projects are in use — it only removes entries that no current project needs. A subsequent `molt sync` in any affected project would re-download the removed entries.
+
+**Typical GC scenarios:**
+
+```bash
+# After switching from Python 3.11 to 3.12 across all projects
+molt gc                    # removes cp311-abi entries, keeps cp312
+
+# After deleting a project
+rm -rf ~/old-project
+molt gc                    # removes entries unique to that project
+
+# After removing a heavy dependency
+molt remove torch
+molt gc                    # reclaims the torch store entry (can be gigabytes)
+```
+
+---
+
+## 9. Adopting an existing project
 
 `molt adopt` detects your project's structure and writes a `molt.yaml` that you can review and edit before building.
 
@@ -115,7 +344,7 @@ $ molt adopt
 | `manage.py` | suggests Django commands (migrate, shell, collectstatic) |
 | `src/` layout | adjusts include glob to `src/**/*.py` |
 | Top-level packages | generates per-package include globs |
-| Entry hints (console_scripts, `__main__.py`) | suggests `commands:` exec entries |
+| Entry hints (`console_scripts`, `__main__.py`) | suggests `commands:` exec entries |
 
 **Flags:**
 
@@ -126,17 +355,16 @@ $ molt adopt
 | `molt adopt --non-interactive` | take all detected defaults; suitable for CI |
 | `molt adopt --force` | overwrite an existing `molt.yaml` |
 
-After `molt adopt` runs, **review the generated file**. The tool's job is a good starting point, not a final answer. Particularly check:
-
-- `include:` globs — does the pattern match your actual source layout?
-- `deps.strategy` and `deps.files` — is this right for how you pin deps?
-- `commands:` — are the exec args correct for your WSGI/ASGI setup?
+After `molt adopt` runs, **review the generated file**. Particularly check:
+- `include:` globs — do they match your actual source layout?
+- `deps.strategy` and `deps.files`
+- `commands:` exec args
 
 ---
 
-## 4. molt.yaml reference
+## 10. molt.yaml reference
 
-`molt.yaml` describes the deployment artefact. It is intentionally separate from `pyproject.toml`, which continues to describe the Python package itself.
+`molt.yaml` describes the deployment artifact (what ships, how to run it, integrity policy). It is intentionally separate from `pyproject.toml`, which continues to describe the Python package.
 
 ```yaml
 # ── Required ──────────────────────────────────────────────────────────────────
@@ -232,33 +460,23 @@ integrity:
 
 **`exec` vs `script`**: mutually exclusive per command. `exec` is argv-style (preferred — no shell). `script` is a shell string.
 
-**`deps.strategy` values**:
-
-| Strategy | Requirements |
-|---|---|
-| `requirements` | `files:` list is required. uv installs from those files. |
-| `pyproject` | `pyproject.toml` must exist. uv syncs from `uv.lock`. |
-| `poetry` | `poetry export` must run at build time (see Troubleshooting). |
-| `pipenv` | Same note as poetry. |
-| `none` | No deps installed. Useful for pure-stdlib tools. |
-
 ---
 
-## 5. Building
+## 11. Building
 
 ### Basic build
 
 ```bash
-$ molt build
+molt build
 ```
 
 Reads `molt.yaml` (or falls back to `pyproject.toml`). Builds for the current platform. Outputs `<name>-v<version>` in the current directory.
 
 ```bash
-$ molt build ./myapp              # build from a different project dir
-$ molt build --name foo           # override app name
-$ molt build --version 1.2.3      # override version
-$ molt build --output dist/myapp  # override output path
+molt build ./myapp              # build from a different project dir
+molt build --name foo           # override app name
+molt build --version 1.2.3      # override version
+molt build --output dist/myapp  # override output path
 ```
 
 ### Build flags
@@ -295,8 +513,6 @@ Two files are produced:
 
 ### Build profiles
 
-Profiles control what dependencies are installed at build time (they don't affect what Python source ships):
-
 | Profile | Effect |
 |---|---|
 | `minimal` | Absolute minimum — only direct deps, no extras |
@@ -317,19 +533,17 @@ notebooks/
 .DS_Store
 ```
 
-Useful for files that your `exclude:` patterns haven't caught, or for keeping the ignore config out of `molt.yaml`.
-
 ---
 
-## 6. Cross-compiling
+## 12. Cross-compiling
 
 ```bash
-$ molt build --os linux --arch amd64 --best-effort
+molt build --os linux --arch amd64 --best-effort
 ```
 
-**Why `--best-effort` is required**: cross-builds can't be hermetic for native extensions. Python C-extensions (numpy, grpcio, psycopg2) must match the target's glibc version, CPU architecture, and OS. molt has no safe way to determine which wheel variants to pull on your behalf.
+**Why `--best-effort` is required**: cross-builds can't be hermetic for native extensions. Python C-extensions must match the target's glibc version, CPU architecture, and OS. The right approach is to build on the target platform.
 
-**The right approach**: build on the target platform. CI matrix:
+**CI matrix (recommended):**
 
 ```yaml
 # .github/workflows/release.yml
@@ -354,9 +568,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install molt
-        run: |
-          curl -L https://github.com/.../molt/releases/latest/download/molt-linux-amd64 -o molt
-          chmod +x molt && sudo mv molt /usr/local/bin/molt
+        run: curl -sSf https://molt.dev/install.sh | sh
       - name: Build
         run: molt build --version ${{ github.ref_name }}
       - uses: actions/upload-artifact@v4
@@ -369,29 +581,22 @@ jobs:
 
 ---
 
-## 7. Advanced builds: capture + assemble
+## 13. Advanced builds: capture + assemble
 
 For two-phase builds: capture the environment manifest on the TARGET machine (or in a matching container), then assemble the binary on your build machine. Useful when the target's glibc or Python distribution isn't available on your CI agents.
 
 ### Phase 1: capture (on the target machine)
 
 ```bash
-$ molt capture
-Capturing environment (linux/amd64)...
-✓ Wrote linux-amd64.manifest.json
-```
-
-This writes a manifest of the target's Python, platform info, and installed packages. Ship this file to your build machine.
-
-```bash
-$ molt capture --output target-env.json
-$ molt capture --os linux --arch arm64   # for a container/VM
+molt capture
+# → linux-amd64.manifest.json
+molt capture --output target-env.json
 ```
 
 ### Phase 2: assemble (on the build machine)
 
 ```bash
-$ molt assemble \
+molt assemble \
     --manifest target-env.json \
     --name myapp \
     --version 1.2.3 \
@@ -409,20 +614,16 @@ $ molt assemble \
 
 ---
 
-## 8. Assets: shipping non-code files
-
-Assets are non-Python files that the application needs at runtime. Two mechanisms exist and are complementary.
+## 14. Assets: shipping non-code files
 
 ### `include:` globs — permissive, bulk
 
 ```yaml
 include:
-  - "myapp/templates/**/*.html"    # all templates
-  - "static/**/*"                  # entire static tree
-  - "locale/**/*.po"               # translation files
+  - "myapp/templates/**/*.html"
+  - "static/**/*"
+  - "locale/**/*.po"
 ```
-
-Any file matching at least one pattern ships. Missing files are silently skipped. Good for directories you want to embed wholesale.
 
 ### `assets:` — explicit, validated
 
@@ -431,20 +632,14 @@ assets:
   files:
     - path: models/weights.bin
       required: true           # BUILD FAILS if this file is absent
-      description: "Sentence transformer weights (512-dim)"
-    - path: "config/defaults.yaml"
-      required: true
-    - path: "data/seed/*.csv"  # globs work here too
+      description: "Sentence transformer weights"
+    - path: "data/seed/*.csv"
       required: false
-  max_file_size_mb: 200        # warn if any single file exceeds this
-  max_total_size_mb: 500       # fail if total payload exceeds this
+  max_file_size_mb: 200
+  max_total_size_mb: 500
 ```
 
-Use `assets:` for files where you'd rather fail the build than ship a broken binary.
-
 ### Reading assets in your application
-
-Assets land in the payload at the same relative path as they exist in your project. The launcher sets a `MOLT_ROOT` (or equivalent) environment variable so you can locate them:
 
 ```python
 import os
@@ -452,141 +647,56 @@ ROOT = os.environ.get("MOLT_ROOT", os.path.dirname(__file__))
 weights_path = os.path.join(ROOT, "models", "weights.bin")
 ```
 
-### Size tracking
-
-```bash
-$ molt inspect ./classify-v3.0.0 --files | sort -k2 -rh | head -10
-path                                     size       source   sha256
-models/weights.bin                       180.0 MB   asset    9f3e2a...
-models/tokenizer.json                    8.2 MB     asset    4a1b3c...
-classify/data/synonyms.json              1.4 MB     include  02ef71...
-```
-
-The `source` column tells you why each file is in the payload:
-- `include` — matched an `include:` glob
-- `asset` — declared in `assets:`
-- `default` — legacy denylist scan (no `include:` was set)
-- `auto` — molt-generated metadata (the integrity manifest itself)
-
 ---
 
-## 9. Commands: multiple entrypoints from one binary
-
-One binary, multiple personas.
+## 15. Commands: multiple entrypoints from one binary
 
 ```yaml
 commands:
   default: web
   web:
     exec: [gunicorn, "myapp.wsgi:application", "--bind=0.0.0.0:8000"]
-    description: "WSGI server"
   worker:
     exec: [celery, "-A", "myapp", "worker", "-l", "info"]
-  beat:
-    exec: [celery, "-A", "myapp", "beat", "-l", "info"]
   migrate:
     exec: [python, manage.py, migrate, --noinput]
-  shell:
-    exec: [python, manage.py, shell]
   backup:
     script: "pg_dump $DB_URL | gzip > /backups/$(date +%Y%m%d).sql.gz"
 ```
 
-At install time:
-
 ```bash
-$ ./myapp-v1.0.0 install
-[molt] Installing myapp v1.0.0 → /home/you/.local/share/myapp/1.0.0
-[molt] Extracting payload...
-[molt] Verifying integrity...
-[molt] Creating virtual environment...
-[molt] Running post_install hooks...
-✓ Installed
+./myapp-v1.0.0 run              # runs 'web'
+./myapp-v1.0.0 run worker       # runs the worker
+./myapp-v1.0.0 run migrate      # one-off migration
+./myapp-v1.0.0 run web --workers=8   # extra args pass through
 ```
 
-At run time:
-
-```bash
-$ ./myapp-v1.0.0 run              # runs 'web' (the default)
-$ ./myapp-v1.0.0 run worker       # runs the worker
-$ ./myapp-v1.0.0 run migrate      # one-off migration
-$ ./myapp-v1.0.0 run web --workers=8   # extra args pass through
-```
-
-Or after install:
-
-```bash
-$ /home/you/.local/share/myapp/1.0.0/run
-```
-
-### `exec` vs `script`
-
-`exec:` is argv-style. Go's `os/exec` handles it directly — no shell, no glob expansion, no injection surface. Strongly preferred.
-
-`script:` is a POSIX shell one-liner for when you genuinely need pipes, redirects, or shell builtins.
-
-```yaml
-  rotate-logs:
-    script: "find /var/log/myapp -name '*.log' -mtime +7 | xargs gzip"
-```
-
-They are mutually exclusive. A command with both (or neither) fails validation at `molt build`.
-
-### Env resolution order (later wins)
-
-1. Host environment (inherited, minus `PYTHONHOME` / `PYTHONPATH` / `VIRTUAL_ENV`)
+**Env resolution order (later wins):**
+1. Host environment (minus `PYTHONHOME` / `PYTHONPATH` / `VIRTUAL_ENV`)
 2. molt-injected: `PATH` (venv `bin/` first), `VIRTUAL_ENV`, `PYTHONNOUSERSITE=1`
 3. Top-level `env:` in `molt.yaml`
 4. Per-command `env:`
 
-### Default command resolution
-
-When no `default:` is set, molt picks:
-
-1. A command named `run`
-2. A command named `start`
-3. The only command (if exactly one exists)
-4. `python -m <appname>.main` as last resort
-
 ---
 
-## 10. Hooks: pre/post install
+## 16. Hooks: pre/post install
 
 ```yaml
 hooks:
   pre_install:
-    - "pytest tests/smoke -q"          # runs on BUILD HOST at build time
+    - "pytest tests/smoke -q"         # runs on BUILD HOST at build time
   post_install:
     - "python manage.py migrate --noinput"
     - "python manage.py collectstatic --noinput"
 ```
 
-`post_install` hooks run **on the target machine**, after payload extraction and venv setup, inside the hermetic venv. This is where you put operations that must happen once before the app first serves requests.
+`post_install` hooks run on the **target machine**, after payload extraction and venv setup. If any hook exits non-zero, the install aborts cleanly.
 
-**Ordering guarantee**: integrity check → venv setup → `post_install` hooks → app is ready. A tampered payload is rejected before hooks ever run.
-
-**Failure behaviour**: if any hook exits non-zero, the install aborts and the partial install dir is cleaned up. No half-installed state lingers.
-
-**Hooks are shell strings** (not `exec`-style). If you need no-shell semantics, put logic in a Python script:
-
-```yaml
-hooks:
-  post_install:
-    - "python scripts/post_install.py"
-```
-
-**Non-interactive hooks**: hooks that prompt interactively will hang. Use non-interactive flags:
-
-```yaml
-hooks:
-  post_install:
-    - "DJANGO_SUPERUSER_PASSWORD=$ADMIN_PW python manage.py createsuperuser --noinput --username admin --email admin@example.com"
-    - "python manage.py migrate --noinput"     # note: --noinput
-```
+Non-interactive hooks only — use `--noinput` flags on all management commands.
 
 ---
 
-## 11. Integrity: verify, inspect, diff
+## 17. Integrity: verify, inspect, diff
 
 Every `molt build` outputs two files:
 
@@ -598,26 +708,10 @@ Every `molt build` outputs two files:
 ### Inspect
 
 ```bash
-# Summary
-$ molt inspect ./myapp-v1.0.0
-App:         myapp v2.3.1
-Built:       2026-04-18T10:30:00Z (linux/amd64, glibc 2.35)
-Algorithm:   sha256
-Root hash:   3f8a2c1bd21c5a0b3e94f1c8a2d7e6b9f4...
-Files:       1247
-Total size:  42.1 MB (44144876 bytes)
-Python:      3.12.2
-
-Assets:
-  ✓ models/weights.bin [required]  — Sentence transformer weights
-  ✓ models/tokenizer.json [required]
-
-# Full file table
-$ molt inspect ./myapp-v1.0.0 --files
-
-# Raw JSON (pipe into jq)
-$ molt inspect ./myapp-v1.0.0 --json
-$ molt inspect ./myapp-v1.0.0 --json | jq '.payload.files[] | select(.size > 1048576)'
+molt inspect ./myapp-v1.0.0               # summary
+molt inspect ./myapp-v1.0.0 --files       # full file table
+molt inspect ./myapp-v1.0.0 --json        # raw JSON
+molt inspect ./myapp-v1.0.0 --json | jq '.payload.files[] | select(.size > 1048576)'
 ```
 
 Accepts either the binary or the `.manifest.json` sidecar.
@@ -625,35 +719,32 @@ Accepts either the binary or the `.manifest.json` sidecar.
 ### Verify
 
 ```bash
-# Fast: trailer root_hash matches embedded manifest, manifest is internally consistent.
-# Catches manually-edited manifests.
-$ molt verify-binary ./myapp-v1.0.0
-✓ Binary integrity verified.
+# Fast: trailer ↔ manifest consistency check
+molt verify-binary ./myapp-v1.0.0
+# ✓ Binary integrity verified.
 
-# Deep: re-streams every file in the payload, recomputes root hash from scratch.
-# Catches sophisticated tampering where the attacker updated trailer + manifest
-# consistently but can't match the real payload contents.
-$ molt verify-binary ./myapp-v1.0.0 --deep
-✓ Deep verification passed — every file in the payload was re-hashed.
+# Deep: re-streams every file, recomputes root hash from scratch
+molt verify-binary ./myapp-v1.0.0 --deep
+# ✓ Deep verification passed — every file in the payload was re-hashed.
 ```
 
-The launcher runs the fast check automatically on `install` (`verify_on_install: true` by default). Launch-time re-verification is opt-in:
+The launcher runs the fast check automatically on `install`. Launch-time re-verification is opt-in:
 
 ```yaml
 integrity:
-  verify_on_launch: true    # re-hash on every './myapp run' invocation
+  verify_on_launch: true    # appropriate for small CLIs and security-sensitive services
 ```
-
-Appropriate for: small CLIs, security-sensitive services, environments where tampered-at-rest binaries are a concern.
-Not appropriate for: large binaries started frequently (adds startup latency proportional to binary size).
 
 ### Diff
 
 ```bash
-$ molt diff ./myapp-v1.0.0 ./myapp-v1.1.0
+molt diff ./myapp-v1.0.0 ./myapp-v1.1.0
+```
+
+```
 Comparing:
-  a: myapp v1.0.0  (root 3f8a2c1bd21c…)
-  b: myapp v1.1.0  (root 8b2d4f1a7c9e…)
+  a: myapp v1.0.0  (root 3f8a2c…)
+  b: myapp v1.1.0  (root 8b2d4f…)
 
 Added:   2 file(s)
   + src/myapp/feature_flags.py (4.1 KB)
@@ -671,22 +762,9 @@ Changed: 6 file(s)
 Total size change: +130014819 bytes (+124.0 MB)
 ```
 
-**Common use cases**:
-- "Why did our binary double in size between releases?" → diff shows the new giant file
-- "Did the CI build actually pick up my latest code?" → diff shows which files changed
-- "Did a dependency update silently change a lot of files?" → diff shows the footprint
-
-Accepts both binary paths and sidecar `.manifest.json` paths:
-
-```bash
-$ molt diff ./builds/v1.0.0/myapp.manifest.json ./builds/v1.1.0/myapp.manifest.json
-```
-
 ### Root hash algorithm
 
-The root hash is deterministic and reimplementable in any language:
-
-1. Sort all `PackagedFile` records by `Path` (byte-wise)
+1. Sort all packaged files by path (byte-wise)
 2. For each file: `inner = sha256(path || 0x00 || file_sha256_bytes)`
 3. Feed each 32-byte `inner` into a running outer SHA-256
 4. `root_hash = hex(outer.Sum())`
@@ -701,65 +779,40 @@ The trailer is the last 48 bytes of the binary:
 
 ---
 
-## 12. uv integration
+## 18. uv integration
 
-molt uses [uv](https://github.com/astral-sh/uv) for Python dependency installation. uv must be available on the machine running `molt build`.
+molt uses [uv](https://github.com/astral-sh/uv) for both dependency resolution (`uv lock`) and Python version management (`uv python`). uv is auto-downloaded to `~/.molt/uv/` on first use.
 
 ```bash
-# Show where molt resolves uv from
-$ molt uv path
-/home/you/.local/bin/uv
-
-# Show uv version
-$ molt uv version
-uv 0.4.18
-
-# Diagnostics: shows all tool locations + uv source
-$ molt doctor
-molt
-Platform: linux/amd64
-─────────────────────────────────────
-  ✓ uv                   /home/you/.local/bin/uv  [uv 0.4.18 — system PATH]
-  ✓ python3              /usr/bin/python3
-  ✓ go                   /usr/local/go/bin/go
-  ✓ git                  /usr/bin/git
-  ✗ ldd                  not found
-  ✓ curl                 /usr/bin/curl
+molt uv path                      # show where molt resolved uv from
+molt uv version                   # show uv version
+molt uv <any-uv-args>             # raw passthrough: molt uv pip list, molt uv lock, etc.
 ```
 
 ### uv resolution order
 
-1. `$MOLT_UV` — absolute path override. Useful in CI where you already have a pinned uv.
-2. `~/.molt/uv/bin/uv` — the managed location (where a full molt installation would put it).
-3. `uv` on `$PATH` — system fallback.
-
-If uv isn't found anywhere, `molt build` will error before touching your project.
+1. `$MOLT_UV` — absolute path override
+2. `~/.molt/uv/bin/uv` — molt-managed location
+3. `uv` on `$PATH` — system fallback
 
 ### Using a specific uv in CI
 
 ```yaml
-# .github/workflows/build.yml
 env:
-  MOLT_UV: /home/runner/.cargo/bin/uv
-
-steps:
-  - name: Install uv
-    run: curl -LsSf https://astral.sh/uv/install.sh | sh
-  - name: Build
-    run: molt build
+  MOLT_UV: /home/runner/.local/bin/uv
 ```
 
 ---
 
-## 13. Environment variables
+## 19. Environment variables
 
-These are read by the molt CLI itself (build-time and inspection commands):
+**Read by the molt CLI:**
 
 | Variable | Effect |
 |---|---|
 | `MOLT_UV` | Absolute path to a uv binary. Overrides resolution order entirely. |
 
-These are read by the installed launcher at install/run time (on the target machine):
+**Read by the installed launcher at install/run time (on the target machine):**
 
 | Variable | Effect |
 |---|---|
@@ -771,16 +824,13 @@ These are read by the installed launcher at install/run time (on the target mach
 
 ```bash
 # Install to a non-default location
-$ MOLT_INSTALL_BASE=/opt ./myapp-v1.0.0 install
+MOLT_INSTALL_BASE=/opt ./myapp-v1.0.0 install
 Installing myapp v1.0.0 → /opt/myapp/1.0.0
-
-# System-wide install
-$ sudo MOLT_INSTALL_BASE=/usr/local/lib ./myapp-v1.0.0 install
 ```
 
 ---
 
-## 14. Complete molt.yaml examples
+## 20. Complete molt.yaml examples
 
 ### Django web app
 
@@ -790,18 +840,15 @@ version: 1
 project:
   name: blogplatform
   version: 4.2.0
-  python: "3.11"
-  description: "Content management platform"
+  python: "3.12"
 
 deps:
   strategy: requirements
-  files:
-    - requirements.txt
+  files: [requirements.txt]
 
 include:
   - "blogplatform/**/*.py"
   - "blogplatform/**/*.html"
-  - "blogplatform/**/*.txt"
   - "templates/**/*"
   - "static/**/*"
   - "locale/**/*"
@@ -810,39 +857,19 @@ include:
 exclude:
   - "blogplatform/tests/"
   - "**/__pycache__/"
-  - "**/*.pyc"
 
 commands:
   default: web
-
   web:
-    exec:
-      - gunicorn
-      - "blogplatform.wsgi:application"
-      - "--bind=0.0.0.0:8000"
-      - "--workers=4"
-      - "--access-logfile=-"
-    description: "Django WSGI via gunicorn"
-
+    exec: [gunicorn, "blogplatform.wsgi:application", "--bind=0.0.0.0:8000", "--workers=4"]
   worker:
     exec: [celery, "-A", "blogplatform", "worker", "-l", "info"]
-    description: "Celery async worker"
-
   beat:
     exec: [celery, "-A", "blogplatform", "beat", "-l", "info"]
-    description: "Celery periodic scheduler"
-
   migrate:
     exec: [python, manage.py, migrate, --noinput]
-    description: "Run database migrations"
-
   shell:
     exec: [python, manage.py, shell]
-    description: "Django shell"
-
-  check:
-    exec: [python, manage.py, check, --deploy]
-    description: "Deployment checks"
 
 env:
   DJANGO_SETTINGS_MODULE: "blogplatform.settings.production"
@@ -855,7 +882,6 @@ hooks:
 
 integrity:
   verify_on_install: true
-  verify_on_launch: false
 ```
 
 ### FastAPI microservice
@@ -869,7 +895,7 @@ project:
   python: "3.12"
 
 deps:
-  strategy: pyproject     # pyproject.toml + uv.lock
+  strategy: pyproject
 
 include:
   - "orders_api/**/*.py"
@@ -879,23 +905,12 @@ include:
 
 commands:
   default: serve
-
   serve:
-    exec:
-      - uvicorn
-      - "orders_api.main:app"
-      - "--host=0.0.0.0"
-      - "--port=8080"
-      - "--workers=2"
-    description: "FastAPI ASGI server"
-
+    exec: [uvicorn, "orders_api.main:app", "--host=0.0.0.0", "--port=8080", "--workers=2"]
   migrate:
     exec: [alembic, upgrade, head]
-    env:
-      ALEMBIC_CONFIG: "alembic.ini"
 
 env:
-  UVICORN_LOG_LEVEL: "info"
   PYTHONUNBUFFERED: "1"
 
 hooks:
@@ -904,10 +919,10 @@ hooks:
 
 integrity:
   verify_on_install: true
-  verify_on_launch: true   # small service, startup cost acceptable
+  verify_on_launch: true
 ```
 
-### Celery worker only
+### Celery worker
 
 ```yaml
 version: 1
@@ -915,7 +930,7 @@ version: 1
 project:
   name: indexer-worker
   version: 0.9.2
-  python: "3.11"
+  python: "3.12"
 
 deps:
   strategy: requirements
@@ -927,31 +942,16 @@ include:
 
 commands:
   default: worker
-
   worker:
-    exec:
-      - celery
-      - "--app=indexer.tasks"
-      - "worker"
-      - "--loglevel=info"
-      - "--concurrency=8"
-      - "--max-tasks-per-child=500"
-
+    exec: [celery, "--app=indexer.tasks", "worker", "--loglevel=info", "--concurrency=8"]
   flower:
     exec: [celery, "--app=indexer.tasks", "flower", "--port=5555"]
-    description: "Celery monitoring dashboard"
-
   purge:
     script: "celery -A indexer.tasks purge -f"
-    description: "Clear all queued tasks"
 
 env:
   CELERY_BROKER_URL: "redis://redis:6379/0"
-  CELERY_RESULT_BACKEND: "redis://redis:6379/1"
   PYTHONUNBUFFERED: "1"
-
-integrity:
-  verify_on_install: true
 ```
 
 ### Data-science CLI with model weights
@@ -962,8 +962,7 @@ version: 1
 project:
   name: classify
   version: 3.0.0
-  python: "3.11"
-  description: "Document classification CLI"
+  python: "3.12"
 
 deps:
   strategy: requirements
@@ -977,35 +976,70 @@ assets:
   files:
     - path: models/sentence-transformers-v2.bin
       required: true
-      description: "384-dim sentence embeddings, domain fine-tuned"
+      description: "384-dim sentence embeddings"
     - path: models/tokenizer.json
       required: true
-      description: "Tokenizer for sentence-transformers-v2"
     - path: data/stopwords-en.txt
-      required: false    # app has a built-in fallback if missing
-  max_file_size_mb: 200
+      required: false
   max_total_size_mb: 400
 
 commands:
   default: classify
   classify:
     exec: [python, "-m", "classify"]
-    description: "Classify documents from stdin"
   reindex:
     exec: [python, "-m", "classify.reindex", "--full"]
-    description: "Rebuild search index"
   benchmark:
     exec: [python, "-m", "classify.bench"]
-    description: "Throughput benchmark"
 
 integrity:
   verify_on_install: true
-  verify_on_launch: true   # catches model bit-rot on long-lived deployments
+  verify_on_launch: true
 ```
 
 ---
 
-## 15. Troubleshooting
+## 21. Troubleshooting
+
+### `molt sync` — "no python interpreter resolved"
+
+```
+error: no python interpreter resolved
+```
+
+No `.python-version` file and no global default set. Fix:
+
+```bash
+molt python install 3.12
+molt python use 3.12
+molt sync
+```
+
+### `molt run` — "no .molt/syspath.json — run 'molt sync' first"
+
+The project hasn't been synced yet. Run `molt sync`.
+
+### `molt run` — import works in shell but not in molt run
+
+A package was installed outside molt (e.g. `pip install` into the system Python). `molt run` builds `PYTHONPATH` exclusively from `.molt/syspath.json`. Run `molt sync` to make it official or add the package via `molt add`.
+
+### `molt sync` — "no wheel matches cp312/cp312 on [macosx_14_0_arm64]"
+
+The lock file contains no wheel for your current Python/platform. Try:
+
+```bash
+molt sync --refresh                  # forces uv to re-resolve
+```
+
+If you're on a platform with no pre-built wheel, the package may require compilation from source (not currently supported by the store installer).
+
+### Console script runs the wrong version
+
+Shims in `.molt/bin/` have the interpreter path baked in at sync time. Run `molt sync` after `molt python use <version>`.
+
+### Two projects have conflicting versions of the same package
+
+Each project has its own `syspath.json` pointing to different store paths. The store holds both versions side-by-side under their respective ABI keys — there is no conflict.
 
 ### Build fails: "cannot find uv"
 
@@ -1013,126 +1047,52 @@ integrity:
 error: uv not found — install from https://github.com/astral-sh/uv or set MOLT_UV
 ```
 
-Install uv, then retry:
-
 ```bash
-$ curl -LsSf https://astral.sh/uv/install.sh | sh
-$ molt build
-```
-
-Or point molt at your existing uv:
-
-```bash
-$ MOLT_UV=/path/to/uv molt build
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# or
+MOLT_UV=/path/to/uv molt build
 ```
 
 Run `molt doctor` to see the full tool resolution table.
 
 ### Build fails: "no files matched inclusion criteria"
 
-Your `include:` patterns didn't match anything in the project directory.
-
-Common causes:
+Your `include:` patterns didn't match anything. Check whether your project is flat-layout or src-layout:
 
 ```yaml
+# flat layout
 include:
-  - "src/**/*.py"    # ← wrong if your project is FLAT, not src-layout
-```
+  - "myapp/**/*.py"
+  - "*.py"
 
-Flat layout fix:
-
-```yaml
+# src layout
 include:
-  - "myapp/**/*.py"  # actual package directory name
-  - "*.py"           # top-level scripts
+  - "src/**/*.py"
 ```
-
-Check what directories exist:
-
-```bash
-$ ls -la
-$ find . -name "*.py" | head -20
-```
-
-Run `molt adopt` again to regenerate detection-based suggestions.
 
 ### Build fails: "SECURITY BLOCK: sensitive file matched"
 
-The file matched a built-in sensitive pattern (`*.pem`, `*.key`, `*password*`, `id_rsa`, `.env.local`, etc.).
+A file matched a built-in sensitive pattern. There is no flag to disable this. Add the file to `exclude:` or move it outside the project tree.
 
-There is **no flag to disable this check**. Options:
+### `molt verify-binary` fails with "root_hash mismatch"
 
-1. Add the file to `exclude:`:
-   ```yaml
-   exclude:
-     - "config/dev-cert.pem"
-   ```
-2. Move the file outside the project tree (the real fix for private keys)
-3. Rename it if the pattern matched incorrectly (e.g. a file named `password_reset_template.html` — rename to `reset_email.html`)
+The binary was modified after build. Check checksums:
 
-### Build fails: "assets.required file not found"
-
+```bash
+sha256sum myapp-v1.0.0        # must match on both source and target
 ```
-error: required asset not found: models/weights.bin
-```
-
-The file declared as `required: true` in `assets:` doesn't exist at build time.
-
-Either create the file or change it to `required: false`.
-
-### `molt verify-binary` fails
-
-```
-error: verify: root_hash mismatch
-```
-
-The binary was modified after build. Possible causes:
-
-- **Corrupted transfer** — check checksums:
-  ```bash
-  $ sha256sum myapp-v1.0.0        # on source
-  $ sha256sum myapp-v1.0.0        # on target — must match
-  ```
-- **Binary was patched** — re-download from the trusted source
-- **Disk corruption** — retry on a fresh disk
-- **molt bug** — file an issue with the binary + its `.manifest.json`
 
 ### `molt inspect` says "binary has no integrity trailer (legacy build)"
 
-The binary was built with an older version of molt that didn't yet write trailers. Either rebuild, or use the sidecar `.manifest.json` directly (if it was produced alongside the binary):
+Built with an older version of molt. Rebuild, or use the sidecar manifest directly:
 
 ```bash
-$ molt inspect ./myapp-v1.0.0.manifest.json
+molt inspect ./myapp-v1.0.0.manifest.json
 ```
 
-### `deps.strategy: poetry` fails at build
+### Post-install hook hangs
 
-Poetry and Pipenv strategies require their tools on the build host and can't directly drive `uv pip install`. Workaround:
-
-```bash
-$ poetry export -f requirements.txt --without-hashes -o requirements.txt
-```
-
-Then in `molt.yaml`:
-
-```yaml
-deps:
-  strategy: requirements
-  files: [requirements.txt]
-```
-
-### `molt assemble` fails: "manifest has no Python spec"
-
-The `capture` manifest doesn't contain enough information. Re-run capture on a machine with Python installed and accessible:
-
-```bash
-$ which python3 && python3 --version
-$ molt capture
-```
-
-### Post-install hook hangs forever
-
-The hook is waiting for stdin. Use non-interactive flags on every management command:
+The hook is waiting for stdin. Use non-interactive flags:
 
 ```yaml
 hooks:
@@ -1144,25 +1104,11 @@ hooks:
 ### Binary is unexpectedly large
 
 ```bash
-# See the 20 largest packaged files
-$ molt inspect ./myapp-v1.0.0 --files | awk 'NR>1{print $2, $1}' | sort -rh | head -20
+# 20 largest packaged files
+molt inspect ./myapp-v1.0.0 --files | awk 'NR>1{print $2, $1}' | sort -rh | head -20
 
-# Compare to the previous release
-$ molt diff ./myapp-v0.9.0 ./myapp-v1.0.0
-```
-
-Common culprits: accidentally included `__pycache__/` directories, committed datasets or model files, test fixtures, `.git/` directory (report a bug if this happens — it should always be excluded).
-
-### I want to see the full manifest as JSON
-
-```bash
-$ molt inspect ./myapp-v1.0.0 --json | python3 -m json.tool | less
-
-# Or use jq
-$ molt inspect ./myapp-v1.0.0 --json | jq '.payload.files[] | {path, size, source}' | head -40
-
-# Largest files by source category
-$ molt inspect ./myapp-v1.0.0 --json | jq '[.payload.files[] | select(.source == "asset")] | sort_by(-.size)'
+# Compare to previous release
+molt diff ./myapp-v0.9.0 ./myapp-v1.0.0
 ```
 
 ---
@@ -1170,6 +1116,8 @@ $ molt inspect ./myapp-v1.0.0 --json | jq '[.payload.files[] | select(.source ==
 ## Getting help
 
 - `molt doctor` — system diagnostics, uv resolution, tool locations
-- `molt inspect <binary>` — what's inside a binary
+- `molt info` — project + store environment summary
+- `molt inspect <binary>` — what's inside a built binary
 - `molt diff <a> <b>` — what changed between two builds
-- `molt adopt --non-interactive` — regenerate `molt.yaml` from project structure
+- `molt python isolation-check` — verify the project environment is clean
+- [docs/global-store.md](./docs/global-store.md) — deep dive into the store architecture
