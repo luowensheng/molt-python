@@ -41,7 +41,7 @@ commands:
                 type: string
         script: |-
             set -e
-            OUTPUT_DIR="./builds/{{.version}}/mac/molt"
+            OUTPUT_DIR="./.ignore/builds/{{.version}}/mac/molt"
             {{Run}} build --os darwin --arch arm64 --version {{.version}} --output $OUTPUT_DIR
             bman add $OUTPUT_DIR
             molt version
@@ -52,7 +52,7 @@ commands:
                 type: string
         script: |-
             set -e
-            OUTPUT_DIR="./builds/{{.version}}/linux-amd/molt"
+            OUTPUT_DIR="./.ignore/builds/{{.version}}/linux-amd/molt"
             {{Run}} build --os linux --arch amd64 --version {{.version}} --output $OUTPUT_DIR
     
     build_all:
