@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -376,16 +377,28 @@ func (m *Manager) ConflictsCheck() error {
 }
 
 // compareVersions returns 1 if a > b, -1 if a < b, 0 if equal.
+// Compares numerically per segment so "3.12" > "3.9".
 func compareVersions(a, b string) int {
 	partsA := strings.Split(a, ".")
 	partsB := strings.Split(b, ".")
-	for i := 0; i < len(partsA) && i < len(partsB); i++ {
-		if partsA[i] > partsB[i] {
+	maxLen := len(partsA)
+	if len(partsB) > maxLen {
+		maxLen = len(partsB)
+	}
+	for i := 0; i < maxLen; i++ {
+		var na, nb int
+		if i < len(partsA) {
+			na, _ = strconv.Atoi(partsA[i])
+		}
+		if i < len(partsB) {
+			nb, _ = strconv.Atoi(partsB[i])
+		}
+		if na > nb {
 			return 1
 		}
-		if partsA[i] < partsB[i] {
+		if na < nb {
 			return -1
 		}
 	}
-	return len(partsA) - len(partsB)
+	return 0
 }

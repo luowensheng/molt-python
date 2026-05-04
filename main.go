@@ -441,8 +441,53 @@ func cmdInit(args []string) error {
 			return fmt.Errorf("uv lock: %w", err)
 		}
 	}
+	// uv init skips .gitignore when the directory is already inside a git
+	// repo, and when it does create one it lists .venv — which molt never
+	// produces. Ensure .gitignore exists and contains .molt/ instead.
+	if err := patchGitignore(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: could not write .gitignore: %v\n", err)
+	}
 	fmt.Println("✓ Done.")
 	return nil
+}
+
+// patchGitignore ensures <dir>/.gitignore contains ".molt/" and not ".venv/".
+// Creates the file if it doesn't exist; amends it if it does.
+func patchGitignore(dir string) error {
+	path := filepath.Join(dir, ".gitignore")
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	content := string(data)
+
+	// Remove any .venv entry uv may have written (molt doesn't produce .venv).
+	var kept []string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == ".venv" || trimmed == ".venv/" {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	content = strings.Join(kept, "\n")
+
+	// Add .molt/ if not already present.
+	hasMolt := false
+	for _, line := range kept {
+		if strings.TrimSpace(line) == ".molt/" || strings.TrimSpace(line) == ".molt" {
+			hasMolt = true
+			break
+		}
+	}
+	if !hasMolt {
+		if content != "" && !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		content += ".molt/\n"
+	}
+
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 func cmdAdd(args []string) error {

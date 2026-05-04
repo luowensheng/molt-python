@@ -180,7 +180,11 @@ func (r *Runner) Remove(name string) error {
 		lines = append(lines, line)
 	}
 
-	if err := os.WriteFile(tomlPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+	out := strings.Join(lines, "\n")
+	if len(data) > 0 && data[len(data)-1] == '\n' {
+		out += "\n"
+	}
+	if err := os.WriteFile(tomlPath, []byte(out), 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("✓ Task '%s' removed\n", name)

@@ -205,7 +205,7 @@ func Sync(projectDir string, opts Options) error {
 	}
 
 	if opts.Verbose {
-		fmt.Printf("✓ %d package(s); store=%s\n", len(syspathDirs), st.Root)
+		fmt.Printf("✓ %d package(s); store=%s\n", len(topo), st.Root)
 	}
 	return nil
 }

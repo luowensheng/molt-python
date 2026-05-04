@@ -93,17 +93,8 @@ func (f *uvStreamFilter) Write(p []byte) (int, error) {
 }
 
 func shouldSuppress(line []byte) bool {
-	s := string(line)
-	trimmed := strings.TrimSpace(s)
-	switch {
-	case strings.HasPrefix(trimmed, "Creating virtual environment at:"):
-		return true
-	case strings.HasPrefix(trimmed, "Using CPython") && strings.Contains(trimmed, ".11"):
-		// Drop the redundant interpreter-version line — uv prints it on
-		// every command. Users who want it can run `molt python which`.
-		return false // keep for now; just suppress the venv line
-	}
-	return false
+	trimmed := strings.TrimSpace(string(line))
+	return strings.HasPrefix(trimmed, "Creating virtual environment at:")
 }
 
 // projectEnv builds the env passed to uv. It redirects UV_PROJECT_ENVIRONMENT
@@ -188,7 +179,21 @@ func Sync(dir string, frozen bool) error {
 
 func Tree(dir string) error { return run(dir, "tree") }
 
+// LockIfStale regenerates uv.lock only when pyproject.toml is newer than
+// uv.lock (or uv.lock does not exist). Returns true if a lock was run.
 func LockIfStale(dir string) (bool, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return false, err
+	}
+	pyproj, err := os.Stat(filepath.Join(abs, "pyproject.toml"))
+	if err != nil {
+		return false, nil // no pyproject.toml — nothing to do
+	}
+	lock, err := os.Stat(filepath.Join(abs, "uv.lock"))
+	if err == nil && !pyproj.ModTime().After(lock.ModTime()) {
+		return false, nil // lock is fresh
+	}
 	return true, Lock(dir)
 }
 
