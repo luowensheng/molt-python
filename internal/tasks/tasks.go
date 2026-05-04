@@ -4,14 +4,21 @@ package tasks
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"molt/internal/syspath"
 	"molt/pkg/types"
 )
+
+// ErrTaskNotFound is returned by Run when name does not match any task in
+// pyproject.toml. Callers (e.g. `molt run`) use this to fall through to
+// generic command exec.
+var ErrTaskNotFound = errors.New("task not found")
 
 // Runner runs named tasks defined in pyproject.toml.
 type Runner struct {
@@ -43,7 +50,7 @@ func (r *Runner) Run(name string, watch bool, extraArgs []string) error {
 		}
 	}
 	if task == nil {
-		return fmt.Errorf("task '%s' not found — use 'molt task list' to see available tasks", name)
+		return fmt.Errorf("%w: %s", ErrTaskNotFound, name)
 	}
 
 	if watch {
@@ -137,14 +144,11 @@ func (r *Runner) runOnce(task *types.Task, extraArgs []string) error {
 
 	fmt.Printf("$ %s\n", cmdStr)
 
-	// Build the command with the venv activated.
-	venvBin := filepath.Join(r.ProjectDir, ".venv", "bin")
 	shell := "/bin/sh"
 	shellFlag := "-c"
 	if isWindows() {
 		shell = "cmd"
 		shellFlag = "/C"
-		venvBin = filepath.Join(r.ProjectDir, ".venv", "Scripts")
 	}
 
 	cmd := exec.Command(shell, shellFlag, cmdStr)
@@ -153,8 +157,8 @@ func (r *Runner) runOnce(task *types.Task, extraArgs []string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 
-	// Inject venv PATH and .env variables.
-	cmd.Env = r.buildEnv(venvBin, task.Env)
+	// Build env using the new syspath spec if available, else fall back to .venv.
+	cmd.Env = r.buildTaskEnv(task.Env)
 
 	return cmd.Run()
 }
@@ -285,20 +289,15 @@ func (r *Runner) loadTasks() ([]types.Task, error) {
 	return tasks, nil
 }
 
-func (r *Runner) buildEnv(venvBin string, taskEnv []string) []string {
-	env := os.Environ()
-
-	// Prepend venv bin to PATH.
-	newEnv := []string{}
-	for _, e := range env {
-		if strings.HasPrefix(e, "PATH=") {
-			sep := ":"
-			if isWindows() {
-				sep = ";"
-			}
-			e = "PATH=" + venvBin + sep + strings.TrimPrefix(e, "PATH=")
-		}
-		newEnv = append(newEnv, e)
+// buildTaskEnv constructs the env for a task, preferring the new
+// .molt/syspath.json (global-store layout) and falling back to a legacy
+// .venv layout for projects that haven't been re-synced yet.
+func (r *Runner) buildTaskEnv(taskEnv []string) []string {
+	var newEnv []string
+	if spec, err := syspath.Load(r.ProjectDir); err == nil {
+		newEnv = spec.BuildEnv(os.Environ())
+	} else {
+		newEnv = r.legacyVenvEnv()
 	}
 
 	// Load .env file.
@@ -317,6 +316,29 @@ func (r *Runner) buildEnv(venvBin string, taskEnv []string) []string {
 	newEnv = append(newEnv, taskEnv...)
 
 	return newEnv
+}
+
+// legacyVenvEnv keeps the pre-sync-rewrite behaviour for projects that still
+// have a .venv on disk and haven't been migrated. Drop once .venv support is
+// removed entirely.
+func (r *Runner) legacyVenvEnv() []string {
+	venvBin := filepath.Join(r.ProjectDir, ".venv", "bin")
+	if isWindows() {
+		venvBin = filepath.Join(r.ProjectDir, ".venv", "Scripts")
+	}
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			sep := ":"
+			if isWindows() {
+				sep = ";"
+			}
+			e = "PATH=" + venvBin + sep + strings.TrimPrefix(e, "PATH=")
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func (r *Runner) workDir(task *types.Task) string {

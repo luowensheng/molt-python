@@ -67,7 +67,7 @@ commands:
 
     codebase:
         script: |-
-            functool merge --ignore "builds*" --ignore "testdata*" "*.go" molt.txt "// {filepath}" 
+            functool merge --ignore "builds*" --ignore "testdata*" "*.go" ignore/molt.txt "// {filepath}" 
 
 
     testbuild:

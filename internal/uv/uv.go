@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 
+	"molt/internal/syncplan"
 	"molt/internal/uvbin"
 )
 
@@ -86,12 +87,11 @@ func Remove(dir string, packages []string, dev bool) error {
 
 func Lock(dir string) error { return run(dir, "lock") }
 
+// Sync populates the global content-addressed package store and writes the
+// project's .molt/syspath.json. Replaces the legacy `uv sync` path that
+// materialised a per-project .venv.
 func Sync(dir string, frozen bool) error {
-	args := []string{"sync"}
-	if frozen {
-		args = append(args, "--frozen")
-	}
-	return run(dir, args...)
+	return syncplan.Sync(dir, syncplan.Options{Frozen: frozen, Verbose: true})
 }
 
 func Tree(dir string) error { return run(dir, "tree") }

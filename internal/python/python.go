@@ -240,44 +240,84 @@ func (m *Manager) Audit() error {
 	return nil
 }
 
-// IsolationCheck verifies the venv is genuinely isolated.
+// IsolationCheck verifies the project's environment is well-formed: every
+// non-stdlib sys.path entry should point into the molt global store
+// (~/.molt/pkg) or into the project source tree.
 func (m *Manager) IsolationCheck() error {
-	venvDir := filepath.Join(m.projectDir, ".venv")
-	if _, err := os.Stat(venvDir); os.IsNotExist(err) {
-		return fmt.Errorf("no venv found at .venv/ — run 'molt sync' first")
+	specPath := filepath.Join(m.projectDir, ".molt", "syspath.json")
+	if _, err := os.Stat(specPath); os.IsNotExist(err) {
+		return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first")
 	}
-	fmt.Println("Checking venv isolation...")
-	if pp := os.Getenv("PYTHONPATH"); pp != "" {
-		fmt.Printf("  ⚠ PYTHONPATH=%s — this leaks packages into the venv\n", pp)
-	} else {
-		fmt.Println("  ✓ PYTHONPATH not set")
+	specData, err := os.ReadFile(specPath)
+	if err != nil {
+		return err
 	}
-	uv, _ := uvbin.Ensure()
-	cmd := exec.Command(uv, "run", "python", "-c", `import sys, json; print(json.dumps(sys.path))`)
-	cmd.Dir = m.projectDir
-	cmd.Env = append(os.Environ(), "VIRTUAL_ENV="+venvDir)
+	var spec struct {
+		Python  string   `json:"python"`
+		Syspath []string `json:"syspath"`
+	}
+	if err := json.Unmarshal(specData, &spec); err != nil {
+		return fmt.Errorf("parse syspath.json: %w", err)
+	}
+	fmt.Println("Checking environment isolation...")
+	for _, leaked := range []string{"VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"} {
+		if v := os.Getenv(leaked); v != "" {
+			fmt.Printf("  ⚠ %s=%s set in your shell — molt run unsets it, but ad-hoc invocations of python won't\n", leaked, v)
+		}
+	}
+	cmd := exec.Command(spec.Python, "-c", `import sys, json; print(json.dumps(sys.path))`)
+	cmd.Env = append([]string{
+		"PYTHONPATH=" + filepath.Join(m.projectDir, ".molt") + string(os.PathListSeparator) + strings.Join(spec.Syspath, string(os.PathListSeparator)),
+	}, filterEnv(os.Environ(), "PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME")...)
 	out, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("check sys.path: %w", err)
 	}
-	var syspath []string
-	json.Unmarshal(out, &syspath)
-	venvAbs, _ := filepath.Abs(venvDir)
+	var got []string
+	_ = json.Unmarshal(out, &got)
+	expected := map[string]bool{}
+	for _, d := range spec.Syspath {
+		expected[d] = true
+	}
+	expected[filepath.Join(m.projectDir, ".molt")] = true
 	unexpected := 0
-	for _, p := range syspath {
-		if p == "" || strings.HasPrefix(p, venvAbs) {
+	for _, p := range got {
+		if p == "" || expected[p] {
 			continue
 		}
 		if strings.Contains(p, "python") && strings.Contains(p, "lib") {
-			continue
+			continue // stdlib
 		}
 		fmt.Printf("  ⚠ Unexpected sys.path entry: %s\n", p)
 		unexpected++
 	}
 	if unexpected == 0 {
-		fmt.Println("  ✓ sys.path is clean — no unexpected entries")
+		fmt.Println("  ✓ sys.path is clean — only store dirs + project src")
 	}
 	return nil
+}
+
+func filterEnv(env []string, drop ...string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		i := strings.IndexByte(kv, '=')
+		if i < 0 {
+			out = append(out, kv)
+			continue
+		}
+		k := kv[:i]
+		skip := false
+		for _, d := range drop {
+			if k == d {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // ConflictsCheck detects when multiple Pythons interfere.
