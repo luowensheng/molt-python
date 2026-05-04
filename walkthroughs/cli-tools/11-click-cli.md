@@ -13,8 +13,10 @@ to a production server that has no Python installed.
 $ mkdir tagctl && cd tagctl
 $ molt init
 Initialising project "tagctl"...
-Initialized project `tagctl` at `/home/user/projects/tagctl`
-Resolved 1 package in 45ms
+Initialized project `tagctl`
+Using CPython 3.11.14
+Resolved 1 package in 11ms
+✓ Done.
 ```
 
 `molt init` runs `uv init` in the current directory, giving you a minimal working
@@ -50,13 +52,26 @@ section 2, then sync:
 
 ```bash
 $ molt sync
-→ ↓ click 8.1.7    (~/.molt/pkg/click/8.1.7/cp311-cp311-linux_x86_64/)
-→ ↓ boto3 1.34.11  (~/.molt/pkg/boto3/1.34.11/py3-none-any/)
-→ ↓ rich 13.7.0    (~/.molt/pkg/rich/13.7.0/py3-none-any/)
-→ ↓ pydantic 2.6.1 (~/.molt/pkg/pydantic/2.6.1/cp311-cp311-linux_x86_64/)
-→ ↓ pytest 8.1.1   (~/.molt/pkg/pytest/8.1.1/py3-none-any/)
-→ ↓ ruff 0.3.2     (~/.molt/pkg/ruff/0.3.2/py3-none-any/)
-✔ 47 packages ready (6 downloaded, 41 cached)
+  ↓ install click 8.1.7 (click-8.1.7-py3-none-any.whl)
+  ↓ install boto3 1.34.11 (boto3-1.34.11-py3-none-any.whl)
+  ↓ install rich 13.7.0 (rich-13.7.0-py3-none-any.whl)
+  ↓ install pydantic 2.6.1 (pydantic-2.6.1-py3-none-any.whl)
+  ↓ install pytest 8.1.1 (pytest-8.1.1-py3-none-any.whl)
+  ↓ install ruff 0.3.2 (ruff-0.3.2-py3-none-any.whl)
+  ✓ cached  pydantic-core 2.16.2
+  ...
+✓ 47 package(s); store=/Users/you/.molt/pkg
+```
+
+A re-run hits the cache:
+
+```bash
+$ molt sync
+  ✓ cached  click 8.1.7
+  ✓ cached  boto3 1.34.11
+  ✓ cached  rich 13.7.0
+  ...
+✓ 47 package(s); store=/Users/you/.molt/pkg
 ```
 
 Packages live once in `~/.molt/pkg/` and are shared across every project. A second
