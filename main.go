@@ -133,7 +133,12 @@ func usage() {
 	fmt.Print(`molt — hermetic Python project toolchain
 
 Project:
-  init     [flags] [name]          Scaffold a new Python project
+  init     [flags] [name]          Scaffold a new Python project (src/ layout by default)
+                                     --flat        keep uv's hello.py layout
+                                     --lib         library layout
+                                     --no-main     skip src/<pkg>/__main__.py
+                                     --no-init-py  skip src/<pkg>/__init__.py
+                                     --no-tests    skip tests/
   add      [--dev] <pkg...>        Add dependency
   remove   [--dev] <pkg...>        Remove dependency
   sync     [--frozen] [--refresh]  Install lockfile into ~/.molt/pkg + write .molt/syspath.json
@@ -406,7 +411,11 @@ func cmdInit(args []string) error {
 	}
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	pyVersion := fs.String("python", "", "Python version")
-	lib := fs.Bool("lib", false, "Library layout")
+	lib := fs.Bool("lib", false, "Library layout (passes --lib to uv)")
+	flat := fs.Bool("flat", false, "Keep uv's flat hello.py layout (skip src/ scaffold)")
+	noMain := fs.Bool("no-main", false, "Skip src/<pkg>/__main__.py")
+	noInitPy := fs.Bool("no-init-py", false, "Skip src/<pkg>/__init__.py")
+	noTests := fs.Bool("no-tests", false, "Skip tests/ directory")
 	noLock := fs.Bool("no-lock", false, "Skip uv lock")
 	fs.Parse(args)
 
@@ -441,6 +450,26 @@ func cmdInit(args []string) error {
 			return fmt.Errorf("uv lock: %w", err)
 		}
 	}
+
+	// Default to the conventional src/ layout. uv's --lib already creates
+	// src/<pkg>/__init__.py with a proper pyproject.toml, so for that path
+	// only add tests/. --flat preserves uv's hello.py default for users who
+	// want the bare uv scaffold.
+	switch {
+	case *flat:
+		// nothing to do
+	case *lib:
+		if !*noTests {
+			if err := writeTestsScaffold(dir); err != nil {
+				fmt.Fprintf(os.Stderr, "warn: tests scaffold: %v\n", err)
+			}
+		}
+	default:
+		if err := scaffoldSrcLayout(dir, name, !*noInitPy, !*noMain, !*noTests); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: scaffold: %v\n", err)
+		}
+	}
+
 	// uv init skips .gitignore when the directory is already inside a git
 	// repo, and when it does create one it lists .venv — which molt never
 	// produces. Ensure .gitignore exists and contains .molt/ instead.
@@ -449,6 +478,62 @@ func cmdInit(args []string) error {
 	}
 	fmt.Println("✓ Done.")
 	return nil
+}
+
+// pyPackageName normalises a project name into a valid Python package name:
+// dashes and dots become underscores, lowercase.
+func pyPackageName(name string) string {
+	r := strings.NewReplacer("-", "_", ".", "_", " ", "_")
+	return strings.ToLower(r.Replace(name))
+}
+
+// scaffoldSrcLayout replaces uv's hello.py placeholder with the conventional
+// src/<pkg>/ + tests/ layout. Files already on disk are never overwritten.
+func scaffoldSrcLayout(dir, name string, initPy, mainPy, tests bool) error {
+	pkg := pyPackageName(name)
+	_ = os.Remove(filepath.Join(dir, "hello.py"))
+
+	pkgDir := filepath.Join(dir, "src", pkg)
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		return err
+	}
+	if initPy {
+		if err := writeIfMissing(filepath.Join(pkgDir, "__init__.py"),
+			`__version__ = "0.1.0"`+"\n"); err != nil {
+			return err
+		}
+	}
+	if mainPy {
+		body := fmt.Sprintf(`def main() -> None:
+    print("Hello from %s!")
+
+
+if __name__ == "__main__":
+    main()
+`, name)
+		if err := writeIfMissing(filepath.Join(pkgDir, "__main__.py"), body); err != nil {
+			return err
+		}
+	}
+	if tests {
+		return writeTestsScaffold(dir)
+	}
+	return nil
+}
+
+func writeTestsScaffold(dir string) error {
+	testsDir := filepath.Join(dir, "tests")
+	if err := os.MkdirAll(testsDir, 0o755); err != nil {
+		return err
+	}
+	return writeIfMissing(filepath.Join(testsDir, "conftest.py"), "")
+}
+
+func writeIfMissing(path, content string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil // never clobber existing user files
+	}
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 // patchGitignore ensures <dir>/.gitignore contains ".molt/" and not ".venv/".

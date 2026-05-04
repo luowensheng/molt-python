@@ -301,6 +301,9 @@ placeholder, not literal output.
 Scaffolds a new project. With no name, initialises the **current directory**
 in place (no nested subdir). With a name, creates `<name>/` and inits there.
 
+By default `molt init` produces the conventional **`src/` layout** plus a
+`tests/` directory — uv's `hello.py` placeholder is removed automatically.
+
 ```
 $ mkdir tagctl && cd tagctl
 $ molt init
@@ -311,23 +314,34 @@ Resolved 1 package in 11ms
 ✓ Done.
 
 $ ls
-.gitignore  .python-version  README.md  hello.py  pyproject.toml  uv.lock
+.gitignore  .python-version  README.md  pyproject.toml  src  tests  uv.lock
+$ tree src tests
+src
+└── tagctl
+    ├── __init__.py     # __version__ = "0.1.0"
+    └── __main__.py     # def main(): print("Hello from tagctl!")
+tests
+└── conftest.py
 ```
+
+`.gitignore` is created (or amended) so `.molt/` is ignored — `uv init` writes
+`.venv` here, which molt doesn't use, so the entry is rewritten.
+
+Project names with dashes/dots are normalised for the package directory:
+`molt init tag-control` produces `src/tag_control/`.
 
 Flags:
 - `--python <ver>` — pin a specific Python (writes `.python-version`).
-- `--lib` — library layout (`src/<name>/__init__.py` instead of `hello.py`).
+- `--lib` — library layout via uv (`src/<pkg>/__init__.py` with hatchling
+  build config). Skips `__main__.py` since libraries don't have one.
+- `--flat` — keep uv's bare `hello.py` layout, skip the `src/` scaffold.
+- `--no-main` — skip `src/<pkg>/__main__.py`.
+- `--no-init-py` — skip `src/<pkg>/__init__.py`.
+- `--no-tests` — skip the `tests/` directory.
 - `--no-lock` — skip the initial `uv lock`.
 
-What `init` creates is the **flat uv default**: `.python-version`, `README.md`,
-`hello.py`, `pyproject.toml`, `uv.lock`. To get the conventional `src/`
-layout, do it yourself:
-
-```sh
-$ rm hello.py
-$ mkdir -p src/tagctl tests
-$ touch src/tagctl/__init__.py src/tagctl/__main__.py tests/conftest.py
-```
+Existing files are never overwritten — re-running `molt init` on a populated
+directory is safe.
 
 #### `molt add [--dev] <pkg...>`
 
