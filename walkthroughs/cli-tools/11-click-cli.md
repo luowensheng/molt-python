@@ -7,26 +7,59 @@ to a production server that has no Python installed.
 
 ---
 
-## 1. Project Init and molt sync
+## 1. Project Init
 
 ```bash
 $ mkdir tagctl && cd tagctl
 $ molt init
 Initialising project "tagctl"...
 Initialized project `tagctl` at `/home/user/projects/tagctl`
-Resolved 47 packages in 312ms
+Resolved 1 package in 45ms
+```
 
+`molt init` runs `uv init` in the current directory, giving you a minimal working
+project:
+
+```
+tagctl/
+├── .python-version   # e.g. "3.11"
+├── README.md
+├── hello.py          # uv placeholder — delete this
+├── pyproject.toml    # minimal, no dependencies yet
+└── uv.lock
+```
+
+Next, set up the `src/` layout and create the application skeleton:
+
+```bash
+# Remove the uv placeholder
+$ rm hello.py
+
+# Create package directories
+$ mkdir -p src/tagctl tests policies
+
+# Create package files (populated in section 3 below)
+$ touch src/tagctl/__init__.py src/tagctl/__main__.py \
+        src/tagctl/cli.py src/tagctl/aws.py \
+        src/tagctl/models.py src/tagctl/policy.py
+$ touch tests/conftest.py tests/test_cli.py tests/test_policy.py
+```
+
+Replace the generated `pyproject.toml` with the full project config shown in
+section 2, then sync:
+
+```bash
 $ molt sync
-→ ↓ click 8.1.7 (~/.molt/pkg/click/8.1.7/cp311-cp311-linux_x86_64/)
-→ ↓ boto3 1.34.11 (~/.molt/pkg/boto3/1.34.11/py3-none-any/)
-→ ↓ rich 13.7.0 (~/.molt/pkg/rich/13.7.0/py3-none-any/)
+→ ↓ click 8.1.7    (~/.molt/pkg/click/8.1.7/cp311-cp311-linux_x86_64/)
+→ ↓ boto3 1.34.11  (~/.molt/pkg/boto3/1.34.11/py3-none-any/)
+→ ↓ rich 13.7.0    (~/.molt/pkg/rich/13.7.0/py3-none-any/)
 → ↓ pydantic 2.6.1 (~/.molt/pkg/pydantic/2.6.1/cp311-cp311-linux_x86_64/)
-→ ↓ pytest 8.1.1 (~/.molt/pkg/pytest/8.1.1/py3-none-any/)
-→ ↓ ruff 0.3.2 (~/.molt/pkg/ruff/0.3.2/py3-none-any/)
+→ ↓ pytest 8.1.1   (~/.molt/pkg/pytest/8.1.1/py3-none-any/)
+→ ↓ ruff 0.3.2     (~/.molt/pkg/ruff/0.3.2/py3-none-any/)
 ✔ 47 packages ready (6 downloaded, 41 cached)
 ```
 
-Packages are stored once in `~/.molt/pkg/` and shared across all projects. A second
+Packages live once in `~/.molt/pkg/` and are shared across every project. A second
 project that needs `click` or `rich` will see `✔ cached` and incur zero disk writes.
 
 ---
@@ -73,12 +106,18 @@ testpaths = ["tests"]
 
 ---
 
-## 3. Project Structure
+## 3. Final Project Structure
+
+After adding all application files (see section 1 for the scaffolding steps):
 
 ```
 tagctl/
+├── .python-version
 ├── pyproject.toml
+├── uv.lock
 ├── molt.yaml
+├── policies/
+│   └── required-tags.yaml
 ├── src/
 │   └── tagctl/
 │       ├── __init__.py
