@@ -12,20 +12,22 @@ to a production server that has no Python installed.
 ```bash
 $ mkdir tagctl && cd tagctl
 $ molt init
-✔ Created pyproject.toml
-✔ Created src/tagctl/__init__.py
-✔ Initialized uv environment
+Initialising project "tagctl"...
+Initialized project `tagctl` at `/home/user/projects/tagctl`
+Resolved 47 packages in 312ms
 
 $ molt sync
-✔ Resolved 47 packages
-✔ Installed click==8.1.7
-✔ Installed boto3==1.34.11
-✔ Installed rich==13.7.0
-✔ Installed pydantic==2.6.1
-✔ Installed pytest==8.1.1
-✔ Installed ruff==0.3.2
-Environment ready in .venv/
+→ ↓ click 8.1.7 (~/.molt/pkg/click/8.1.7/cp311-cp311-linux_x86_64/)
+→ ↓ boto3 1.34.11 (~/.molt/pkg/boto3/1.34.11/py3-none-any/)
+→ ↓ rich 13.7.0 (~/.molt/pkg/rich/13.7.0/py3-none-any/)
+→ ↓ pydantic 2.6.1 (~/.molt/pkg/pydantic/2.6.1/cp311-cp311-linux_x86_64/)
+→ ↓ pytest 8.1.1 (~/.molt/pkg/pytest/8.1.1/py3-none-any/)
+→ ↓ ruff 0.3.2 (~/.molt/pkg/ruff/0.3.2/py3-none-any/)
+✔ 47 packages ready (6 downloaded, 41 cached)
 ```
+
+Packages are stored once in `~/.molt/pkg/` and shared across all projects. A second
+project that needs `click` or `rich` will see `✔ cached` and incur zero disk writes.
 
 ---
 

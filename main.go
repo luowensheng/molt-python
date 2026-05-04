@@ -387,20 +387,30 @@ func cmdInit(args []string) error {
 	noLock := fs.Bool("no-lock", false, "Skip uv lock")
 	fs.Parse(args)
 
-	dir, name := ".", ""
+	// initName is passed to uv init; dir is where uv lock runs afterwards.
+	// Case 0 (no args): init the current directory in-place — pass no name to
+	//   uv so it does not create a subdirectory. uv uses the cwd name itself.
+	// Case 1 (name given): let uv create a new subdirectory called name, then
+	//   lock inside it.
+	var dir, name, initName string
 	switch fs.NArg() {
 	case 0:
+		dir = "."
 		abs, _ := filepath.Abs(dir)
 		name = filepath.Base(abs)
+		initName = "" // no name → uv init initialises the current directory
 	case 1:
 		name = fs.Arg(0)
-		dir = name
+		dir = name    // lock will run in the newly created subdirectory
+		initName = name
 	default:
 		return fmt.Errorf("usage: molt init [flags] [name]")
 	}
 
 	fmt.Printf("Initialising project %q...\n", name)
-	if err := internuv.Init(dir, name, internuv.InitOptions{Python: *pyVersion, Lib: *lib}); err != nil {
+	// Always run uv init from the current directory ("."); for case 1 it
+	// creates the named subdirectory automatically.
+	if err := internuv.Init(".", initName, internuv.InitOptions{Python: *pyVersion, Lib: *lib}); err != nil {
 		return fmt.Errorf("uv init: %w", err)
 	}
 	if !*noLock {
