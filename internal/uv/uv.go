@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"molt/internal/syncplan"
 	"molt/internal/uvbin"
@@ -46,7 +47,40 @@ func run(dir string, args ...string) error {
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = projectEnv(dir)
 	return cmd.Run()
+}
+
+// projectEnv builds the env passed to uv. It redirects UV_PROJECT_ENVIRONMENT
+// into the project's hidden .molt/ directory so commands like `uv add` don't
+// litter the user's project tree with a top-level .venv/. Materialisation of
+// dependencies into the global content-addressed store happens separately
+// via syncplan.Sync, so this hidden env is mostly empty — it exists only
+// because newer uv versions insist on having one.
+func projectEnv(dir string) []string {
+	env := os.Environ()
+	if dir == "" {
+		return env
+	}
+	if _, set := lookupEnv(env, "UV_PROJECT_ENVIRONMENT"); set {
+		return env // user override wins
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return env
+	}
+	target := filepath.Join(abs, ".molt", "uv-env")
+	return append(env, "UV_PROJECT_ENVIRONMENT="+target)
+}
+
+func lookupEnv(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for _, e := range env {
+		if len(e) > len(prefix) && e[:len(prefix)] == prefix {
+			return e[len(prefix):], true
+		}
+	}
+	return "", false
 }
 
 func Init(dir, name string, opts InitOptions) error {
@@ -67,7 +101,10 @@ func Add(dir string, packages []string, dev bool) error {
 	if len(packages) == 0 {
 		return fmt.Errorf("add: at least one package required")
 	}
-	args := []string{"add"}
+	// --no-sync prevents uv from materialising a .venv/. Materialisation
+	// into the global content-addressed store happens via syncplan.Sync
+	// after this returns.
+	args := []string{"add", "--no-sync"}
 	if dev {
 		args = append(args, "--dev")
 	}
@@ -78,7 +115,7 @@ func Remove(dir string, packages []string, dev bool) error {
 	if len(packages) == 0 {
 		return fmt.Errorf("remove: at least one package required")
 	}
-	args := []string{"remove"}
+	args := []string{"remove", "--no-sync"}
 	if dev {
 		args = append(args, "--dev")
 	}

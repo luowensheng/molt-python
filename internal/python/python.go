@@ -199,11 +199,32 @@ func (m *Manager) Remove(version string) error {
 
 // Which returns the full path to the active Python binary via uv.
 func (m *Manager) Which() (string, error) {
-	out, err := m.runUv("find")
+	// Don't run `uv python find` from inside the project — uv creates a
+	// .venv/ as a side effect (even with --no-project) and returns the
+	// venv's python path. Run it from a neutral directory instead so the
+	// returned interpreter is the standalone uv-managed install.
+	uv, err := uvbin.Ensure()
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(out), nil
+	args := []string{"python", "find"}
+	if v := m.Active(); v != "" {
+		args = append(args, v)
+	}
+	cmd := exec.Command(uv, args...)
+	cmd.Dir = os.TempDir()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("uv python find: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	path := strings.TrimSpace(string(out))
+	// Sanity check: must not be inside the project's .venv (defence in depth
+	// in case uv's behaviour changes).
+	abs, _ := filepath.Abs(m.projectDir)
+	if abs != "" && strings.HasPrefix(path, filepath.Join(abs, ".venv")) {
+		return "", fmt.Errorf("uv python find returned project venv path %s — cwd should be neutral", path)
+	}
+	return path, nil
 }
 
 // Active returns the active Python version for the project.
