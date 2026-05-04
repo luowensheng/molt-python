@@ -533,7 +533,18 @@ func compileLauncher(targetOS, targetArch string) (string, error) {
 	os.MkdirAll(goCache, 0o755)
 	os.MkdirAll(goPath, 0o755)
 
-	cmd := exec.Command(goBin, "build", "-o", tmp.Name(), "molt/internal/launcher")
+	// Materialise the embedded launcher source into a temp module, then build
+	// from there. We can't rely on a `molt/internal/launcher` import path
+	// existing on the user's GOPATH — molt is shipped as a single binary, not
+	// a Go source tree.
+	srcDir, err := materialiseLauncherSrc()
+	if err != nil {
+		return "", fmt.Errorf("stage launcher source: %w", err)
+	}
+	defer os.RemoveAll(srcDir)
+
+	cmd := exec.Command(goBin, "build", "-o", tmp.Name(), ".")
+	cmd.Dir = srcDir
 	cmd.Env = []string{
 		"GOOS=" + targetOS,
 		"GOARCH=" + targetArch,
@@ -555,6 +566,47 @@ func compileLauncher(targetOS, targetArch string) (string, error) {
 	}
 	fmt.Printf("  Compiled launcher (%s/%s)\n", targetOS, targetArch)
 	return tmp.Name(), nil
+}
+
+// materialiseLauncherSrc unpacks the embedded launcher source into a fresh
+// temp directory together with a minimal go.mod, returning the directory
+// path. Caller is responsible for removing the directory.
+func materialiseLauncherSrc() (string, error) {
+	dir, err := os.MkdirTemp("", "molt-launcher-src-")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(launcherGoMod), 0o644); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	entries, err := launcherSrc.ReadDir("launcher_src")
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		// strip the .tpl suffix used to keep Go tooling from compiling the
+		// embedded source as part of the host module.
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go.tpl") {
+			continue
+		}
+		out := name[:len(name)-len(".tpl")]
+		data, err := launcherSrc.ReadFile("launcher_src/" + name)
+		if err != nil {
+			os.RemoveAll(dir)
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(dir, out), data, 0o644); err != nil {
+			os.RemoveAll(dir)
+			return "", err
+		}
+	}
+	return dir, nil
 }
 
 func addToTar(tw *tar.Writer, name string, data []byte) error {
