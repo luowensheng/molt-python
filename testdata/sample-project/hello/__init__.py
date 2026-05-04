@@ -1,1 +1,0 @@
-# hello-molt sample application
