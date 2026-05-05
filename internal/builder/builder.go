@@ -193,12 +193,28 @@ func (b *Builder) createPayload(
 	tmp.Close()
 	payloadPath := tmp.Name()
 
-	// Write the Go-side manifest (application descriptor) into .molt/ so
-	// the embedder picks it up. We clean it up afterwards.
+	// Stage manifest.json (and optional config.json) into a transient
+	// <project>/.molt/ directory so the embedder picks them up at the
+	// path the launcher expects (src/.molt/...). Per-project state moved
+	// out of the tree, but the build embedder walks RootDir = projectPath,
+	// so a transient in-tree dir is the simplest way to inject files at a
+	// specific tar path. Remove it again on exit so the user's project
+	// tree stays clean.
 	manifestDir := filepath.Join(b.cfg.ProjectPath, ".molt")
+	dirExisted := false
+	if st, err := os.Stat(manifestDir); err == nil && st.IsDir() {
+		dirExisted = true
+	}
 	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
 		return "", nil, err
 	}
+	// Register dir cleanup FIRST so it runs LAST (defers are LIFO).
+	// Only sweep the dir if we created it; if it pre-existed (legacy
+	// install), the user owns it.
+	if !dirExisted {
+		defer func() { _ = os.Remove(manifestDir) }()
+	}
+
 	manifestPath := filepath.Join(manifestDir, "manifest.json")
 	manifestData, _ := json.MarshalIndent(m, "", "  ")
 	if err := os.WriteFile(manifestPath, manifestData, 0o644); err != nil {
@@ -227,7 +243,8 @@ func (b *Builder) createPayload(
 	}
 	if moltCfg != nil {
 		// Allowlist mode. Include globs replace the default ignore list.
-		// We augment with ".molt/**" so our own metadata files ship.
+		// We augment with ".molt/**" so the transient build-time .molt/
+		// dir (manifest.json, config.json) ships in the embedded payload.
 		ecfg.IncludeGlobs = append(ecfg.IncludeGlobs, moltCfg.Include...)
 		if len(ecfg.IncludeGlobs) > 0 {
 			ecfg.IncludeGlobs = append(ecfg.IncludeGlobs, ".molt/**")

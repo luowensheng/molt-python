@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"molt/internal/projstate"
 	"molt/internal/uvbin"
 	"molt/pkg/types"
 	"os"
@@ -282,9 +283,12 @@ func (m *Manager) Audit() error {
 // non-stdlib sys.path entry should point into the molt global store
 // (~/.molt/pkg) or into the project source tree.
 func (m *Manager) IsolationCheck() error {
-	specPath := filepath.Join(m.projectDir, ".molt", "syspath.json")
+	specPath := projstate.Syspath(m.projectDir)
 	if _, err := os.Stat(specPath); os.IsNotExist(err) {
-		return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first")
+		return fmt.Errorf("project not synced — run 'molt sync' first (no syspath.json at %s)", specPath)
+	}
+	if legacy, ok := projstate.LegacyInTreeDir(m.projectDir); ok {
+		fmt.Printf("  ⚠ legacy in-tree state detected at %s — safe to `rm -rf %s`\n", legacy, legacy)
 	}
 	specData, err := os.ReadFile(specPath)
 	if err != nil {
@@ -303,9 +307,10 @@ func (m *Manager) IsolationCheck() error {
 			fmt.Printf("  ⚠ %s=%s set in your shell — molt run unsets it, but ad-hoc invocations of python won't\n", leaked, v)
 		}
 	}
+	stateDir := projstate.Dir(m.projectDir)
 	cmd := exec.Command(spec.Python, "-c", `import sys, json; print(json.dumps(sys.path))`)
 	cmd.Env = append([]string{
-		"PYTHONPATH=" + filepath.Join(m.projectDir, ".molt") + string(os.PathListSeparator) + strings.Join(spec.Syspath, string(os.PathListSeparator)),
+		"PYTHONPATH=" + stateDir + string(os.PathListSeparator) + strings.Join(spec.Syspath, string(os.PathListSeparator)),
 	}, filterEnv(os.Environ(), "PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME")...)
 	out, err := cmd.Output()
 	if err != nil {
@@ -317,7 +322,7 @@ func (m *Manager) IsolationCheck() error {
 	for _, d := range spec.Syspath {
 		expected[d] = true
 	}
-	expected[filepath.Join(m.projectDir, ".molt")] = true
+	expected[stateDir] = true
 	unexpected := 0
 	for _, p := range got {
 		if p == "" || expected[p] {

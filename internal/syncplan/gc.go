@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"molt/internal/lockparse"
+	"molt/internal/projstate"
 	"molt/internal/store"
 )
 
@@ -76,14 +77,34 @@ func GC(dryRun bool) error {
 		}
 	}
 
+	// Find orphaned per-project state dirs under ~/.molt/projects/. An
+	// entry is orphaned when its meta.json points at a project path that
+	// no longer has a pyproject.toml.
+	orphanStates := []projstate.Entry{}
+	if entries, err := projstate.ListAll(); err == nil {
+		for _, e := range entries {
+			if e.ProjectAlive {
+				continue
+			}
+			orphanStates = append(orphanStates, e)
+		}
+	}
+
 	if dryRun {
-		fmt.Printf("would remove %d store entr%s; would drop %d stale project(s):\n",
-			len(candidates), pluralS(len(candidates)), len(staleProjects))
+		fmt.Printf("would remove %d store entr%s; would drop %d stale project(s); would prune %d orphan state dir(s):\n",
+			len(candidates), pluralS(len(candidates)), len(staleProjects), len(orphanStates))
 		for _, c := range candidates {
 			fmt.Printf("  - %s\n", filepath.Join(st.Root, c))
 		}
 		for _, p := range staleProjects {
 			fmt.Printf("  - registry: %s\n", p)
+		}
+		for _, e := range orphanStates {
+			origin := e.ProjectDir
+			if origin == "" {
+				origin = "(no meta.json)"
+			}
+			fmt.Printf("  - state: %s  (was %s)\n", e.Dir, origin)
 		}
 		return nil
 	}
@@ -106,11 +127,16 @@ func GC(dryRun bool) error {
 	for _, p := range staleProjects {
 		delete(r.Projects, p)
 	}
+	for _, e := range orphanStates {
+		if err := os.RemoveAll(e.Dir); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: remove state %s: %v\n", e.Dir, err)
+		}
+	}
 	if err := saveRegistry(r); err != nil {
 		return err
 	}
-	fmt.Printf("✓ removed %d store entr%s, dropped %d stale project(s)\n",
-		len(candidates), pluralS(len(candidates)), len(staleProjects))
+	fmt.Printf("✓ removed %d store entr%s, dropped %d stale project(s), pruned %d orphan state dir(s)\n",
+		len(candidates), pluralS(len(candidates)), len(staleProjects), len(orphanStates))
 	return nil
 }
 

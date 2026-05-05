@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"molt/internal/projstate"
 	"molt/internal/syncplan"
 	"molt/internal/uvbin"
 )
@@ -111,12 +112,7 @@ func projectEnv(dir string) []string {
 	if _, set := lookupEnv(env, "UV_PROJECT_ENVIRONMENT"); set {
 		return env // user override wins
 	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return env
-	}
-	target := filepath.Join(abs, ".molt", "uv-env")
-	return append(env, "UV_PROJECT_ENVIRONMENT="+target)
+	return append(env, "UV_PROJECT_ENVIRONMENT="+projstate.UvEnv(dir))
 }
 
 func lookupEnv(env []string, key string) (string, bool) {

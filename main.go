@@ -16,8 +16,11 @@ import (
 
 	"molt/internal/adopt"
 	"molt/internal/builder"
+	"molt/internal/editor"
 	"molt/internal/integrity"
+	"molt/internal/projstate"
 	"molt/internal/python"
+	"molt/internal/store"
 	"molt/internal/syncplan"
 	"molt/internal/syspath"
 	"molt/internal/tasks"
@@ -82,6 +85,10 @@ func main() {
 		err = cmdTask(os.Args[2:])
 	case "template":
 		err = cmdTemplate(os.Args[2:])
+	case "where":
+		err = cmdWhere(os.Args[2:])
+	case "editor":
+		err = cmdEditor(os.Args[2:])
 
 	// ── Global package store ──────────────────────────────────────────────
 	case "gc":
@@ -145,6 +152,13 @@ Project:
   template show <name>             Show a template's metadata + file tree
   template add <name> <path>       Register a directory as a user template
   template remove <name>           Delete a user template
+
+Path discovery:
+  where                            Print every path molt knows about
+  where <key>                      Print one (state|python|bin|syspath|sitecustomize|uv-env|store)
+
+Editor integration:
+  editor [vscode|pyright]          Write/refresh editor configs (auto-detect if no name)
   add      [--dev] <pkg...>        Add dependency
   remove   [--dev] <pkg...>        Remove dependency
   sync     [--frozen] [--refresh]  Install lockfile into ~/.molt/pkg + write .molt/syspath.json
@@ -533,8 +547,11 @@ func injectTasks(pyprojectPath, chunk, name, pkg string) error {
 	return os.WriteFile(pyprojectPath, []byte(content), 0o644)
 }
 
-// patchGitignore ensures <dir>/.gitignore contains ".molt/" and not ".venv/".
-// Creates the file if it doesn't exist; amends it if it does.
+// patchGitignore strips uv-written `.venv` entries from <dir>/.gitignore
+// (molt doesn't produce a .venv) and creates the file if missing. It used
+// to also add `.molt/` — that's gone now since per-project state lives at
+// ~/.molt/projects/. Existing `.molt/` entries are left alone for projects
+// migrating from older molt versions.
 func patchGitignore(dir string) error {
 	path := filepath.Join(dir, ".gitignore")
 	data, err := os.ReadFile(path)
@@ -543,33 +560,24 @@ func patchGitignore(dir string) error {
 	}
 	content := string(data)
 
-	// Remove any .venv entry uv may have written (molt doesn't produce .venv).
 	var kept []string
+	changed := false
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == ".venv" || trimmed == ".venv/" {
+			changed = true
 			continue
 		}
 		kept = append(kept, line)
 	}
-	content = strings.Join(kept, "\n")
-
-	// Add .molt/ if not already present.
-	hasMolt := false
-	for _, line := range kept {
-		if strings.TrimSpace(line) == ".molt/" || strings.TrimSpace(line) == ".molt" {
-			hasMolt = true
-			break
-		}
+	if !changed && len(data) > 0 {
+		return nil // nothing to do
 	}
-	if !hasMolt {
-		if content != "" && !strings.HasSuffix(content, "\n") {
-			content += "\n"
-		}
-		content += ".molt/\n"
+	out := strings.Join(kept, "\n")
+	if out != "" && !strings.HasSuffix(out, "\n") {
+		out += "\n"
 	}
-
-	return os.WriteFile(path, []byte(content), 0o644)
+	return os.WriteFile(path, []byte(out), 0o644)
 }
 
 // reqFilesFlag accumulates -r requirements.txt entries so the flag can
@@ -969,6 +977,136 @@ func cmdTemplateAdd(name, path string) error {
 	return nil
 }
 
+// ── Path discovery ────────────────────────────────────────────────────────────
+
+func cmdWhere(args []string) error {
+	proj := cwd()
+
+	// Single-key form: print one path + newline. Script-friendly.
+	if len(args) >= 1 {
+		key := args[0]
+		path, err := wherePath(proj, key)
+		if err != nil {
+			return err
+		}
+		fmt.Println(path)
+		return nil
+	}
+
+	// Tabular form: every path molt knows about for this project.
+	type row struct{ label, path, note string }
+	rows := []row{
+		{"state", projstate.Dir(proj), ""},
+		{"bin", projstate.Bin(proj), ""},
+		{"syspath", projstate.Syspath(proj), ""},
+		{"sitecustomize", projstate.SiteCustomize(proj), ""},
+		{"uv-env", projstate.UvEnv(proj), ""},
+	}
+	if spec, err := syspath.Load(proj); err == nil {
+		rows = append([]row{{"python", spec.Python, ""}}, rows...)
+	} else {
+		rows = append([]row{{"python", "(not synced — run 'molt sync')", ""}}, rows...)
+	}
+	if st, err := store.Default(); err == nil {
+		rows = append(rows, row{"store", st.Root, ""})
+	}
+	if legacy, ok := projstate.LegacyInTreeDir(proj); ok {
+		rows = append(rows, row{"legacy", legacy, "(in-tree state from old molt — safe to remove)"})
+	}
+	for _, r := range rows {
+		fmt.Printf("  %-14s %s", r.label, r.path)
+		if r.note != "" {
+			fmt.Printf("  %s", r.note)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+// wherePath resolves a single key. Path-derived keys never fail; keys that
+// require a successful sync (`python`, `syspath`) error if syspath.json is
+// missing.
+func wherePath(proj, key string) (string, error) {
+	switch key {
+	case "state":
+		return projstate.Dir(proj), nil
+	case "bin":
+		return projstate.Bin(proj), nil
+	case "sitecustomize":
+		return projstate.SiteCustomize(proj), nil
+	case "uv-env":
+		return projstate.UvEnv(proj), nil
+	case "syspath":
+		return projstate.Syspath(proj), nil
+	case "python":
+		spec, err := syspath.Load(proj)
+		if err != nil {
+			return "", fmt.Errorf("not synced — run 'molt sync' first")
+		}
+		return spec.Python, nil
+	case "store":
+		st, err := store.Default()
+		if err != nil {
+			return "", err
+		}
+		return st.Root, nil
+	default:
+		return "", fmt.Errorf(
+			"unknown key %q (valid: state, python, bin, syspath, sitecustomize, uv-env, store)",
+			key)
+	}
+}
+
+// ── Editor integration ────────────────────────────────────────────────────────
+
+func cmdEditor(args []string) error {
+	fs := flag.NewFlagSet("editor", flag.ExitOnError)
+	force := fs.Bool("force", false, "overwrite VS Code settings even if it contains JSON comments (jsonc)")
+	fs.Parse(args)
+	rest := fs.Args()
+
+	proj := cwd()
+	spec, err := syspath.Load(proj)
+	if err != nil {
+		return fmt.Errorf("project not synced — run 'molt sync' first (no syspath.json)")
+	}
+
+	// No name → auto-detect from existing files.
+	if len(rest) == 0 {
+		done, err := editor.AutoDetect(proj, spec)
+		if err != nil {
+			return err
+		}
+		if len(done) == 0 {
+			fmt.Println("No editor configs found. Pass `vscode` or `pyright` explicitly:")
+			fmt.Println("  molt editor vscode    # writes .vscode/settings.json")
+			fmt.Println("  molt editor pyright   # writes pyrightconfig.json")
+			return nil
+		}
+		for _, name := range done {
+			fmt.Printf("✓ refreshed %s config\n", name)
+		}
+		return nil
+	}
+
+	switch rest[0] {
+	case "vscode":
+		if err := editor.WriteVSCode(proj, spec, *force); err != nil {
+			return err
+		}
+		fmt.Printf("✓ wrote %s\n", filepath.Join(proj, ".vscode", "settings.json"))
+		return nil
+	case "pyright":
+		if err := editor.WritePyright(proj, spec); err != nil {
+			return err
+		}
+		fmt.Printf("✓ wrote %s\n", filepath.Join(proj, "pyrightconfig.json"))
+		return nil
+	default:
+		return fmt.Errorf("unknown editor: %s (valid: vscode, pyright)", rest[0])
+	}
+}
+
 // ── Info ──────────────────────────────────────────────────────────────────────
 
 func cmdInfo() error {
@@ -1011,14 +1149,12 @@ func cmdInfo() error {
 	fmt.Printf("Python:     %s\n", pyVer)
 	fmt.Printf("Platform:   %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("Directory:  %s\n", dir)
+	fmt.Printf("State dir:  %s\n", projstate.Dir(dir))
 
 	if spec, err := syspath.Load(dir); err == nil {
 		fmt.Printf("Env:        %d store path(s); store=~/.molt/pkg\n", len(spec.Syspath))
 		fmt.Printf("Python bin: %s\n", spec.Python)
 	} else {
-		// Differentiate "no deps yet" from "deps declared but not synced".
-		// `dependencies = []` (empty array) counts as "no deps yet"; only a
-		// non-empty array means we should prompt for sync.
 		if hasNonEmptyDeps(string(data)) {
 			fmt.Println("Env:        not synced (run 'molt sync')")
 		} else {
@@ -1032,6 +1168,11 @@ func cmdInfo() error {
 			names[i] = t.Name
 		}
 		fmt.Printf("Tasks:      %s\n", strings.Join(names, ", "))
+	}
+
+	// One-line nudge if a stale in-tree .molt/ from old molt is still around.
+	if legacy, ok := projstate.LegacyInTreeDir(dir); ok {
+		fmt.Printf("\nnote: legacy in-tree state at %s — safe to `rm -rf %s`\n", legacy, legacy)
 	}
 	fmt.Println()
 	return nil

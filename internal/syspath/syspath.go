@@ -10,12 +10,22 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"molt/internal/projstate"
 )
 
+// FileName / SiteCustomize are file names inside the per-project state
+// directory. They're exported for callers (e.g. syncplan) that compose
+// paths via projstate.Dir(...) + these names.
 const FileName = "syspath.json"
-const DirName = ".molt"
-const BinDirName = "bin"
 const SiteCustomize = "sitecustomize.py"
+const BinDirName = "bin"
+
+// DirName is retained for backward source-compat but is no longer used:
+// state lives at projstate.Dir(projectDir), not at projectDir/.molt.
+//
+// Deprecated: use projstate.Dir / projstate.Bin / etc.
+const DirName = ".molt"
 
 type Spec struct {
 	Python     string   `json:"python"`      // absolute path to interpreter
@@ -28,7 +38,10 @@ type Spec struct {
 	Syspath    []string `json:"syspath"`     // store dirs + project src; order matters
 }
 
-func projectMoltDir(projectDir string) string { return filepath.Join(projectDir, DirName) }
+// projectMoltDir returns the per-project state directory. State lives
+// centrally under ~/.molt/projects/<basename>-<hash16>/ so the user's
+// project tree stays clean — see internal/projstate.
+func projectMoltDir(projectDir string) string { return projstate.Dir(projectDir) }
 
 func Path(projectDir string) string {
 	return filepath.Join(projectMoltDir(projectDir), FileName)

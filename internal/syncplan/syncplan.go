@@ -19,7 +19,9 @@ import (
 
 	"os/exec"
 
+	"molt/internal/editor"
 	"molt/internal/lockparse"
+	"molt/internal/projstate"
 	"molt/internal/pyabi"
 	"molt/internal/python"
 	"molt/internal/store"
@@ -35,11 +37,20 @@ type Options struct {
 }
 
 // Sync resolves dependencies (via uv lock) and populates both the global store
-// and the project's .molt/ directory. Does NOT create a .venv.
+// and the project's central state dir (~/.molt/projects/<base>-<hash>/).
+// Does NOT create a .venv. Does NOT write inside the project tree.
 func Sync(projectDir string, opts Options) error {
 	absProj, err := filepath.Abs(projectDir)
 	if err != nil {
 		return err
+	}
+
+	// One-time legacy notice. Older molts wrote state to <project>/.molt/.
+	// Don't auto-delete — just nudge the user.
+	if legacy, ok := projstate.LegacyInTreeDir(absProj); ok && opts.Verbose {
+		fmt.Fprintf(os.Stderr,
+			"note: legacy in-tree state detected at %s — molt now stores per-project state under ~/.molt/projects/. Safe to `rm -rf %s` after this sync.\n",
+			legacy, legacy)
 	}
 
 	// 1. Ensure uv binary is present (download if needed).
@@ -225,11 +236,19 @@ func Sync(projectDir string, opts Options) error {
 		return fmt.Errorf("write shims: %w", err)
 	}
 
-	// 10. Update registry.
+	// 10. Update registry + projstate meta.
 	if err := registryAdd(absProj, spec.LockHash); err != nil {
 		// Non-fatal — log and continue.
 		fmt.Fprintf(os.Stderr, "warn: update registry: %v\n", err)
 	}
+	if err := projstate.WriteMeta(absProj, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: write projstate meta: %v\n", err)
+	}
+
+	// 11. Auto-refresh editor configs that already exist. Silent on success;
+	// failure is a soft warning. Users opt in by creating .vscode/settings.json
+	// or pyrightconfig.json once (or via `molt editor <name>`).
+	editor.RefreshIfPresent(absProj, spec)
 
 	if opts.Verbose {
 		fmt.Printf("✓ %d package(s); store=%s\n", len(topo), st.Root)
@@ -248,9 +267,10 @@ func runUV(dir string, args ...string) error {
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// Redirect uv's project env into .molt/uv-env so commands like `uv add`
-	// don't materialise a top-level .venv/. Mirrors internal/uv.projectEnv.
-	cmd.Env = append(os.Environ(), "UV_PROJECT_ENVIRONMENT="+filepath.Join(dir, ".molt", "uv-env"))
+	// Redirect uv's project env into the per-project state dir so commands
+	// like `uv add` don't materialise a top-level .venv/. Mirrors
+	// internal/uv.projectEnv.
+	cmd.Env = append(os.Environ(), "UV_PROJECT_ENVIRONMENT="+projstate.UvEnv(dir))
 	return cmd.Run()
 }
 
@@ -413,7 +433,7 @@ func topoSort(items []installed, _ map[string]string) []installed {
 }
 
 func writeSiteCustomize(projectDir string, syspathDirs []string) error {
-	dir := filepath.Join(projectDir, syspath.DirName)
+	dir := projstate.Dir(projectDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -429,13 +449,13 @@ func writeSiteCustomize(projectDir string, syspathDirs []string) error {
 }
 
 func writeConsoleShims(projectDir, pyExe string, syspathDirs []string, items []installed, st *store.Store) error {
-	binDir := filepath.Join(projectDir, syspath.DirName, syspath.BinDirName)
+	binDir := projstate.Bin(projectDir)
 	// Wipe stale shims first so removed packages don't leave dead scripts.
 	_ = os.RemoveAll(binDir)
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return err
 	}
-	pythonPath := strings.Join(append([]string{filepath.Join(projectDir, syspath.DirName)}, syspathDirs...), string(os.PathListSeparator))
+	pythonPath := strings.Join(append([]string{projstate.Dir(projectDir)}, syspathDirs...), string(os.PathListSeparator))
 
 	// Always create python/python3 shims so tasks like `python -m foo` work
 	// when run via molt run / molt task. Without these, the shell only sees
