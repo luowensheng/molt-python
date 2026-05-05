@@ -45,9 +45,9 @@ dependencies = [
 ops-bot = "ops_bot.cli:main"
 
 [tool.molt.tasks]
-dev    = "python -m ops_bot.main --socket-mode"
-test   = "python -m pytest tests/ -v"
-deploy = "python -m ops_bot.cli deploy"
+dev    = { module = "ops_bot.main", args = ["--socket-mode"] }
+test   = { module = "pytest", args = ["tests/", "-v"] }
+deploy = { module = "ops_bot.cli", args = ["deploy"] }
 ```
 
 ---

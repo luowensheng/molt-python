@@ -109,6 +109,103 @@ func Parse(lockPath string) ([]ResolvedPkg, error) {
 	return out, nil
 }
 
+// platformMatchIndex reports the *quality* of a wheel platform match against
+// the interpreter's host platforms. Returns -1 when incompatible; otherwise
+// the index of the best-matching host platform (lower = better, since
+// packaging.tags emits most-specific first, e.g. arm64 before x86_64-via-Rosetta).
+//
+// Beyond exact-string match this also handles:
+//   - "any" → always compatible (worst-quality match)
+//   - macOS universal2: macosx_X_Y_universal2 matches arm64 or x86_64 hosts
+//     when the wheel's macOS version is <= host's.
+//   - macOS arch-specific: macosx_X_Y_arm64 / _x86_64 with version <= host.
+//   - Linux: manylinux*/musllinux* arch must match host arch (linux_<arch>).
+func platformMatchIndex(wp string, hostPlats []string) int {
+	if wp == "" || wp == "any" {
+		// "any" is universally compatible but the loosest match — sort it last.
+		return len(hostPlats)
+	}
+	best := -1
+	consider := func(i int) {
+		if best == -1 || i < best {
+			best = i
+		}
+	}
+	for i, hp := range hostPlats {
+		if hp == wp {
+			consider(i)
+		}
+	}
+	if best >= 0 {
+		return best
+	}
+	// macOS compatibility.
+	if wMaj, wMin, wArch, ok := parseMacosTag(wp); ok {
+		for i, hp := range hostPlats {
+			hMaj, hMin, hArch, ok := parseMacosTag(hp)
+			if !ok {
+				continue
+			}
+			archOK := wArch == hArch || wArch == "universal2"
+			verOK := wMaj < hMaj || (wMaj == hMaj && wMin <= hMin)
+			if archOK && verOK {
+				consider(i)
+			}
+		}
+		return best
+	}
+	// Linux: manylinux*_<arch> / musllinux*_<arch> works on a linux_<arch>
+	// host. packaging.tags already enumerates the version-floor variants
+	// in hostPlats, but we cover the bare linux_<arch> fallback too.
+	if arch := linuxArch(wp); arch != "" {
+		for i, hp := range hostPlats {
+			if hp == "linux_"+arch {
+				consider(i)
+			}
+		}
+	}
+	return best
+}
+
+// parseMacosTag parses "macosx_<maj>_<min>_<arch>" into its parts.
+func parseMacosTag(s string) (maj, min int, arch string, ok bool) {
+	if !strings.HasPrefix(s, "macosx_") {
+		return 0, 0, "", false
+	}
+	parts := strings.SplitN(s[len("macosx_"):], "_", 3)
+	if len(parts) != 3 {
+		return 0, 0, "", false
+	}
+	maj, err1 := strconv.Atoi(parts[0])
+	min, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, "", false
+	}
+	return maj, min, parts[2], true
+}
+
+// linuxArch returns the architecture suffix for a manylinux/musllinux tag,
+// or "" if s is not a Linux compatibility tag.
+func linuxArch(s string) string {
+	for _, prefix := range []string{
+		"manylinux1_", "manylinux2010_", "manylinux2014_", "manylinux_", "musllinux_",
+	} {
+		if strings.HasPrefix(s, prefix) {
+			rest := s[len(prefix):]
+			// manylinux_2_17_x86_64 → strip the leading "<glibcMaj>_<glibcMin>_".
+			if prefix == "manylinux_" || prefix == "musllinux_" {
+				parts := strings.SplitN(rest, "_", 3)
+				if len(parts) == 3 {
+					return parts[2]
+				}
+				return ""
+			}
+			return rest
+		}
+	}
+	return ""
+}
+
 // SelectWheel returns the best wheel for the active interpreter ABI from pkg.Wheels.
 // Order: exact (py_tag, abi_tag, plat) match > abi3 match > pure (py3-none-any).
 // Returns an error if pkg has no wheels at all.
@@ -116,10 +213,7 @@ func SelectWheel(pkg ResolvedPkg, py pyABI) (Wheel, error) {
 	if len(pkg.Wheels) == 0 {
 		return Wheel{}, fmt.Errorf("%s %s: no wheels in lockfile (sdist-only?)", pkg.Name, pkg.Version)
 	}
-	platSet := map[string]bool{"any": true}
-	for _, p := range py.GetPlatforms() {
-		platSet[p] = true
-	}
+	hostPlats := py.GetPlatforms()
 	pyTag := py.GetPyTag()
 	abiTag := py.GetAbiTag()
 
@@ -130,21 +224,22 @@ func SelectWheel(pkg ResolvedPkg, py pyABI) (Wheel, error) {
 	}
 	best := cand{score: 1 << 30}
 	for _, w := range pkg.Wheels {
-		// Platform must contain at least one of the interpreter's platforms.
-		platOK := false
+		// Platform must be compatible with at least one of the interpreter's
+		// platforms. Compound tags like "manylinux2014_x86_64.manylinux_2_17_x86_64"
+		// are dot-separated; the best (lowest) sub-match wins.
+		platScore := -1
 		for _, p := range strings.Split(w.PlatformTag, ".") {
-			if platSet[p] {
-				platOK = true
-				break
+			if i := platformMatchIndex(p, hostPlats); i >= 0 && (platScore == -1 || i < platScore) {
+				platScore = i
 			}
 		}
-		if !platOK {
+		if platScore < 0 {
 			continue
 		}
-		var s int
+		var tier int
 		switch {
 		case tagContains(w.AbiTag, abiTag) && tagContains(w.PyTag, pyTag):
-			s = 0
+			tier = 0
 		case tagContains(w.AbiTag, "abi3") && strings.HasPrefix(pyTag, "cp"):
 			// abi3 wheel: any cp wheel with a py-tag <= our interpreter's tag works.
 			minTag := ""
@@ -153,19 +248,18 @@ func SelectWheel(pkg ResolvedPkg, py pyABI) (Wheel, error) {
 					minTag = c
 				}
 			}
-			if minTag != "" && pyTag >= minTag {
-				s = 10
-			} else {
+			if minTag == "" || pyTag < minTag {
 				continue
 			}
+			tier = 1
 		case tagContains(w.AbiTag, "none") && (tagContains(w.PyTag, "py3") || tagContains(w.PyTag, pyTag)):
-			s = 20
+			tier = 2
 		default:
 			continue
 		}
-		if w.PlatformTag == "any" {
-			s += 1
-		}
+		// Tier dominates; platform-match index breaks ties (native arch beats
+		// Rosetta x86_64 because packaging.tags lists native first).
+		s := tier*10000 + platScore
 		if s < best.score {
 			best = cand{w: w, score: s}
 		}

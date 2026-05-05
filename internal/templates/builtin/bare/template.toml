@@ -1,0 +1,2 @@
+description = "Minimal — just pyproject.toml + .python-version + uv.lock. No src layout, no placeholder files."
+keep_hello = false

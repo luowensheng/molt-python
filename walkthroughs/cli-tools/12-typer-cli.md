@@ -99,7 +99,7 @@ dev-dependencies = [
 devkit = "devkit.cli:app"
 
 [tool.molt.tasks]
-dev  = "python -m devkit"
+dev  = { module = "devkit" }
 test = "pytest tests/ -v --tb=short"
 lint = "ruff check src/ tests/ && ruff format --check src/ tests/"
 fix  = "ruff check --fix src/ tests/ && ruff format src/ tests/"

@@ -124,8 +124,8 @@ dev = [
 ]
 
 [tool.molt.tasks]
-generate = "python -m grpc_tools.protoc -I proto --python_out=user_grpc/generated --grpc_python_out=user_grpc/generated proto/user.proto"
-dev      = "python -m user_grpc.server"
+generate = { module = "grpc_tools.protoc", args = ["-I", "proto", "--python_out=user_grpc/generated", "--grpc_python_out=user_grpc/generated", "proto/user.proto"] }
+dev      = { module = "user_grpc.server" }
 test     = "pytest tests/ -v --tb=short"
 lint     = "ruff check ."
 

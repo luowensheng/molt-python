@@ -101,7 +101,7 @@ dev-dependencies = [
 dataflow = "dataflow.cli:main"
 
 [tool.molt.tasks]
-dev   = "python -m dataflow"
+dev   = { module = "dataflow" }
 test  = "pytest tests/ -v --tb=short"
 bench = "pytest tests/bench/ --benchmark-only --benchmark-sort=mean"
 lint  = "ruff check src/ tests/ && ruff format --check src/ tests/"

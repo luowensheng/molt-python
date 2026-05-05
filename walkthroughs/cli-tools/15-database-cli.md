@@ -90,7 +90,7 @@ dev-dependencies = [
 dbctl = "dbctl.cli:main"
 
 [tool.molt.tasks]
-dev  = "python -m dbctl"
+dev  = { module = "dbctl" }
 test = "pytest tests/ -v --tb=short"
 lint = "ruff check src/ tests/ && ruff format --check src/ tests/"
 

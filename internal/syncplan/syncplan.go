@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"os/exec"
 
@@ -64,7 +65,33 @@ func Sync(projectDir string, opts Options) error {
 		}
 	}
 
-	// 3. Maybe regenerate uv.lock.
+	// 3a. Honour [tool.molt] requirements: merge each requirements.txt
+	// file into pyproject.toml via `uv add -r <file>`. Trigger: file is
+	// newer than uv.lock (i.e. user edited it since the last resolve) or
+	// uv.lock doesn't exist yet. Skipped under --frozen — CI environments
+	// shouldn't be mutating deps.
+	if !opts.Frozen {
+		if files, err := readRequirementsFiles(absProj); err == nil && len(files) > 0 {
+			lockMTime := mtime(filepath.Join(absProj, "uv.lock"))
+			for _, f := range files {
+				ft := mtime(f)
+				if ft.IsZero() {
+					continue // file missing — silently skip
+				}
+				if !lockMTime.IsZero() && !ft.After(lockMTime) {
+					continue // file unchanged since last resolve
+				}
+				if opts.Verbose {
+					fmt.Printf("→ uv add -r %s\n", f)
+				}
+				if err := runUV(absProj, "add", "--no-sync", "-r", f); err != nil {
+					return fmt.Errorf("uv add -r %s: %w", f, err)
+				}
+			}
+		}
+	}
+
+	// 3b. Maybe regenerate uv.lock.
 	lockPath := filepath.Join(absProj, "uv.lock")
 	if !opts.Frozen {
 		if needsLock(absProj, lockPath) {
@@ -221,7 +248,79 @@ func runUV(dir string, args ...string) error {
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// Redirect uv's project env into .molt/uv-env so commands like `uv add`
+	// don't materialise a top-level .venv/. Mirrors internal/uv.projectEnv.
+	cmd.Env = append(os.Environ(), "UV_PROJECT_ENVIRONMENT="+filepath.Join(dir, ".molt", "uv-env"))
 	return cmd.Run()
+}
+
+// mtime returns the modification time of path, or the zero time if path
+// is missing/unreadable.
+func mtime(path string) time.Time {
+	st, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return st.ModTime()
+}
+
+// readRequirementsFiles returns the list of requirements.txt paths declared
+// in [tool.molt] requirements_files = [...] in pyproject.toml. Paths are
+// resolved relative to the project root. Best-effort — malformed config
+// returns an empty list rather than failing sync.
+func readRequirementsFiles(projectDir string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
+	if err != nil {
+		return nil, err
+	}
+	// We're scanning a small TOML subset: find the [tool.molt] table, then
+	// look for `requirements_files = [...]` (or `requirements`). Stop at
+	// the next [section].
+	lines := strings.Split(string(data), "\n")
+	inMolt := false
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inMolt = (line == "[tool.molt]")
+			continue
+		}
+		if !inMolt {
+			continue
+		}
+		if !(strings.HasPrefix(line, "requirements_files") || strings.HasPrefix(line, "requirements")) {
+			continue
+		}
+		eq := strings.Index(line, "=")
+		if eq < 0 {
+			continue
+		}
+		val := strings.TrimSpace(line[eq+1:])
+		// Single-string form: requirements = "requirements.txt".
+		if strings.HasPrefix(val, `"`) && strings.HasSuffix(val, `"`) && len(val) >= 2 {
+			f := val[1 : len(val)-1]
+			return []string{filepath.Join(projectDir, f)}, nil
+		}
+		// Array form, possibly multi-line. Accumulate until ].
+		for !strings.Contains(val, "]") && i+1 < len(lines) {
+			i++
+			val += " " + strings.TrimSpace(lines[i])
+		}
+		open := strings.Index(val, "[")
+		close := strings.Index(val, "]")
+		if open < 0 || close < 0 || close <= open {
+			return nil, nil
+		}
+		body := val[open+1 : close]
+		var out []string
+		for _, raw := range strings.Split(body, ",") {
+			t := strings.TrimSpace(raw)
+			if len(t) >= 2 && strings.HasPrefix(t, `"`) && strings.HasSuffix(t, `"`) {
+				out = append(out, filepath.Join(projectDir, t[1:len(t)-1]))
+			}
+		}
+		return out, nil
+	}
+	return nil, nil
 }
 
 func needsLock(projectDir, lockPath string) bool {

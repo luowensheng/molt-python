@@ -1,0 +1,7 @@
+description = "Conventional src/ layout: src/<pkg>/__init__.py + __main__.py + tests/conftest.py."
+keep_hello = false
+
+tasks = """
+dev  = { module = "{{pkg}}" }
+test = "pytest tests/ -v"
+"""

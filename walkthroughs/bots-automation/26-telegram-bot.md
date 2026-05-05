@@ -43,9 +43,9 @@ dependencies = [
 support-bot = "support_bot.cli:main"
 
 [tool.molt.tasks]
-dev     = "python -m support_bot.main"
-test    = "python -m pytest tests/ -v --asyncio-mode=auto"
-webhook = "python -m support_bot.webhook"
+dev     = { module = "support_bot.main" }
+test    = { module = "pytest", args = ["tests/", "-v", "--asyncio-mode=auto"] }
+webhook = { module = "support_bot.webhook" }
 ```
 
 ---

@@ -28,23 +28,29 @@ func (i *Info) GetPlatforms() []string   { return i.Platforms }
 const detectScript = `
 import json, sys, sysconfig
 out = {"executable": sys.executable, "version": "%d.%d.%d" % sys.version_info[:3]}
+tags = None
 try:
-    from packaging import tags
+    from packaging import tags as _tags
+    tags = _tags
+except Exception:
+    try:
+        from pip._vendor.packaging import tags as _tags  # bundled with pip
+        tags = _tags
+    except Exception:
+        tags = None
+if tags is not None:
     py_tag = "cp%d%d" % sys.version_info[:2]
-    # Best ABI: matching cpython tag if available; else abi3; else 'none'.
     abi_tag = None
     plats = []
     for t in tags.sys_tags():
         if abi_tag is None:
             abi_tag = t.abi
-        if py_tag is None:
-            py_tag = t.interpreter
         if t.platform not in plats:
             plats.append(t.platform)
     out["py_tag"] = py_tag
     out["abi_tag"] = abi_tag or "none"
     out["platforms"] = plats
-except Exception:
+else:
     impl = sys.implementation.name
     if impl == "cpython":
         out["py_tag"] = "cp%d%d" % sys.version_info[:2]

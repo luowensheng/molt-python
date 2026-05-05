@@ -45,8 +45,8 @@ dependencies = [
 mcp-devtools = "mcp_devtools.cli:main"
 
 [tool.molt.tasks]
-dev     = "python -m mcp_devtools.server --transport stdio"
-test    = "python -m pytest tests/ -v --asyncio-mode=auto"
+dev     = { module = "mcp_devtools.server", args = ["--transport", "stdio"] }
+test    = { module = "pytest", args = ["tests/", "-v", "--asyncio-mode=auto"] }
 inspect = "npx @modelcontextprotocol/inspector python -m mcp_devtools.server"
 ```
 

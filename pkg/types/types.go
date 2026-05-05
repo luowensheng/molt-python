@@ -174,9 +174,29 @@ type PythonVersion struct {
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
 
+// Task represents a single entry under [tool.molt.tasks] in pyproject.toml.
+// A task can take three mutually exclusive forms:
+//
+//   - Command: a shell command (existing behaviour). Runs under /bin/sh -c
+//     with the project env (PATH includes .molt/bin/). Use this for things
+//     like `pytest`, `ruff`, etc. that resolve through the shim PATH.
+//
+//   - Module: invokes the project's Python interpreter directly with
+//     `-m <module>`. Bypasses the shell and the shim PATH entirely —
+//     molt execs spec.Python so no `python` command needs to exist anywhere.
+//     This is the canonical form for "run my application".
+//
+//   - Script: invokes the project's Python interpreter on a script path.
+//     Same direct-exec semantics as Module.
+//
+// Args are appended to Module/Script invocations. They are NOT applied to
+// Command tasks (use shell quoting in the command string instead).
 type Task struct {
 	Name        string   `toml:"name" json:"name"`
-	Command     string   `toml:"command" json:"command"`
+	Command     string   `toml:"command,omitempty" json:"command,omitempty"`
+	Module      string   `toml:"module,omitempty" json:"module,omitempty"`
+	Script      string   `toml:"script,omitempty" json:"script,omitempty"`
+	Args        []string `toml:"args,omitempty" json:"args,omitempty"`
 	Description string   `toml:"description,omitempty" json:"description,omitempty"`
 	Env         []string `toml:"env,omitempty" json:"env,omitempty"`
 	Dir         string   `toml:"dir,omitempty" json:"dir,omitempty"`

@@ -45,8 +45,8 @@ dependencies = [
 dev-bot = "dev_bot.cli:main"
 
 [tool.molt.tasks]
-dev  = "python -m dev_bot.main"
-test = "python -m pytest tests/ -v --asyncio-mode=auto"
+dev  = { module = "dev_bot.main" }
+test = { module = "pytest", args = ["tests/", "-v", "--asyncio-mode=auto"] }
 ```
 
 ---

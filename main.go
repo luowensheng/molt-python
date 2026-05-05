@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	iofs "io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"molt/internal/syncplan"
 	"molt/internal/syspath"
 	"molt/internal/tasks"
+	"molt/internal/templates"
 	internuv "molt/internal/uv"
 	"molt/internal/uvbin"
 	"molt/pkg/types"
@@ -78,6 +80,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "task":
 		err = cmdTask(os.Args[2:])
+	case "template":
+		err = cmdTemplate(os.Args[2:])
 
 	// ── Global package store ──────────────────────────────────────────────
 	case "gc":
@@ -133,12 +137,14 @@ func usage() {
 	fmt.Print(`molt — hermetic Python project toolchain
 
 Project:
-  init     [flags] [name]          Scaffold a new Python project (src/ layout by default)
-                                     --flat        keep uv's hello.py layout
-                                     --lib         library layout
-                                     --no-main     skip src/<pkg>/__main__.py
-                                     --no-init-py  skip src/<pkg>/__init__.py
-                                     --no-tests    skip tests/
+  init     [flags] [name]          Scaffold a new Python project (default: bare)
+                                     --template <name>  apply a template
+                                     --python <ver>     pin a Python version
+                                     --no-lock          skip uv lock
+  template list                    List available templates (built-in + user)
+  template show <name>             Show a template's metadata + file tree
+  template add <name> <path>       Register a directory as a user template
+  template remove <name>           Delete a user template
   add      [--dev] <pkg...>        Add dependency
   remove   [--dev] <pkg...>        Remove dependency
   sync     [--frozen] [--refresh]  Install lockfile into ~/.molt/pkg + write .molt/syspath.json
@@ -153,6 +159,8 @@ Python versions:
   python use <version> --global    Set global Python version
   python remove <version>          Remove a Python version
   python which                     Show active Python path
+  python run <args...>             Run the project's Python interpreter
+  python -v <ver> run <args...>    Run a specific Python version (auto-installs)
   python audit                     Find every Python on this machine
   python conflicts                 Detect sys.path pollution
   python isolation-check           Verify environment isolation
@@ -411,11 +419,7 @@ func cmdInit(args []string) error {
 	}
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	pyVersion := fs.String("python", "", "Python version")
-	lib := fs.Bool("lib", false, "Library layout (passes --lib to uv)")
-	flat := fs.Bool("flat", false, "Keep uv's flat hello.py layout (skip src/ scaffold)")
-	noMain := fs.Bool("no-main", false, "Skip src/<pkg>/__main__.py")
-	noInitPy := fs.Bool("no-init-py", false, "Skip src/<pkg>/__init__.py")
-	noTests := fs.Bool("no-tests", false, "Skip tests/ directory")
+	tmplName := fs.String("template", "bare", "Template to apply (run `molt template list`)")
 	noLock := fs.Bool("no-lock", false, "Skip uv lock")
 	fs.Parse(args)
 
@@ -436,37 +440,55 @@ func cmdInit(args []string) error {
 		dir = name    // lock will run in the newly created subdirectory
 		initName = name
 	default:
-		return fmt.Errorf("usage: molt init [flags] [name]")
+		return fmt.Errorf("usage: molt init [--template <name>] [--python <ver>] [--no-lock] [name]")
 	}
 
-	fmt.Printf("Initialising project %q...\n", name)
-	// Always run uv init from the current directory ("."); for case 1 it
-	// creates the named subdirectory automatically.
-	if err := internuv.Init(".", initName, internuv.InitOptions{Python: *pyVersion, Lib: *lib}); err != nil {
+	tmpl, err := templates.Lookup(*tmplName)
+	if err != nil {
+		return fmt.Errorf("template %q: %w (run 'molt template list' to see available templates)", *tmplName, err)
+	}
+
+	fmt.Printf("Initialising project %q (template: %s)...\n", name, tmpl.Name)
+	// uv init always runs first — it generates pyproject.toml, .python-version,
+	// README.md and (depending on flags) hello.py or src/<pkg>/. The template
+	// is applied on top: it can request --lib mode, instruct molt to clean up
+	// uv's hello.py placeholder, and add files of its own.
+	if err := internuv.Init(".", initName, internuv.InitOptions{Python: *pyVersion, Lib: tmpl.Meta.UseUvLib}); err != nil {
 		return fmt.Errorf("uv init: %w", err)
 	}
+
+	if !tmpl.Meta.KeepHello {
+		_ = os.Remove(filepath.Join(dir, "hello.py"))
+	}
+
+	pkg := pyPackageName(name)
+	if err := tmpl.Apply(dir, templates.Vars{Name: name, Pkg: pkg}); err != nil {
+		return fmt.Errorf("apply template %q: %w", tmpl.Name, err)
+	}
+
+	// Inject [tool.molt.tasks] from the template metadata, if any.
+	if strings.TrimSpace(tmpl.Meta.Tasks) != "" {
+		if err := injectTasks(filepath.Join(dir, "pyproject.toml"), tmpl.Meta.Tasks, name, pkg); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: inject tasks: %v\n", err)
+		}
+	}
+
+	// Add packages requested by the template (deferred to avoid a sync per
+	// add — `molt sync` will materialise everything once at the end).
+	if len(tmpl.Meta.Add) > 0 {
+		if err := internuv.Add(dir, tmpl.Meta.Add, internuv.AddOptions{}); err != nil {
+			return fmt.Errorf("template add: %w", err)
+		}
+	}
+	if len(tmpl.Meta.AddDev) > 0 {
+		if err := internuv.Add(dir, tmpl.Meta.AddDev, internuv.AddOptions{Dev: true}); err != nil {
+			return fmt.Errorf("template add --dev: %w", err)
+		}
+	}
+
 	if !*noLock {
 		if err := internuv.Lock(dir); err != nil {
 			return fmt.Errorf("uv lock: %w", err)
-		}
-	}
-
-	// Default to the conventional src/ layout. uv's --lib already creates
-	// src/<pkg>/__init__.py with a proper pyproject.toml, so for that path
-	// only add tests/. --flat preserves uv's hello.py default for users who
-	// want the bare uv scaffold.
-	switch {
-	case *flat:
-		// nothing to do
-	case *lib:
-		if !*noTests {
-			if err := writeTestsScaffold(dir); err != nil {
-				fmt.Fprintf(os.Stderr, "warn: tests scaffold: %v\n", err)
-			}
-		}
-	default:
-		if err := scaffoldSrcLayout(dir, name, !*noInitPy, !*noMain, !*noTests); err != nil {
-			fmt.Fprintf(os.Stderr, "warn: scaffold: %v\n", err)
 		}
 	}
 
@@ -487,53 +509,28 @@ func pyPackageName(name string) string {
 	return strings.ToLower(r.Replace(name))
 }
 
-// scaffoldSrcLayout replaces uv's hello.py placeholder with the conventional
-// src/<pkg>/ + tests/ layout. Files already on disk are never overwritten.
-func scaffoldSrcLayout(dir, name string, initPy, mainPy, tests bool) error {
-	pkg := pyPackageName(name)
-	_ = os.Remove(filepath.Join(dir, "hello.py"))
-
-	pkgDir := filepath.Join(dir, "src", pkg)
-	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+// injectTasks appends a TOML chunk under [tool.molt.tasks] in pyproject.toml,
+// creating the section if absent. Substitutes {{name}} and {{pkg}} in the
+// chunk so templates can reference the project they're being applied to.
+func injectTasks(pyprojectPath, chunk, name, pkg string) error {
+	data, err := os.ReadFile(pyprojectPath)
+	if err != nil {
 		return err
 	}
-	if initPy {
-		if err := writeIfMissing(filepath.Join(pkgDir, "__init__.py"),
-			`__version__ = "0.1.0"`+"\n"); err != nil {
-			return err
+	body := strings.NewReplacer("{{name}}", name, "{{pkg}}", pkg).Replace(chunk)
+	body = strings.TrimSpace(body) + "\n"
+
+	content := string(data)
+	if strings.Contains(content, "[tool.molt.tasks]") {
+		content = strings.Replace(content, "[tool.molt.tasks]\n",
+			"[tool.molt.tasks]\n"+body, 1)
+	} else {
+		if !strings.HasSuffix(content, "\n") {
+			content += "\n"
 		}
+		content += "\n[tool.molt.tasks]\n" + body
 	}
-	if mainPy {
-		body := fmt.Sprintf(`def main() -> None:
-    print("Hello from %s!")
-
-
-if __name__ == "__main__":
-    main()
-`, name)
-		if err := writeIfMissing(filepath.Join(pkgDir, "__main__.py"), body); err != nil {
-			return err
-		}
-	}
-	if tests {
-		return writeTestsScaffold(dir)
-	}
-	return nil
-}
-
-func writeTestsScaffold(dir string) error {
-	testsDir := filepath.Join(dir, "tests")
-	if err := os.MkdirAll(testsDir, 0o755); err != nil {
-		return err
-	}
-	return writeIfMissing(filepath.Join(testsDir, "conftest.py"), "")
-}
-
-func writeIfMissing(path, content string) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil // never clobber existing user files
-	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	return os.WriteFile(pyprojectPath, []byte(content), 0o644)
 }
 
 // patchGitignore ensures <dir>/.gitignore contains ".molt/" and not ".venv/".
@@ -575,15 +572,24 @@ func patchGitignore(dir string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
+// reqFilesFlag accumulates -r requirements.txt entries so the flag can
+// appear multiple times on the same command line.
+type reqFilesFlag []string
+
+func (r *reqFilesFlag) String() string     { return strings.Join(*r, ",") }
+func (r *reqFilesFlag) Set(s string) error { *r = append(*r, s); return nil }
+
 func cmdAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
 	dev := fs.Bool("dev", false, "Dev dependency")
+	var reqFiles reqFilesFlag
+	fs.Var(&reqFiles, "r", "Requirements file (can be repeated)")
 	fs.Parse(args)
-	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: molt add <package...>")
+	if fs.NArg() == 0 && len(reqFiles) == 0 {
+		return fmt.Errorf("usage: molt add [--dev] [-r requirements.txt] [package...]")
 	}
 	absDir, _ := filepath.Abs(".")
-	if err := internuv.Add(absDir, fs.Args(), *dev); err != nil {
+	if err := internuv.Add(absDir, fs.Args(), internuv.AddOptions{Dev: *dev, RequirementFiles: reqFiles}); err != nil {
 		return err
 	}
 	return syncplan.Sync(absDir, syncplan.Options{Verbose: true})
@@ -630,8 +636,15 @@ func cmdGC(args []string) error {
 // ── Python version management ─────────────────────────────────────────────────
 
 func cmdPython(args []string) error {
+	// Pull out a `-v <version>` / `--python <version>` flag from anywhere in
+	// args so users can write either:
+	//   molt python -v 3.12 run -c '...'      (version-first)
+	//   molt python run -v 3.12 -c '...'      (subcommand-first)
+	// The flag only applies to `run`; other subcommands ignore it.
+	pyVersion, args := extractPythonVersionFlag(args)
+
 	if len(args) == 0 {
-		return fmt.Errorf("usage: molt python <list|install|use|remove|which|audit|conflicts|isolation-check>")
+		return fmt.Errorf("usage: molt python <list|install|use|remove|which|run|audit|conflicts|isolation-check>")
 	}
 
 	mgr, err := python.New(cwd())
@@ -696,6 +709,33 @@ func cmdPython(args []string) error {
 	case "isolation-check":
 		return mgr.IsolationCheck()
 
+	case "run":
+		// Override path: -v <ver> resolves a specific Python via uv and
+		// execs it with a CLEAN env (no project PYTHONPATH). This is the
+		// "raw Python at version X" mode — useful for stdlib-only ad-hoc
+		// scripts. It deliberately does NOT inject the project's store
+		// dirs because they're built for the project's pinned ABI.
+		if pyVersion != "" {
+			pyExe, err := resolvePythonVersion(pyVersion)
+			if err != nil {
+				return err
+			}
+			return syscall.Exec(pyExe, append([]string{pyExe}, args[1:]...), cleanPythonEnv(os.Environ()))
+		}
+		// Default path: invoke the project's Python interpreter directly.
+		// Auto-syncs if the project hasn't been materialised yet, so this
+		// works immediately after `molt init` with no extra steps.
+		if err := ensureSynced(cwd()); err != nil {
+			return err
+		}
+		spec, err := syspath.Load(cwd())
+		if err != nil {
+			return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
+		}
+		env := spec.BuildEnv(os.Environ())
+		argv := append([]string{spec.Python}, args[1:]...)
+		return syscall.Exec(spec.Python, argv, env)
+
 	default:
 		return fmt.Errorf("unknown python subcommand: %s", args[0])
 	}
@@ -720,6 +760,24 @@ func cmdRun(args []string) error {
 		}
 	}
 
+	// Auto-sync on first run: a freshly-init'd project has no
+	// .molt/syspath.json, so any task that uses `python` (or any console
+	// shim) would fail with "command not found". Sync once to materialise
+	// the env, then proceed.
+	if err := ensureSynced(cwd()); err != nil {
+		return err
+	}
+
+	// Single-file script mode: `molt run main.py [args...]` — exec the
+	// project's Python interpreter on the script. Detected by .py suffix
+	// + file existing on disk. Lets users run a project with nothing but
+	// pyproject.toml + main.py, no task definition required.
+	if strings.HasSuffix(taskName, ".py") {
+		if _, err := os.Stat(taskName); err == nil {
+			return runPythonScript(cwd(), taskName, args[1:])
+		}
+	}
+
 	r := tasks.New(cwd())
 	if err := r.Run(taskName, watch, extraArgs); err == nil {
 		return nil
@@ -730,7 +788,37 @@ func cmdRun(args []string) error {
 	return runExec(cwd(), append([]string{taskName}, args[1:]...))
 }
 
+// runPythonScript execs spec.Python on a script path under the project env.
+// Used for the `molt run main.py` single-file flow.
+func runPythonScript(projectDir, script string, scriptArgs []string) error {
+	spec, err := syspath.Load(projectDir)
+	if err != nil {
+		return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
+	}
+	abs, _ := filepath.Abs(script)
+	env := spec.BuildEnv(os.Environ())
+	argv := append([]string{spec.Python, abs}, scriptArgs...)
+	return syscall.Exec(spec.Python, argv, env)
+}
+
+// ensureSynced runs `molt sync` if .molt/syspath.json is missing. No-op when
+// already synced. Used to remove the "did you remember to sync?" gotcha
+// after `molt init` — the user's first `molt run` should just work.
+func ensureSynced(projectDir string) error {
+	if _, err := syspath.Load(projectDir); err == nil {
+		return nil
+	}
+	// Only auto-sync if there's a project here at all.
+	if _, err := os.Stat(filepath.Join(projectDir, "pyproject.toml")); err != nil {
+		return nil
+	}
+	fmt.Fprintln(os.Stderr, "→ first run, syncing project…")
+	return syncplan.Sync(projectDir, syncplan.Options{Verbose: true})
+}
+
 // runExec executes argv under the project's store-derived environment.
+// `python`/`python3` resolve directly to spec.Python — molt never depends
+// on a system `python` being on PATH.
 func runExec(projectDir string, argv []string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("nothing to run")
@@ -775,6 +863,110 @@ func cmdTask(args []string) error {
 	default:
 		return fmt.Errorf("unknown task subcommand: %s", args[0])
 	}
+}
+
+// ── Templates ─────────────────────────────────────────────────────────────────
+
+func cmdTemplate(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: molt template <list|show|add|remove>")
+	}
+	switch args[0] {
+	case "list":
+		return cmdTemplateList()
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt template show <name>")
+		}
+		return cmdTemplateShow(args[1])
+	case "add":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: molt template add <name> <path>")
+		}
+		return cmdTemplateAdd(args[1], args[2])
+	case "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt template remove <name>")
+		}
+		if err := templates.Remove(args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("✓ removed user template %q\n", args[1])
+		return nil
+	default:
+		return fmt.Errorf("unknown template subcommand: %s", args[0])
+	}
+}
+
+func cmdTemplateList() error {
+	ts, err := templates.List()
+	if err != nil {
+		return err
+	}
+	if len(ts) == 0 {
+		fmt.Println("No templates available.")
+		return nil
+	}
+	fmt.Println("Available templates:")
+	fmt.Println()
+	for _, t := range ts {
+		desc := t.Meta.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		fmt.Printf("  %-12s %-9s %s\n", t.Name, "["+t.Source+"]", desc)
+	}
+	udir, _ := templates.UserDir()
+	fmt.Printf("\nUser templates dir: %s\n", udir)
+	fmt.Println("Apply with:        molt init --template <name>")
+	return nil
+}
+
+func cmdTemplateShow(name string) error {
+	t, err := templates.Lookup(name)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Template: %s [%s]\n", t.Name, t.Source)
+	if t.Meta.Description != "" {
+		fmt.Printf("  %s\n", t.Meta.Description)
+	}
+	if t.Meta.UseUvLib {
+		fmt.Println("  (runs `uv init --lib`)")
+	}
+	if t.Meta.KeepHello {
+		fmt.Println("  (keeps uv's hello.py)")
+	}
+	if len(t.Meta.Add) > 0 {
+		fmt.Printf("  add:     %s\n", strings.Join(t.Meta.Add, ", "))
+	}
+	if len(t.Meta.AddDev) > 0 {
+		fmt.Printf("  add-dev: %s\n", strings.Join(t.Meta.AddDev, ", "))
+	}
+	fmt.Println("\nFiles:")
+	return iofs.WalkDir(t.Root, ".", func(p string, d iofs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == "." {
+			return nil
+		}
+		marker := ""
+		if d.IsDir() {
+			marker = "/"
+		}
+		fmt.Printf("  %s%s\n", p, marker)
+		return nil
+	})
+}
+
+func cmdTemplateAdd(name, path string) error {
+	if err := templates.AddTo(name, path); err != nil {
+		return err
+	}
+	udir, _ := templates.UserDir()
+	fmt.Printf("✓ added user template %q from %s\n  → %s\n", name, path, filepath.Join(udir, name))
+	return nil
 }
 
 // ── Info ──────────────────────────────────────────────────────────────────────
@@ -957,4 +1149,85 @@ func hasFlag(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+// extractPythonVersionFlag pulls `-v <ver>` or `--python <ver>` out of args
+// and returns the version (or "") plus args with that pair removed.
+// Stops scanning at "--" so user-supplied script args aren't accidentally
+// consumed (e.g. `molt python run -- -v` should pass -v to the script).
+func extractPythonVersionFlag(args []string) (string, []string) {
+	out := make([]string, 0, len(args))
+	version := ""
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if a == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+		if (a == "-v" || a == "--python") && i+1 < len(args) {
+			version = args[i+1]
+			i += 2
+			continue
+		}
+		out = append(out, a)
+		i++
+	}
+	return version, out
+}
+
+// resolvePythonVersion uses uv to find an interpreter for a given version
+// spec (e.g. "3.12", "3.12.3"). Auto-installs via uv if not present, since
+// molt's promise is "no external Python required". Runs uv from a neutral
+// cwd to avoid uv creating an unwanted project venv.
+func resolvePythonVersion(version string) (string, error) {
+	uv, err := uvbin.Ensure()
+	if err != nil {
+		return "", err
+	}
+	tmp := os.TempDir()
+	// Try to find first; if not installed, install then find.
+	find := exec.Command(uv, "python", "find", version)
+	find.Dir = tmp
+	out, err := find.CombinedOutput()
+	if err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	fmt.Fprintf(os.Stderr, "→ installing Python %s (via uv)…\n", version)
+	install := exec.Command(uv, "python", "install", version)
+	install.Dir = tmp
+	install.Stdout = os.Stderr
+	install.Stderr = os.Stderr
+	if err := install.Run(); err != nil {
+		return "", fmt.Errorf("uv python install %s: %w", version, err)
+	}
+	find = exec.Command(uv, "python", "find", version)
+	find.Dir = tmp
+	out, err = find.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("uv python find %s after install: %w (output: %s)",
+			version, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// cleanPythonEnv returns parent with VIRTUAL_ENV / PYTHONHOME / PYTHONPATH
+// stripped — used when `molt python -v <ver> run` execs a Python that is
+// NOT the project's pinned interpreter. We don't inject the project's
+// store dirs because they're ABI-specific to the project's Python.
+func cleanPythonEnv(parent []string) []string {
+	out := make([]string, 0, len(parent))
+	for _, kv := range parent {
+		i := strings.IndexByte(kv, '=')
+		if i < 0 {
+			out = append(out, kv)
+			continue
+		}
+		switch kv[:i] {
+		case "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH":
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }

@@ -1,0 +1,7 @@
+description = "Library: uv --lib layout (hatchling build config) + tests/."
+use_uv_lib = true
+keep_hello = false
+
+tasks = """
+test = "pytest tests/ -v"
+"""

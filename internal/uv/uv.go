@@ -143,16 +143,27 @@ func Init(dir, name string, opts InitOptions) error {
 	return run(dir, args...)
 }
 
-func Add(dir string, packages []string, dev bool) error {
-	if len(packages) == 0 {
-		return fmt.Errorf("add: at least one package required")
+// AddOptions controls `molt add` / `uv add` behaviour. RequirementFiles
+// is a list of paths passed via `-r` to uv, which reads each line as a
+// dependency to add.
+type AddOptions struct {
+	Dev              bool
+	RequirementFiles []string
+}
+
+func Add(dir string, packages []string, opts AddOptions) error {
+	if len(packages) == 0 && len(opts.RequirementFiles) == 0 {
+		return fmt.Errorf("add: at least one package or -r file required")
 	}
 	// --no-sync prevents uv from materialising a .venv/. Materialisation
 	// into the global content-addressed store happens via syncplan.Sync
 	// after this returns.
 	args := []string{"add", "--no-sync"}
-	if dev {
+	if opts.Dev {
 		args = append(args, "--dev")
+	}
+	for _, f := range opts.RequirementFiles {
+		args = append(args, "-r", f)
 	}
 	return run(dir, append(args, packages...)...)
 }

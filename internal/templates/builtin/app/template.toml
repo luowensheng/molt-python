@@ -1,0 +1,6 @@
+description = "Single-file application: main.py at the project root. Run with `molt run main.py`."
+keep_hello = false
+
+tasks = """
+run = { script = "main.py" }
+"""

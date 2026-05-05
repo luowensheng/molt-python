@@ -301,47 +301,131 @@ placeholder, not literal output.
 Scaffolds a new project. With no name, initialises the **current directory**
 in place (no nested subdir). With a name, creates `<name>/` and inits there.
 
-By default `molt init` produces the conventional **`src/` layout** plus a
-`tests/` directory — uv's `hello.py` placeholder is removed automatically.
+`molt init` is **minimal by default** — `pyproject.toml` + `.python-version`
++ `.gitignore` + `uv.lock` and nothing else. Opt in to scaffolding via
+`--template`:
 
 ```
 $ mkdir tagctl && cd tagctl
 $ molt init
-Initialising project "tagctl"...
+Initialising project "tagctl" (template: bare)...
 Initialized project `tagctl`
 Using CPython 3.11.14
 Resolved 1 package in 11ms
 ✓ Done.
 
 $ ls
-.gitignore  .python-version  README.md  pyproject.toml  src  tests  uv.lock
-$ tree src tests
-src
-└── tagctl
-    ├── __init__.py     # __version__ = "0.1.0"
-    └── __main__.py     # def main(): print("Hello from tagctl!")
-tests
-└── conftest.py
+.gitignore  .python-version  README.md  pyproject.toml  uv.lock
 ```
 
 `.gitignore` is created (or amended) so `.molt/` is ignored — `uv init` writes
 `.venv` here, which molt doesn't use, so the entry is rewritten.
 
-Project names with dashes/dots are normalised for the package directory:
-`molt init tag-control` produces `src/tag_control/`.
+Project names with dashes/dots are normalised for the package directory in
+templates that need it: `molt init tag-control --template src` produces
+`src/tag_control/`.
+
+##### Built-in templates
+
+| Template | Layout |
+|---|---|
+| `bare` (default) | minimal — pyproject.toml + python-version + uv.lock |
+| `flat` | uv default — keeps `hello.py` |
+| `app` | single-file: `main.py` at root + a `run` task |
+| `src` | conventional `src/<pkg>/__init__.py` + `__main__.py` + `tests/` |
+| `lib` | library — `uv init --lib` (hatchling) + `tests/` |
+
+```
+$ molt init my-app --template app
+$ ls my-app
+.gitignore  .python-version  README.md  main.py  pyproject.toml  uv.lock
+
+$ molt init my-cli --template src
+$ ls my-cli/src/my_cli
+__init__.py  __main__.py
+```
+
+User templates can be registered too — see `molt template`.
 
 Flags:
+- `--template <name>` — apply a template (default `bare`). Lists with `molt template list`.
 - `--python <ver>` — pin a specific Python (writes `.python-version`).
-- `--lib` — library layout via uv (`src/<pkg>/__init__.py` with hatchling
-  build config). Skips `__main__.py` since libraries don't have one.
-- `--flat` — keep uv's bare `hello.py` layout, skip the `src/` scaffold.
-- `--no-main` — skip `src/<pkg>/__main__.py`.
-- `--no-init-py` — skip `src/<pkg>/__init__.py`.
-- `--no-tests` — skip the `tests/` directory.
 - `--no-lock` — skip the initial `uv lock`.
 
 Existing files are never overwritten — re-running `molt init` on a populated
 directory is safe.
+
+#### `molt template`
+
+Manage project templates.
+
+```
+$ molt template list
+Available templates:
+
+  app          [builtin] Single-file application: main.py at the project root.
+  bare         [builtin] Minimal — just pyproject.toml + .python-version + uv.lock.
+  flat         [builtin] uv default: keeps hello.py at the project root.
+  lib          [builtin] Library: uv --lib layout + tests/.
+  src          [builtin] Conventional src/ layout: src/<pkg>/__init__.py + __main__.py + tests/.
+  my-cli       [user]    My team's standard CLI scaffold
+
+User templates dir: /Users/you/.molt/templates
+Apply with:        molt init --template <name>
+
+$ molt template show src
+Template: src [builtin]
+  Conventional src/ layout: src/<pkg>/__init__.py + __main__.py + tests/conftest.py.
+
+Files:
+  src/
+  src/__pkg__/
+  src/__pkg__/__init__.py
+  src/__pkg__/__main__.py
+  template.toml
+  tests/
+  tests/conftest.py
+
+$ molt template add my-cli ./my-cli-template
+✓ added user template "my-cli" from ./my-cli-template
+  → /Users/you/.molt/templates/my-cli
+
+$ molt template remove my-cli
+✓ removed user template "my-cli"
+```
+
+##### Authoring a user template
+
+A template is a directory tree. Two substitution rules:
+
+- A path component equal to `__pkg__` is renamed to the project's
+  normalised package name (e.g. `tag-control` → `tag_control`).
+- File contents are passed through string substitution: `{{name}}` becomes
+  the project name, `{{pkg}}` becomes the package name.
+
+Optional `template.toml` at the template root provides metadata:
+
+```toml
+description = "FastAPI service with uvicorn + pytest"
+
+# Toggle uv init flags
+use_uv_lib = false              # pass --lib to uv init
+keep_hello = false              # don't delete uv's hello.py placeholder
+
+# Packages to install post-init (calls `molt add` / `molt add --dev`)
+add     = ["fastapi", "uvicorn[standard]"]
+add_dev = ["pytest", "httpx"]
+
+# Tasks injected under [tool.molt.tasks] in the new project's pyproject.toml.
+# {{name}} and {{pkg}} are substituted.
+tasks = """
+dev  = { module = "{{pkg}}", args = ["--reload"] }
+test = "pytest tests/ -v"
+"""
+```
+
+User templates take precedence over built-ins of the same name, so you can
+override `src` with your own opinionated version if you want.
 
 #### `molt add [--dev] <pkg...>`
 
@@ -365,6 +449,18 @@ location), not `[project] dependencies`. Both are picked up by `sync`.
 
 After running, `<project>/.molt/syspath.json` is updated and shims in
 `.molt/bin/` reflect the new console-scripts.
+
+##### `-r requirements.txt` — bulk add from a requirements file
+
+```
+$ molt add -r requirements.txt
+$ molt add -r requirements.txt -r requirements-extra.txt --dev
+```
+
+Repeatable; mixes freely with positional packages. uv reads each file line
+by line and adds every entry to `pyproject.toml`. For an automated
+"requirements.txt as the source of truth" workflow, see [`[tool.molt]
+requirements`](#requirements-files-as-source-of-truth) below.
 
 #### `molt remove [--dev] <pkg...>`
 
@@ -395,6 +491,26 @@ $ molt sync
 
 - `--frozen` — fail if `pyproject.toml` is newer than `uv.lock`. Use in CI.
 - `--refresh` — force-reinstall every package (skip the `.ok` cache check).
+
+<a id="requirements-files-as-source-of-truth"></a>
+##### Requirements files as the source of truth
+
+If you'd rather edit a `requirements.txt` than `pyproject.toml`, declare it:
+
+```toml
+# pyproject.toml
+[tool.molt]
+requirements = ["requirements.txt"]
+# (or multiple: requirements = ["requirements.txt", "requirements-extra.txt"])
+```
+
+On every `molt sync`, molt checks each listed file's mtime against
+`uv.lock`. If the requirements file is newer (i.e. you edited it), molt
+runs `uv add -r <file>` to merge its lines into `pyproject.toml`'s
+`[project] dependencies`, then locks. Net effect: edit
+`requirements.txt`, run `molt sync`, done.
+
+Skipped under `--frozen`, so CI never mutates deps.
 
 #### `molt lock`
 
@@ -531,6 +647,45 @@ $ molt python which
 /Users/you/.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/bin/python3
 ```
 
+#### `molt python run <args...>`
+
+Invoke the project's Python interpreter directly with the given arguments,
+under the project environment (`PYTHONPATH` set to the global store, venv
+variables stripped). molt never relies on a `python` command being on
+PATH — it execs the uv-managed interpreter resolved at sync time.
+
+If the project hasn't been synced yet, `molt python run` syncs first.
+
+```
+$ molt python run -c 'import sys; print(sys.executable)'
+/Users/you/.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/bin/python3
+
+$ molt python run -m tagctl --help
+Usage: tagctl [OPTIONS] COMMAND [ARGS]...
+```
+
+##### Version override: `-v <version>` / `--python <version>`
+
+Run an arbitrary Python version, not the project's pinned one. Useful for
+quick stdlib checks across versions, scratch scripts, or smoke-testing a
+new Python before pinning it. Works in either position:
+
+```
+$ molt python -v 3.12 run -c 'import sys; print(sys.version)'
+3.12.11 (main, ...)
+$ molt python run -v 3.12 -c 'import sys; print(sys.version)'
+3.12.11 (main, ...)
+```
+
+If the requested version isn't installed, molt auto-installs it via uv —
+no external Python required.
+
+This mode runs Python with a **clean env** — `PYTHONPATH`, `VIRTUAL_ENV`,
+and `PYTHONHOME` are stripped, and the project's store directories are
+**not** injected (they're ABI-specific to the project's pinned Python and
+generally won't be compatible with a different version). Use without
+`-v` for "run my project's Python with all its deps".
+
 #### `molt python audit`
 
 Detailed inventory: every Python on this machine, with version, source,
@@ -560,25 +715,66 @@ Checking environment isolation...
 
 ### 7.3 Run & tasks
 
-Tasks live in `pyproject.toml` under `[tool.molt.tasks]`:
+Tasks live in `pyproject.toml` under `[tool.molt.tasks]`. Three forms are
+supported:
 
 ```toml
 [tool.molt.tasks]
-dev   = "uvicorn app.main:app --reload"
+# 1. Module form — runs the project's Python with `-m <module>`. molt
+#    execs spec.Python directly, so you never type "python" yourself.
+dev   = { module = "tagctl", args = ["--reload"] }
+
+# 2. Script form — runs a Python file. Path is relative to the project
+#    root (or the task's `dir =` if set).
+seed  = { script = "scripts/seed_db.py", args = ["--env", "dev"] }
+
+# 3. Shell form — arbitrary shell command. Console-script shims under
+#    .molt/bin/ (pytest, ruff, etc.) are on PATH automatically.
 test  = "pytest tests/ -v"
 lint  = "ruff check src/ tests/"
-hello = 'python -c "print(123)"'
 ```
 
-Note: when a command contains double-quotes, molt writes a TOML literal
-string (`'…'`) so the quotes don't need escaping.
+`module` and `script` bypass `/bin/sh` entirely and exec the uv-managed
+interpreter directly — molt has zero dependence on a system `python` being
+on PATH. Prefer them for "run my Python code"; reserve the shell form for
+shell-y tasks (pipes, multi-step commands, console-scripts).
+
+Exactly one of `command` / `module` / `script` must be set per task.
+
+Note: when a shell command contains double-quotes, molt writes a TOML
+literal string (`'…'`) so the quotes don't need escaping.
+
+**Auto-sync on first run.** If `.molt/syspath.json` doesn't exist when you
+run `molt run <task>`, molt syncs first (one-time, prints `→ first run,
+syncing project…`). After that the env is materialised and subsequent
+runs go straight to dispatch.
 
 #### `molt run <task> [-- extra-args]`
 
 Dispatch order:
-1. If `<task>` is a name in `[tool.molt.tasks]`, run it.
-2. Else look up `<task>` in `<project>/.molt/bin/`, then `PATH`, and
+1. If `<task>` ends in `.py` and the file exists, exec the project's
+   Python interpreter on it (single-file mode — see below).
+2. If `<task>` is a name in `[tool.molt.tasks]`, run it.
+3. Else look up `<task>` in `<project>/.molt/bin/`, then `PATH`, and
    `syscall.Exec` it under the project env.
+
+##### Single-file: `molt run <script>.py`
+
+For projects that are just `pyproject.toml` + a script, no task
+definition is required:
+
+```
+$ molt init my-app --template app
+$ cd my-app
+$ molt run main.py
+→ first run, syncing project…
+Hello from my-app!
+
+$ molt run scripts/seed.py --env dev
+```
+
+molt resolves the path, execs the project's Python with PYTHONPATH set,
+and forwards remaining args verbatim.
 
 ```
 $ molt run hello

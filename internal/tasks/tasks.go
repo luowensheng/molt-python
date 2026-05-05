@@ -218,6 +218,14 @@ func (r *Runner) PrintList() error {
 // ── Internal ──────────────────────────────────────────────────────────────────
 
 func (r *Runner) runOnce(task *types.Task, extraArgs []string) error {
+	// Structured task forms (module/script) bypass the shell entirely and
+	// exec the project's Python interpreter directly. No PATH lookup, no
+	// shim required — works even immediately after `molt sync` on a system
+	// with no `python` on PATH.
+	if task.Module != "" || task.Script != "" {
+		return r.runPython(task, extraArgs)
+	}
+
 	cmdStr := task.Command
 	if len(extraArgs) > 0 {
 		cmdStr += " " + strings.Join(extraArgs, " ")
@@ -238,9 +246,49 @@ func (r *Runner) runOnce(task *types.Task, extraArgs []string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 
-	// Build env using the new syspath spec if available, else fall back to .venv.
-	cmd.Env = r.buildTaskEnv(task.Env)
+	env, err := r.buildTaskEnv(task.Env)
+	if err != nil {
+		return err
+	}
+	cmd.Env = env
 
+	return cmd.Run()
+}
+
+// runPython execs the project's Python interpreter directly with -m / a
+// script path plus task.Args + extraArgs.
+func (r *Runner) runPython(task *types.Task, extraArgs []string) error {
+	spec, err := syspath.Load(r.ProjectDir)
+	if err != nil {
+		return fmt.Errorf("project not synced; run 'molt sync' (%w)", err)
+	}
+
+	var args []string
+	var display string
+	switch {
+	case task.Module != "":
+		args = []string{"-m", task.Module}
+		display = "python -m " + task.Module
+	case task.Script != "":
+		path := task.Script
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(r.workDir(task), path)
+		}
+		args = []string{path}
+		display = "python " + task.Script
+	}
+	args = append(args, task.Args...)
+	args = append(args, extraArgs...)
+	if len(task.Args)+len(extraArgs) > 0 {
+		display += " " + strings.Join(append(append([]string{}, task.Args...), extraArgs...), " ")
+	}
+
+	fmt.Printf("$ %s\n", display)
+
+	cmd := spec.PythonCommand(args...)
+	cmd.Dir = r.workDir(task)
+	// Layer .env + task.Env on top of spec.BuildEnv.
+	cmd.Env = r.layerEnv(cmd.Env, task.Env)
 	return cmd.Run()
 }
 
@@ -360,35 +408,158 @@ func (r *Runner) loadTasks() ([]types.Task, error) {
 				task.Command = rest[1:end]
 			}
 		} else if strings.HasPrefix(rest, "{") {
-			// Inline table form — extract command.
-			if idx := strings.Index(rest, `"command"`); idx >= 0 {
-				after := rest[idx+len(`"command"`):]
-				after = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(after), "="))
-				task.Command = strings.Trim(strings.SplitN(after, `"`, 3)[1], `"`)
-			} else if idx := strings.Index(rest, "command ="); idx >= 0 {
-				after := rest[idx+len("command ="):]
-				task.Command = strings.Trim(strings.TrimSpace(after), `"`)
+			// Inline table form — extract command/module/script/args.
+			task.Command = extractInlineKey(rest, "command")
+			task.Module = extractInlineKey(rest, "module")
+			task.Script = extractInlineKey(rest, "script")
+			task.Args = extractInlineArrayKey(rest, "args")
+			task.Description = extractInlineKey(rest, "description")
+		}
+		if !taskValid(&task) {
+			// Reject ambiguous declarations rather than silently dropping.
+			if conflictedTask(&task) {
+				return nil, fmt.Errorf("task %q: only one of command/module/script may be set", name)
 			}
+			continue
 		}
-		if task.Command != "" {
-			tasks = append(tasks, task)
-		}
+		tasks = append(tasks, task)
 	}
 	return tasks, nil
 }
 
-// buildTaskEnv constructs the env for a task, preferring the new
-// .molt/syspath.json (global-store layout) and falling back to a legacy
-// .venv layout for projects that haven't been re-synced yet.
-func (r *Runner) buildTaskEnv(taskEnv []string) []string {
-	var newEnv []string
-	if spec, err := syspath.Load(r.ProjectDir); err == nil {
-		newEnv = spec.BuildEnv(os.Environ())
-	} else {
-		newEnv = r.legacyVenvEnv()
+// extractInlineKey reads `key = "value"` (basic or literal string) from an
+// inline-table fragment such as `{ module = "tagctl", args = [...] }`.
+// Returns "" if the key is absent. Handles both bare and quoted key forms.
+func extractInlineKey(rest, key string) string {
+	patterns := []string{
+		`"` + key + `"`,
+		key,
 	}
+	for _, pat := range patterns {
+		idx := strings.Index(rest, pat)
+		if idx < 0 {
+			continue
+		}
+		// Confirm it's a key, not a substring of a longer name. The char
+		// before should be `{`, `,`, or whitespace; the next non-space char
+		// after should be `=`.
+		if idx > 0 {
+			c := rest[idx-1]
+			if c != '{' && c != ',' && c != ' ' && c != '\t' {
+				continue
+			}
+		}
+		after := strings.TrimSpace(rest[idx+len(pat):])
+		if !strings.HasPrefix(after, "=") {
+			continue
+		}
+		after = strings.TrimSpace(after[1:])
+		if strings.HasPrefix(after, `"`) {
+			if end := strings.Index(after[1:], `"`); end >= 0 {
+				return unescapeBasicTOMLString(after[1 : 1+end])
+			}
+		} else if strings.HasPrefix(after, `'`) {
+			if end := strings.Index(after[1:], `'`); end >= 0 {
+				return after[1 : 1+end]
+			}
+		}
+	}
+	return ""
+}
 
-	// Load .env file.
+// extractInlineArrayKey reads `key = ["a", "b"]` from an inline-table fragment.
+// Returns nil if the key is absent. Strings only — no nested arrays.
+func extractInlineArrayKey(rest, key string) []string {
+	patterns := []string{`"` + key + `"`, key}
+	for _, pat := range patterns {
+		idx := strings.Index(rest, pat)
+		if idx < 0 {
+			continue
+		}
+		if idx > 0 {
+			c := rest[idx-1]
+			if c != '{' && c != ',' && c != ' ' && c != '\t' {
+				continue
+			}
+		}
+		after := strings.TrimSpace(rest[idx+len(pat):])
+		if !strings.HasPrefix(after, "=") {
+			continue
+		}
+		after = strings.TrimSpace(after[1:])
+		if !strings.HasPrefix(after, "[") {
+			continue
+		}
+		end := strings.Index(after, "]")
+		if end < 0 {
+			continue
+		}
+		body := after[1:end]
+		var out []string
+		// Split on commas at depth 0; we only support strings inside.
+		for _, raw := range strings.Split(body, ",") {
+			s := strings.TrimSpace(raw)
+			if s == "" {
+				continue
+			}
+			if strings.HasPrefix(s, `"`) && strings.HasSuffix(s, `"`) && len(s) >= 2 {
+				out = append(out, unescapeBasicTOMLString(s[1:len(s)-1]))
+			} else if strings.HasPrefix(s, `'`) && strings.HasSuffix(s, `'`) && len(s) >= 2 {
+				out = append(out, s[1:len(s)-1])
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// taskValid reports whether a parsed task has exactly one execution form set.
+func taskValid(t *types.Task) bool {
+	n := 0
+	if t.Command != "" {
+		n++
+	}
+	if t.Module != "" {
+		n++
+	}
+	if t.Script != "" {
+		n++
+	}
+	return n == 1
+}
+
+// conflictedTask reports whether a task has more than one execution form set.
+func conflictedTask(t *types.Task) bool {
+	n := 0
+	if t.Command != "" {
+		n++
+	}
+	if t.Module != "" {
+		n++
+	}
+	if t.Script != "" {
+		n++
+	}
+	return n > 1
+}
+
+// buildTaskEnv constructs the env for a shell-form task (Command). It
+// requires .molt/syspath.json to exist (so the .molt/bin/ shim PATH is
+// known); callers should auto-sync before running tasks. The legacy .venv
+// fallback was removed because it produced a misleading PATH that made
+// "python: command not found" failures look like a packaging bug.
+func (r *Runner) buildTaskEnv(taskEnv []string) ([]string, error) {
+	spec, err := syspath.Load(r.ProjectDir)
+	if err != nil {
+		return nil, fmt.Errorf("project not synced; run 'molt sync' (%w)", err)
+	}
+	return r.layerEnv(spec.BuildEnv(os.Environ()), taskEnv), nil
+}
+
+// layerEnv applies .env file entries and per-task env overrides on top of
+// a base environment.
+func (r *Runner) layerEnv(base []string, taskEnv []string) []string {
+	out := append([]string{}, base...)
 	if envData, err := os.ReadFile(filepath.Join(r.ProjectDir, ".env")); err == nil {
 		scanner := bufio.NewScanner(bytes.NewReader(envData))
 		for scanner.Scan() {
@@ -396,36 +567,10 @@ func (r *Runner) buildTaskEnv(taskEnv []string) []string {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			newEnv = append(newEnv, line)
+			out = append(out, line)
 		}
 	}
-
-	// Task-specific env overrides.
-	newEnv = append(newEnv, taskEnv...)
-
-	return newEnv
-}
-
-// legacyVenvEnv keeps the pre-sync-rewrite behaviour for projects that still
-// have a .venv on disk and haven't been migrated. Drop once .venv support is
-// removed entirely.
-func (r *Runner) legacyVenvEnv() []string {
-	venvBin := filepath.Join(r.ProjectDir, ".venv", "bin")
-	if isWindows() {
-		venvBin = filepath.Join(r.ProjectDir, ".venv", "Scripts")
-	}
-	env := os.Environ()
-	out := make([]string, 0, len(env))
-	for _, e := range env {
-		if strings.HasPrefix(e, "PATH=") {
-			sep := ":"
-			if isWindows() {
-				sep = ";"
-			}
-			e = "PATH=" + venvBin + sep + strings.TrimPrefix(e, "PATH=")
-		}
-		out = append(out, e)
-	}
+	out = append(out, taskEnv...)
 	return out
 }
 

@@ -6,6 +6,7 @@ package syspath
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -85,6 +86,25 @@ func (s *Spec) BuildEnv(parent []string) []string {
 	}
 	out = append(out, "PATH="+pathVal)
 	return out
+}
+
+// PythonCommand builds an *exec.Cmd that invokes the project's Python
+// interpreter directly (s.Python) with args, the project's PYTHONPATH and
+// cleaned PATH, stdio inherited, and CWD set to s.ProjectDir.
+//
+// Use this for any "run python ..." path: structured tasks (module/script),
+// `molt run python ...`, and the new `molt python run` subcommand. It does
+// NOT need .molt/bin/python to exist — molt resolves directly to the
+// uv-managed interpreter, so the user is never required to have any
+// system `python` on PATH.
+func (s *Spec) PythonCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command(s.Python, args...)
+	cmd.Env = s.BuildEnv(os.Environ())
+	cmd.Dir = s.ProjectDir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd
 }
 
 // ResolveCommand searches .molt/bin first for a project-local shim, falling

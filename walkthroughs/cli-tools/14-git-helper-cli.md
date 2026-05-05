@@ -88,7 +88,7 @@ dev-dependencies = [
 gitflow = "gitflow.cli:main"
 
 [tool.molt.tasks]
-dev  = "python -m gitflow"
+dev  = { module = "gitflow" }
 test = "pytest tests/ -v --tb=short"
 lint = "ruff check src/ tests/ && ruff format --check src/ tests/"
 fix  = "ruff check --fix src/ tests/ && ruff format src/ tests/"

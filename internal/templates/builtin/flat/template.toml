@@ -1,0 +1,2 @@
+description = "uv default: keeps hello.py at the project root."
+keep_hello = true

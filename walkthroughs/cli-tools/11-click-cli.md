@@ -19,39 +19,40 @@ Resolved 1 package in 11ms
 ✓ Done.
 ```
 
-`molt init` runs `uv init` in the current directory, giving you a minimal working
-project:
+`molt init` scaffolds the conventional `src/` layout by default:
 
 ```
 tagctl/
-├── .python-version   # e.g. "3.11"
+├── .gitignore           # .molt/ is ignored
+├── .python-version      # e.g. "3.11"
 ├── README.md
-├── hello.py          # uv placeholder — delete this
-├── pyproject.toml    # minimal, no dependencies yet
+├── pyproject.toml
+├── src/
+│   └── tagctl/
+│       ├── __init__.py  # __version__ = "0.1.0"
+│       └── __main__.py  # boilerplate `def main(): ...`
+├── tests/
+│   └── conftest.py
 └── uv.lock
 ```
 
-Next, set up the `src/` layout and create the application skeleton:
+Add the tagctl-specific files and a `policies/` directory for tag rules:
 
 ```bash
-# Remove the uv placeholder
-$ rm hello.py
-
-# Create package directories
-$ mkdir -p src/tagctl tests policies
-
-# Create package files (populated in section 3 below)
-$ touch src/tagctl/__init__.py src/tagctl/__main__.py \
-        src/tagctl/cli.py src/tagctl/aws.py \
+$ touch src/tagctl/cli.py src/tagctl/aws.py \
         src/tagctl/models.py src/tagctl/policy.py
-$ touch tests/conftest.py tests/test_cli.py tests/test_policy.py
+$ touch tests/test_cli.py tests/test_policy.py
+$ mkdir policies
 ```
 
-Replace the generated `pyproject.toml` with the full project config shown in
-section 2, then sync:
+Then add dependencies — `molt add` resolves, downloads, and populates the
+global store in one shot:
 
 ```bash
-$ molt sync
+$ molt add click boto3 rich pydantic
+$ molt add --dev pytest pytest-mock ruff "moto[ec2,s3]"
+Using CPython 3.11.14
+Resolved 47 packages in 312ms
   ↓ install click 8.1.7 (click-8.1.7-py3-none-any.whl)
   ↓ install boto3 1.34.11 (boto3-1.34.11-py3-none-any.whl)
   ↓ install rich 13.7.0 (rich-13.7.0-py3-none-any.whl)
@@ -63,7 +64,7 @@ $ molt sync
 ✓ 47 package(s); store=/Users/you/.molt/pkg
 ```
 
-A re-run hits the cache:
+A re-run of `molt sync` hits the cache:
 
 ```bash
 $ molt sync
@@ -75,7 +76,9 @@ $ molt sync
 ```
 
 Packages live once in `~/.molt/pkg/` and are shared across every project. A second
-project that needs `click` or `rich` will see `✔ cached` and incur zero disk writes.
+project that needs `click` or `rich` will see `✓ cached` and incur zero disk writes.
+
+Finally, add the task definitions and any other config you want — see section 2.
 
 ---
 
@@ -106,7 +109,7 @@ dev = [
 tagctl = "tagctl.cli:main"
 
 [tool.molt.tasks]
-dev   = "python -m tagctl"
+dev   = { module = "tagctl" }
 test  = "pytest tests/ -v --tb=short"
 lint  = "ruff check src/ tests/ && ruff format --check src/ tests/"
 fix   = "ruff check --fix src/ tests/ && ruff format src/ tests/"
@@ -127,6 +130,7 @@ After adding all application files (see section 1 for the scaffolding steps):
 
 ```
 tagctl/
+├── .gitignore
 ├── .python-version
 ├── pyproject.toml
 ├── uv.lock
@@ -145,6 +149,19 @@ tagctl/
     ├── conftest.py
     ├── test_cli.py
     └── test_policy.py
+```
+
+### src/tagctl/__main__.py
+
+This is the entry point for `molt run dev` (which uses the `module = "tagctl"`
+task form — see section 2). When invoked with `python -m tagctl`, Python imports
+this file and runs the body, which delegates to the Click group:
+
+```python
+from tagctl.cli import main
+
+if __name__ == "__main__":
+    main()
 ```
 
 ### src/tagctl/cli.py (excerpt)
@@ -189,9 +206,15 @@ def audit(ctx, policy_file):
 
 ## 4. Running Tasks with molt run
 
+The `dev` task uses the **module form** (`{ module = "tagctl" }`), so molt
+execs the project's Python interpreter directly with `-m tagctl` — no
+shell, no PATH lookup, no system `python` required. The displayed
+command shows what's actually being run:
+
 ```bash
-# Start the CLI in development mode
+# Start the CLI in development mode (extra args after `--` get passed through)
 $ molt run dev -- audit --policy policies/required-tags.yaml
+$ python -m tagctl audit --policy policies/required-tags.yaml
 
   Tag Violations
 ┌──────────────────────┬───────────────────────────────┐
@@ -203,8 +226,9 @@ $ molt run dev -- audit --policy policies/required-tags.yaml
 └──────────────────────┴───────────────────────────────┘
 Exit code: 1
 
-# Run the test suite
+# Run the test suite (shell-form task — pytest shim resolved via .molt/bin/)
 $ molt run test
+$ pytest tests/ -v --tb=short
 ========================= test session starts ==========================
 platform linux -- Python 3.11.8, pytest-8.1.1
 collected 24 items
@@ -219,8 +243,40 @@ tests/test_policy.py::test_policy_required_tags PASSED           [ 20%]
 
 # Lint
 $ molt run lint
+$ ruff check src/ tests/ && ruff format --check src/ tests/
 All checks passed.
 ```
+
+> **First-run note.** If you haven't run `molt sync` yet (e.g. straight
+> after `molt init` + `molt add`), the first `molt run` auto-syncs:
+>
+> ```
+> $ molt run dev
+> → first run, syncing project…
+>   ✓ cached  click 8.1.7
+>   ...
+> $ python -m tagctl
+> ```
+
+### Ad-hoc Python invocation
+
+For one-off scripts or REPL sessions that don't warrant a task entry,
+use `molt python run`:
+
+```bash
+$ molt python run -m tagctl --help              # same as `molt run dev`
+$ molt python run scripts/migrate_tags.py       # arbitrary script
+$ molt python run -c 'import boto3; print(boto3.__version__)'
+1.34.11
+
+# Test against a different Python without changing the project pin:
+$ molt python -v 3.12 run -c 'import sys; print(sys.version)'
+3.12.11 (main, ...)
+```
+
+molt manages its own uv-installed Python — no system interpreter is ever
+required, and `-v <ver>` will auto-install the requested version on first
+use.
 
 ---
 
