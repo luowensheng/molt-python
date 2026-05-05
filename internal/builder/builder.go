@@ -36,6 +36,7 @@ import (
 	"molt/embedder"
 	"molt/internal/integrity"
 	"molt/internal/moltcfg"
+	"molt/internal/tasks"
 	"molt/pkg/types"
 )
 
@@ -98,11 +99,24 @@ func (b *Builder) Build() error {
 	}
 	defer os.Remove(launcherPath)
 
-	// 2. Build manifest.
+	// 2. Build manifest. Detect the project layout to pick the right
+	// runtime entry point — src/<pkg>/__main__.py wants `python -m <pkg>`,
+	// a bare main.py wants `python main.py`, etc. Without this every
+	// non-default layout used to fail with `No module named <name>.main`.
+	mainModule, mainScript := detectMainEntry(b.cfg.ProjectPath, b.cfg.Name)
+
+	// Collect [tool.molt.tasks] from pyproject.toml so the built binary
+	// can dispatch them as `<app> <task>` at runtime. Best-effort — a
+	// project without tasks just ships an empty map and uses the default
+	// entry only.
+	tasks, _ := readPyprojectTasks(b.cfg.ProjectPath)
+
 	m := &types.Manifest{
 		AppName:    b.cfg.Name,
 		Version:    b.cfg.Version,
-		MainModule: b.cfg.Name + ".main",
+		MainModule: mainModule,
+		MainScript: mainScript,
+		Tasks:      tasks,
 		Profile:    b.cfg.Profile,
 		TargetOS:   b.cfg.TargetOS,
 		TargetArch: b.cfg.TargetArch,
@@ -168,6 +182,65 @@ func (b *Builder) Build() error {
 // loadMoltConfig returns the project's molt.yaml or nil if absent. Any
 // parse/validation error is fatal — we don't proceed with a half-understood
 // config.
+// detectMainEntry inspects the project layout to pick the right runtime
+// entry. Returns (mainModule, mainScript) — exactly one is non-empty.
+//
+// Resolution order:
+//
+//  1. src/<pkg>/__main__.py    → MainModule = "<pkg>"      (run `python -m <pkg>`)
+//  2. <pkg>/__main__.py        → MainModule = "<pkg>"
+//  3. src/<pkg>/main.py        → MainModule = "<pkg>.main"
+//  4. <pkg>/main.py            → MainModule = "<pkg>.main"
+//  5. <project>/main.py        → MainScript = "main.py"    (run `python main.py`)
+//  6. (fallback)               → MainModule = "<pkg>.main" (legacy default)
+//
+// pkg is the project name normalised for Python: lowercase + dashes/dots/spaces
+// converted to underscores.
+func detectMainEntry(projectPath, appName string) (mainModule, mainScript string) {
+	pkg := normPkg(appName)
+	exists := func(rel ...string) bool {
+		full := filepath.Join(append([]string{projectPath}, rel...)...)
+		_, err := os.Stat(full)
+		return err == nil
+	}
+	switch {
+	case exists("src", pkg, "__main__.py"):
+		return pkg, ""
+	case exists(pkg, "__main__.py"):
+		return pkg, ""
+	case exists("src", pkg, "main.py"):
+		return pkg + ".main", ""
+	case exists(pkg, "main.py"):
+		return pkg + ".main", ""
+	case exists("main.py"):
+		return "", "main.py"
+	default:
+		return pkg + ".main", ""
+	}
+}
+
+func normPkg(name string) string {
+	r := strings.NewReplacer("-", "_", ".", "_", " ", "_")
+	return strings.ToLower(r.Replace(name))
+}
+
+// readPyprojectTasks reads [tool.molt.tasks] from pyproject.toml using the
+// tasks package's existing parser, then converts the slice into the map
+// shape the launcher expects. Best-effort: returns nil on any failure so
+// builds never break because of a malformed tasks section.
+func readPyprojectTasks(projectPath string) (map[string]types.Task, error) {
+	r := tasks.New(projectPath)
+	list, err := r.List()
+	if err != nil || len(list) == 0 {
+		return nil, err
+	}
+	out := make(map[string]types.Task, len(list))
+	for _, t := range list {
+		out[t.Name] = t
+	}
+	return out, nil
+}
+
 func loadMoltConfig(dir string) (*types.MoltConfig, error) {
 	cfg, err := moltcfg.Load(dir)
 	if err != nil {

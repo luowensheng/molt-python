@@ -46,6 +46,8 @@ func main() {
 	switch os.Args[1] {
 	case "build":
 		err = cmdBuild(os.Args[2:])
+	case "package":
+		err = cmdPackage(os.Args[2:])
 	case "capture":
 		err = cmdCapture(os.Args[2:])
 	case "assemble":
@@ -188,6 +190,11 @@ Task runner:
 
 Build:
   build    [flags] [project-path]  Build self-contained binary
+                                     --output <path>  output path (default: <name>)
+                                     --os/--arch      cross-build target
+  package  [flags]                 Build Python wheel + sdist (PyPI artifacts)
+                                     --output <dir>   output dir (default: dist)
+                                     --sdist | --wheel  limit to one artifact
   capture  [flags] [project-path]  Capture environment manifest
   assemble [flags]                 Assemble binary from a manifest
 
@@ -237,7 +244,11 @@ func cmdBuild(args []string) error {
 		*name = filepath.Base(absProject)
 	}
 	if *output == "" {
-		*output = fmt.Sprintf("%s-v%s", *name, *ver)
+		// Default to just `<name>` in cwd. The version is in the embedded
+		// manifest and exposed via `<bin> molt version` — no need to
+		// version-stamp the filename. No implicit `dist/` either; users
+		// can pass `--output dist/foo` if they want one.
+		*output = *name
 	}
 
 	crossMode := types.CrossBuildDeny
@@ -278,6 +289,34 @@ func cmdCapture(args []string) error {
 		TargetOS:    *targetOS,
 		TargetArch:  *targetArch,
 	})
+}
+
+// cmdPackage builds Python distribution artefacts (wheel + sdist) suitable
+// for upload to PyPI. Thin wrapper over `uv build`. Output goes to dist/
+// per uv defaults; --sdist or --wheel limit to one artefact.
+func cmdPackage(args []string) error {
+	fs := flag.NewFlagSet("package", flag.ExitOnError)
+	output := fs.String("output", "dist", "Output directory")
+	sdistOnly := fs.Bool("sdist", false, "Build only the sdist (.tar.gz)")
+	wheelOnly := fs.Bool("wheel", false, "Build only the wheel (.whl)")
+	fs.Parse(args)
+
+	absDir, _ := filepath.Abs(".")
+	uvArgs := []string{"build", "--out-dir", *output}
+	switch {
+	case *sdistOnly && *wheelOnly:
+		return fmt.Errorf("--sdist and --wheel are mutually exclusive")
+	case *sdistOnly:
+		uvArgs = append(uvArgs, "--sdist")
+	case *wheelOnly:
+		uvArgs = append(uvArgs, "--wheel")
+	}
+	if err := internuv.Raw(absDir, uvArgs); err != nil {
+		return err
+	}
+	fmt.Printf("✓ Packaged to %s/ — upload with `uv publish` or `twine upload %s/*`\n",
+		*output, *output)
+	return nil
 }
 
 func cmdAssemble(args []string) error {

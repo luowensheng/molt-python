@@ -865,25 +865,143 @@ Removing a non-existent task is a hard error, never a silent success.
 #### `molt build [flags] [project-path]`
 
 Produce a self-contained binary. Reads `molt.yaml` for app metadata and any
-custom commands; falls back to inferring from `pyproject.toml`.
+custom commands; falls back to inferring from `pyproject.toml`. Embeds
+`[tool.molt.tasks]` so the binary can run user-defined entry points
+(`./<bin> <task>`) — see [§7.4 Built-binary commands](#built-binary-commands)
+below.
 
 ```
-$ molt build --output ./dist/tagctl
+$ molt build
 Building tagctl v0.1.0 (darwin/arm64)...
   Compiled launcher (darwin/arm64)
   → Embedding files (strict=true, legacy denylist)...
   ✓ Payload: 9.3 KB (23 files)
-  ✓ Integrity manifest: dist/tagctl-v0.1.0.manifest.json
-  ✓ Created: ./dist/tagctl (3.7MB)
+  ✓ Integrity manifest: tagctl-v0.1.0.manifest.json
+  ✓ Created: ./tagctl (3.7MB)
     root_hash: 3a2c0881e6ee4dc85672ae82a06c74f7451741d61301d960a523eed155d8fe2a
     files:     23   total: 0.0MB
     install:   molt_INSTALL_BASE=/opt ./tagctl install
 ```
 
 Common flags:
-- `--output <path>` — output path. Default: `dist/<name>`.
+- `--output <path>` — output path. Default: just `<name>` in cwd (no
+  version stamp, no `dist/` prefix). The version is in the embedded
+  manifest and exposed via `<bin> molt version`.
 - `--os <darwin|linux|windows>` and `--arch <amd64|arm64>` — cross-compile.
 - `--version <ver>` — embed a version string (default reads `pyproject.toml`).
+
+##### Excluding files from the binary
+
+The embedder honours `.moltignore` (gitignore-style globs) at the project
+root. Use it to skip large or sensitive files that don't need to ship:
+
+```
+# .moltignore
+.git/
+__pycache__/
+*.pyc
+docs/
+notebooks/
+*.parquet
+.env
+```
+
+`molt build --embed-strict` (the default) refuses to build if files matching
+known sensitive patterns (`.env`, `*.key`, `*.pem`, etc.) are not excluded.
+Pass `--embed-strict=false` to override (not recommended).
+
+#### `molt package [flags]`
+
+Build Python distribution artefacts (wheel + sdist) suitable for upload to
+PyPI. Thin wrapper over `uv build`. Output goes to `dist/` by default.
+
+```
+$ molt package
+Successfully built dist/mylib-0.1.0.tar.gz and dist/mylib-0.1.0-py3-none-any.whl
+✓ Packaged to dist/ — upload with `uv publish` or `twine upload dist/*`
+
+$ ls dist/
+mylib-0.1.0-py3-none-any.whl
+mylib-0.1.0.tar.gz
+```
+
+Flags:
+- `--output <dir>` — output directory (default `dist`).
+- `--sdist` — produce only the source tarball.
+- `--wheel` — produce only the wheel.
+
+`molt build` and `molt package` solve different problems: `build` produces
+**a single executable** that runs on machines without Python; `package`
+produces **importable Python distribution artefacts** for `pip install` and
+PyPI.
+
+#### Built-binary commands
+
+The binary produced by `molt build` exposes two namespaces:
+
+```
+$ ./myapp                        # runs the default entry (main.py / __main__.py)
+$ ./myapp <task> [args...]       # runs a task from [tool.molt.tasks]
+$ ./myapp molt <meta> [...]      # introspection / install lifecycle
+```
+
+User tasks come from the project's `[tool.molt.tasks]` block — embedded at
+build time. Same syntax as dev (`module` / `script` / `command`). Example:
+
+```toml
+[tool.molt.tasks]
+serve   = { module = "myapp.server", args = ["--port", "8080"] }
+worker  = { module = "myapp.worker" }
+migrate = { script = "scripts/migrate.py" }
+```
+
+Then on the target host:
+
+```
+$ ./myapp serve
+$ ./myapp worker --concurrency 4
+$ ./myapp migrate --dry-run
+```
+
+Meta commands accessible via the `molt` namespace (also work bare for
+backward compat — user tasks of the same name shadow them, in which case
+use `molt`):
+
+| Command | Purpose |
+|---|---|
+| `<bin> molt install [--prefix DIR] [--offline] [--verbose] [--no-verify]` | Extract payload, set up env. |
+| `<bin> molt run [<task>] [args...]` | Explicit dispatch — bypasses any task/meta name collision. |
+| `<bin> molt verify [--deep]` | Recompute root hash; compare to embedded. |
+| `<bin> molt info` | Name, version, build time, target, integrity, install state, defined tasks. |
+| `<bin> molt version` | `<name> <version>`. |
+| `<bin> molt hash` | Embedded root hash, hex (script-friendly). |
+| `<bin> molt commands` | List defined tasks (one per line). |
+| `<bin> molt uninstall` | Remove the install. |
+
+##### Environment exposed to user code
+
+Every `<bin> <task>` and default-entry invocation runs with these env
+vars set:
+
+| Var | Value |
+|---|---|
+| `MOLT_APP_DIR` | Top-level install directory. |
+| `MOLT_APP_SRC` | Project source root inside the install dir (`.../src/`). |
+| `MOLT_APP_NAME` | App name. |
+| `MOLT_APP_VERSION` | App version. |
+| `MOLT_APP_BUILT` | Build timestamp (RFC3339). |
+| `MOLT_APP_TARGET` | Build target (`darwin/arm64`, `linux/amd64`, …). |
+
+Use these for locating shipped data files, logging build provenance, or
+implementing self-update checks:
+
+```python
+import os
+from pathlib import Path
+
+config = Path(os.environ["MOLT_APP_DIR"]) / "config" / "default.yaml"
+print(f"Running {os.environ['MOLT_APP_NAME']} v{os.environ['MOLT_APP_VERSION']}")
+```
 
 The output binary supports its own subcommands:
 

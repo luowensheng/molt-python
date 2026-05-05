@@ -37,9 +37,21 @@ const (
 // the builder into the payload and read by the launcher at install/run
 // time. Distinct from IntegrityManifest (which is for authentication/audit).
 type Manifest struct {
-	AppName    string       `json:"app_name"`
-	Version    string       `json:"version"`
-	MainModule string       `json:"main_module"`
+	AppName string `json:"app_name"`
+	Version string `json:"version"`
+	// MainModule is the dotted-path Python module to invoke as `python -m
+	// <module>` when no command is defined in molt.yaml. Set to "" when
+	// MainScript is used instead (single-file projects).
+	MainModule string `json:"main_module"`
+	// MainScript is a project-relative path to a .py file. When set, the
+	// launcher runs `python <script>` instead of `python -m <module>`.
+	// Used for app-template / single-file projects.
+	MainScript string `json:"main_script,omitempty"`
+	// Tasks is the embedded subset of [tool.molt.tasks] from pyproject.toml,
+	// available at runtime as `<app> <task-name>`. Lets binaries ship with
+	// multiple entry points (web, worker, cli, etc.) without needing
+	// molt.yaml. Empty when the project has no [tool.molt.tasks] block.
+	Tasks      map[string]Task `json:"tasks,omitempty"`
 	Python     PythonSpec   `json:"python"`
 	SystemDeps []SystemDep  `json:"system_deps"`
 	PyPackages []PyPackage  `json:"py_packages"`

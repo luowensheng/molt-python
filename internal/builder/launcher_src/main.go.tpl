@@ -35,14 +35,30 @@ import (
 // ── Types mirroring pkg/types (kept in sync manually) ────────────────────────
 
 type Manifest struct {
-	AppName            string      `json:"app_name"`
-	Version            string      `json:"version"`
-	MainModule         string      `json:"main_module"`
-	Python             PythonSpec  `json:"python"`
-	SystemDeps         []SystemDep `json:"system_deps"`
-	PyPackages         []PyPackage `json:"py_packages"`
-	Profile            string      `json:"profile"`
-	MoltConfigSnapshot *MoltConfig `json:"molt_config,omitempty"`
+	AppName            string            `json:"app_name"`
+	Version            string            `json:"version"`
+	MainModule         string            `json:"main_module"`
+	MainScript         string            `json:"main_script,omitempty"`
+	BuildTime          string            `json:"build_time,omitempty"`
+	TargetOS           string            `json:"target_os,omitempty"`
+	TargetArch         string            `json:"target_arch,omitempty"`
+	Tasks              map[string]Task   `json:"tasks,omitempty"`
+	Python             PythonSpec        `json:"python"`
+	SystemDeps         []SystemDep       `json:"system_deps"`
+	PyPackages         []PyPackage       `json:"py_packages"`
+	Profile            string            `json:"profile"`
+	MoltConfigSnapshot *MoltConfig       `json:"molt_config,omitempty"`
+}
+
+// Task mirrors pkg/types.Task — the user-defined commands shipped in the
+// binary so `<app> <task>` works at runtime.
+type Task struct {
+	Name        string   `json:"name"`
+	Command     string   `json:"command,omitempty"`
+	Module      string   `json:"module,omitempty"`
+	Script      string   `json:"script,omitempty"`
+	Args        []string `json:"args,omitempty"`
+	Description string   `json:"description,omitempty"`
 }
 
 type PythonSpec struct {
@@ -150,55 +166,136 @@ const (
 // ── Entry ────────────────────────────────────────────────────────────────────
 
 func main() {
+	// Dispatch:
+	//   <app>                 → run the default entry (no args)
+	//   <app> <user-task>     → run a task from manifest.Tasks
+	//   <app> molt <meta>     → run a meta command (install/verify/info/...)
+	//   <app> install|...     → backward-compat: top-level meta names still work,
+	//                            but they're shadowed by user tasks of the same
+	//                            name. Use `<app> molt <name>` to disambiguate.
 	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+		// No args → run default entry. cmdRun with no args invokes the
+		// project's main module/script.
+		if err := cmdRun(nil); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
-	var err error
-	switch os.Args[1] {
-	case "install":
-		err = cmdInstall(os.Args[2:])
-	case "run":
-		err = cmdRun(os.Args[2:])
-	case "verify":
-		err = cmdVerify(os.Args[2:])
-	case "uninstall":
-		err = cmdUninstall(os.Args[2:])
-	case "info":
-		err = cmdInfo()
-	case "version", "--version", "-v":
-		err = cmdVersion()
-	case "help", "--help", "-h":
-		usage()
-	default:
-		usage()
-		os.Exit(2)
+	first := os.Args[1]
+	rest := os.Args[2:]
+
+	// Explicit meta namespace.
+	if first == "molt" {
+		if err := dispatchMeta(rest); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
-	if err != nil {
+
+	// User-defined task takes precedence over backward-compat meta names.
+	// Try to load the manifest; if loading fails (corrupt binary etc.) we
+	// fall through to the meta dispatcher so `verify` / `version` still
+	// work for diagnostics.
+	if m := loadManifestQuiet(); m != nil {
+		if _, ok := m.Tasks[first]; ok {
+			if err := runUserTask(m, first, rest); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
+	if err := dispatchMeta(append([]string{first}, rest...)); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
+// dispatchMeta routes the install/uninstall/verify/info/version/run/hash
+// /commands meta subcommands. With no args, prints usage.
+func dispatchMeta(args []string) error {
+	if len(args) == 0 {
+		usage()
+		return nil
+	}
+	switch args[0] {
+	case "install":
+		return cmdInstall(args[1:])
+	case "run":
+		return cmdRun(args[1:])
+	case "verify":
+		return cmdVerify(args[1:])
+	case "uninstall":
+		return cmdUninstall(args[1:])
+	case "info":
+		return cmdInfo()
+	case "version", "--version", "-v":
+		return cmdVersion()
+	case "hash":
+		return cmdHash()
+	case "commands":
+		return cmdCommands()
+	case "help", "--help", "-h":
+		usage()
+		return nil
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
+		usage()
+		os.Exit(2)
+		return nil
+	}
+}
+
+// loadManifestQuiet returns the embedded manifest or nil on any failure.
+// Used by the dispatcher to decide whether a top-level arg is a user task.
+func loadManifestQuiet() *Manifest {
+	self, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	trailer, err := readTrailer(self)
+	if err != nil || !trailer.HasIntegrity {
+		return nil
+	}
+	m, err := readManifest(self, trailer.PayloadOffset)
+	if err != nil {
+		return nil
+	}
+	return m
+}
+
 func usage() {
 	self := filepath.Base(os.Args[0])
-	fmt.Fprintf(os.Stderr, `Usage: %s <command> [args...]
+	fmt.Fprintf(os.Stderr, `Usage: %[1]s [<task>] [args...]
+       %[1]s molt <meta-command> [args...]
 
-Commands:
-  install [--prefix DIR] [--offline] [--verbose] [--no-verify]
-            Extract payload and set up hermetic environment.
+User tasks:
+  %[1]s                       Run the default entry point.
+  %[1]s <task> [args...]      Run a task from [tool.molt.tasks].
+  %[1]s molt commands         List defined tasks.
 
-  run [COMMAND] [args...]
-            Execute COMMAND (from molt.yaml). Without COMMAND, run the
-            default command; without a default, fall back to "python -m
-            <app>.main".
+Meta commands (also available bare for backward compat):
+  %[1]s molt install [--prefix DIR] [--offline] [--verbose] [--no-verify]
+                              Extract payload and set up hermetic environment.
+  %[1]s molt run [TASK] [...] Explicit task dispatch (bypasses task/meta shadowing).
+  %[1]s molt verify           Recompute payload root hash; compare to trailer.
+  %[1]s molt uninstall        Remove the installation.
+  %[1]s molt info             Print install metadata + defined tasks.
+  %[1]s molt version          Print app name and version.
+  %[1]s molt hash             Print embedded root hash (hex, script-friendly).
 
-  verify    Recompute payload root hash and compare to trailer.
-  uninstall Remove the installation.
-  info      Print install metadata.
-  version   Print app name and version.
+Environment exposed to user code:
+  MOLT_APP_DIR        Install directory (top-level).
+  MOLT_APP_SRC        Project source root inside the install dir.
+  MOLT_APP_NAME       App name.
+  MOLT_APP_VERSION    App version.
+  MOLT_APP_BUILT      Build timestamp (RFC3339).
+  MOLT_APP_TARGET     Target os/arch (e.g. darwin/arm64).
 
-Environment variables:
+Install configuration:
   MOLT_INSTALL_BASE   Base directory ($BASE/<app>/<version>/ install dir).
   MOLT_INSTALL_DIR    Full install dir (overrides MOLT_INSTALL_BASE).
   MOLT_CACHE_DIR      Cache for downloaded artefacts.
@@ -440,17 +537,33 @@ func executeCommand(m *Manifest, installDir, name string, extraArgs []string, ve
 	return fmt.Errorf("command %q has neither exec nor script", name)
 }
 
-// executeLegacyMain replicates the pre-molt.yaml behaviour: `python -m <app>.main`.
+// executeLegacyMain runs the default entry point: either `python -m
+// <module>` (MainModule set, e.g. src/<pkg>/__main__.py projects) or
+// `python <script>` (MainScript set, e.g. single-file `main.py` projects).
+// Layout-detected at build time by detectMainEntry().
 func executeLegacyMain(m *Manifest, installDir string, args []string, verbose bool) error {
 	pythonBin := findPython(installDir)
 	if pythonBin == "" {
 		return fmt.Errorf("python not found in %s", installDir)
 	}
-	mainModule := m.MainModule
-	if mainModule == "" {
-		mainModule = m.AppName + ".main"
+	var cmdArgs []string
+	switch {
+	case m.MainScript != "":
+		// Resolve the script path inside the install dir. Fall back to
+		// AppName/script if the bare path isn't there (defensive — not
+		// expected on a healthy install).
+		scriptPath := filepath.Join(installDir, "src", m.MainScript)
+		if _, err := os.Stat(scriptPath); err != nil {
+			scriptPath = filepath.Join(installDir, m.MainScript)
+		}
+		cmdArgs = append([]string{scriptPath}, args...)
+	default:
+		mainModule := m.MainModule
+		if mainModule == "" {
+			mainModule = m.AppName + ".main"
+		}
+		cmdArgs = append([]string{"-m", mainModule}, args...)
 	}
-	cmdArgs := append([]string{"-m", mainModule}, args...)
 	c := exec.Command(pythonBin, cmdArgs...)
 	c.Dir = installDir
 	c.Env = buildExecEnv(installDir, m, nil)
@@ -515,11 +628,30 @@ func cmdInfo() error {
 	}
 	fmt.Printf("App:        %s v%s\n", m.AppName, m.Version)
 	fmt.Printf("Python:     %s\n", m.Python.Version)
+	if m.BuildTime != "" {
+		fmt.Printf("Built:      %s\n", m.BuildTime)
+	}
+	if m.TargetOS != "" {
+		fmt.Printf("Target:     %s/%s\n", m.TargetOS, m.TargetArch)
+	}
 	fmt.Printf("Integrity:  %v\n", trailer.HasIntegrity)
 	if trailer.HasIntegrity {
 		fmt.Printf("Root hash:  %s\n", hex.EncodeToString(trailer.RootHash[:]))
 	}
 	fmt.Printf("Installed:  %s (%s)\n", installed, installDir)
+	if len(m.Tasks) > 0 {
+		fmt.Println()
+		fmt.Println("Tasks (run with `<app> <name>`):")
+		names := make([]string, 0, len(m.Tasks))
+		for n := range m.Tasks {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			t := m.Tasks[n]
+			fmt.Printf("  %-15s %s\n", n, taskDisplay(t))
+		}
+	}
 	if m.MoltConfigSnapshot != nil && len(m.MoltConfigSnapshot.Commands) > 0 {
 		fmt.Println()
 		fmt.Println("Commands:")
@@ -589,6 +721,122 @@ func cmdVersion() error {
 	}
 	fmt.Printf("%s %s\n", m.AppName, m.Version)
 	return nil
+}
+
+// cmdHash prints the embedded root hash and exits — useful for build
+// provenance checks and CI assertions.
+func cmdHash() error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	trailer, err := readTrailer(self)
+	if err != nil {
+		return err
+	}
+	if !trailer.HasIntegrity {
+		return fmt.Errorf("binary has no integrity trailer (legacy build)")
+	}
+	fmt.Println(hex.EncodeToString(trailer.RootHash[:]))
+	return nil
+}
+
+// cmdCommands lists user-defined tasks shipped in the binary. Distinct
+// from the legacy `<app> molt info` block — this one is script-friendly
+// and prints one task per line, name-only.
+func cmdCommands() error {
+	m := loadManifestQuiet()
+	if m == nil {
+		return fmt.Errorf("could not read manifest")
+	}
+	if len(m.Tasks) == 0 {
+		fmt.Fprintln(os.Stderr, "(no tasks defined; running `<app>` invokes the default entry)")
+		return nil
+	}
+	names := make([]string, 0, len(m.Tasks))
+	for n := range m.Tasks {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		fmt.Println(n)
+	}
+	return nil
+}
+
+// runUserTask dispatches a user-defined task from manifest.Tasks. Mirrors
+// internal/tasks/Runner.runOnce semantics — module/script forms exec the
+// project's Python directly; command form goes through /bin/sh -c.
+func runUserTask(m *Manifest, name string, args []string) error {
+	t, ok := m.Tasks[name]
+	if !ok {
+		return fmt.Errorf("unknown task: %s (run `%s molt commands` to list)", name, m.AppName)
+	}
+	installDir := resolveInstallDir(m.AppName, m.Version)
+	if _, err := os.Stat(filepath.Join(installDir, ".molt", "receipt.json")); err != nil {
+		return fmt.Errorf("not installed; run `%s molt install` first", m.AppName)
+	}
+	pythonBin := findPython(installDir)
+
+	var c *exec.Cmd
+	switch {
+	case t.Module != "":
+		argv := append([]string{"-m", t.Module}, t.Args...)
+		argv = append(argv, args...)
+		c = exec.Command(pythonBin, argv...)
+	case t.Script != "":
+		// Resolve relative to src/ in the install dir.
+		path := t.Script
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(installDir, "src", t.Script)
+			if _, err := os.Stat(path); err != nil {
+				path = filepath.Join(installDir, t.Script)
+			}
+		}
+		argv := append([]string{path}, t.Args...)
+		argv = append(argv, args...)
+		c = exec.Command(pythonBin, argv...)
+	case t.Command != "":
+		// Shell form: append extra args to the command string.
+		cmdStr := t.Command
+		if len(args) > 0 {
+			cmdStr += " " + strings.Join(args, " ")
+		}
+		shell, flag := "/bin/sh", "-c"
+		if runtime.GOOS == "windows" {
+			shell, flag = "cmd", "/C"
+		}
+		c = exec.Command(shell, flag, cmdStr)
+	default:
+		return fmt.Errorf("task %q has no module/script/command", name)
+	}
+	c.Dir = installDir
+	c.Env = buildExecEnv(installDir, m, nil)
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	applyIsolation(c)
+	return c.Run()
+}
+
+// taskDisplay returns a one-line summary of a Task for `<app> molt info`.
+func taskDisplay(t Task) string {
+	switch {
+	case t.Module != "":
+		s := "python -m " + t.Module
+		if len(t.Args) > 0 {
+			s += " " + strings.Join(t.Args, " ")
+		}
+		return s
+	case t.Script != "":
+		s := "python " + t.Script
+		if len(t.Args) > 0 {
+			s += " " + strings.Join(t.Args, " ")
+		}
+		return s
+	default:
+		return t.Command
+	}
 }
 
 // ── Trailer / manifest extraction ────────────────────────────────────────────
@@ -1051,6 +1299,20 @@ func buildExecEnv(installDir string, m *Manifest, overrides map[string]string) [
 	setEnvVar(&out, "PYTHONPATH", srcDir)
 	setEnvVar(&out, "PYTHONNOUSERSITE", "1")
 	setEnvVar(&out, "PYTHONDONTWRITEBYTECODE", "1")
+
+	// MOLT_APP_* — exposed to user code so programs can locate their own
+	// data files, log a build identifier, etc., without re-parsing the
+	// binary trailer themselves.
+	setEnvVar(&out, "MOLT_APP_DIR", installDir)
+	setEnvVar(&out, "MOLT_APP_SRC", srcDir)
+	setEnvVar(&out, "MOLT_APP_NAME", m.AppName)
+	setEnvVar(&out, "MOLT_APP_VERSION", m.Version)
+	if m.BuildTime != "" {
+		setEnvVar(&out, "MOLT_APP_BUILT", m.BuildTime)
+	}
+	if m.TargetOS != "" {
+		setEnvVar(&out, "MOLT_APP_TARGET", m.TargetOS+"/"+m.TargetArch)
+	}
 
 	// molt.yaml env block — applied before per-command to let commands override.
 	if m.MoltConfigSnapshot != nil {
