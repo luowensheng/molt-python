@@ -168,8 +168,9 @@ docker-build = { command = "docker build -t myapp .", description = "Build Docke
 ```bash
 molt run dev                       # run by name
 molt run test                      # tasks run under .molt/syspath.json environment
-molt run test -- -k test_auth      # extra args after --
-molt run test -- --watch           # watch flag passed to pytest
+molt run test -k test_auth         # extra args forwarded directly
+molt run test tests/unit -v        # any positional/flag args forwarded
+molt run test --watch              # molt watches files and re-runs on change
 
 molt task list                     # show all tasks + commands
 molt task add bench "python -m cProfile -o prof.out scripts/bench.py"

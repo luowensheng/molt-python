@@ -204,7 +204,7 @@ Run them:
 ```bash
 molt run dev          # executes under store PYTHONPATH — black, pytest, etc. in .molt/bin/
 molt run test
-molt run test -- -k test_auth   # extra args after --
+molt run test -k test_auth      # extra args forwarded to the task
 ```
 
 If the name isn't a task, `molt run` treats it as a binary exec:

@@ -754,18 +754,18 @@ func cmdPython(args []string) error {
 
 func cmdRun(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: molt run <task|binary> [-- extra-args]")
+		return fmt.Errorf("usage: molt run <task|binary> [args...]")
 	}
 
 	taskName := args[0]
-	watch := hasFlag(args[1:], "--watch")
-
-	var extraArgs []string
-	for i, a := range args[1:] {
-		if a == "--" {
-			extraArgs = args[i+2:]
-			break
+	watch := false
+	extraArgs := make([]string, 0, len(args)-1)
+	for _, a := range args[1:] {
+		if a == "--watch" {
+			watch = true
+			continue
 		}
+		extraArgs = append(extraArgs, a)
 	}
 
 	// Auto-sync on first run: a freshly-init'd project has no
@@ -782,7 +782,7 @@ func cmdRun(args []string) error {
 	// pyproject.toml + main.py, no task definition required.
 	if strings.HasSuffix(taskName, ".py") {
 		if _, err := os.Stat(taskName); err == nil {
-			return runPythonScript(cwd(), taskName, args[1:])
+			return runPythonScript(cwd(), taskName, extraArgs)
 		}
 	}
 
@@ -793,7 +793,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 
-	return runExec(cwd(), append([]string{taskName}, args[1:]...))
+	return runExec(cwd(), append([]string{taskName}, extraArgs...))
 }
 
 // runPythonScript execs spec.Python on a script path under the project env.

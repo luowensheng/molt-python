@@ -773,7 +773,7 @@ run `molt run <task>`, molt syncs first (one-time, prints `→ first run,
 syncing project…`). After that the env is materialised and subsequent
 runs go straight to dispatch.
 
-#### `molt run <task> [-- extra-args]`
+#### `molt run <task> [args...]`
 
 Dispatch order:
 1. If `<task>` ends in `.py` and the file exists, exec the project's
@@ -805,7 +805,7 @@ $ molt run hello
 $ python -c "print(123)"
 123
 
-$ molt run pytest -- -k smoke
+$ molt run pytest -k smoke
 ============================= test session starts ==============================
 ...
 
