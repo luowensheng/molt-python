@@ -111,7 +111,7 @@ func Discover(projectDir string, cfg CythonConfig) ([]Source, error) {
 				return err
 			}
 			dir, file := filepath.Split(relPath)
-			basename := strings.TrimSuffix(file, ".pyx")
+			basename := strings.TrimSuffix(file, filepath.Ext(file))
 			pkgPath := strings.TrimSuffix(filepath.ToSlash(dir), "/")
 			mod := basename
 			if pkgPath != "" {
