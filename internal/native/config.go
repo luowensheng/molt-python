@@ -370,11 +370,17 @@ type RustConfig struct {
 	// AutoPrelude controls whether molt prepends `use pyo3::prelude::*;`
 	// (and a couple of related types) to the user's .rs file at build
 	// time. Implemented by writing a tiny lib.rs wrapper in the build
-	// directory that does the imports and `include!`s the user's source.
-	// Skipped automatically when the file already contains a `use pyo3`
-	// line. Default true. Disable with auto_prelude = false to keep the
-	// user's file as the literal crate root.
+	// directory that does the imports. Skipped automatically when the
+	// file already contains a `pyo3` reference. Default true.
 	AutoPrelude bool
+
+	// AutoAttrs controls whether molt auto-prepends `#[pyfunction]` to
+	// every top-level `fn` that lacks an attribute, and `#[pymodule]`
+	// to the function whose name matches the module's name (i.e. the
+	// .rs file's basename). Functions that already carry any `#[…]`
+	// attribute are left untouched, so users can opt out per-fn by
+	// adding e.g. `#[allow(dead_code)]`. Default true.
+	AutoAttrs bool
 }
 
 // LoadRustConfig reads [tool.molt.rust] from pyproject.toml in projectDir.
@@ -384,6 +390,7 @@ func LoadRustConfig(projectDir string) RustConfig {
 		Pyo3Version:  "0.24",
 		Pyo3Features: []string{"extension-module"},
 		AutoPrelude:  true,
+		AutoAttrs:    true,
 	}
 
 	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
@@ -423,6 +430,9 @@ func LoadRustConfig(projectDir string) RustConfig {
 		case "auto_prelude":
 			v := strings.ToLower(strings.Trim(val, `"'`))
 			cfg.AutoPrelude = !(v == "false" || v == "0" || v == "no")
+		case "auto_attrs":
+			v := strings.ToLower(strings.Trim(val, `"'`))
+			cfg.AutoAttrs = !(v == "false" || v == "0" || v == "no")
 		}
 	}
 	return cfg
