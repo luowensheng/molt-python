@@ -20,7 +20,7 @@ func Compile(sources []Source, abi pyabi.Info, pyExe, cc, includeDir, extSuffix 
 	out := make([]Artifact, 0, len(sources))
 	for _, s := range sources {
 		if s.Lang == "rust" {
-			art, err := BuildRustFile(s, abiTag, plat, extSuffix, verbose, rust)
+			art, err := BuildRustFile(s, pyExe, abiTag, plat, extSuffix, verbose, rust)
 			if err != nil {
 				return nil, err
 			}
