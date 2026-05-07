@@ -194,6 +194,24 @@ func CCompiler() (string, error) {
 	return "", errors.New("no C compiler on PATH (install clang or gcc)")
 }
 
+// CXXCompiler resolves the C++ compiler. Honours $CXX, then probes
+// c++ / clang++ / g++ in that order. Used when a Cython build pulls in
+// .cpp/.cc/.cxx sources or asks for `language = "c++"`.
+func CXXCompiler() (string, error) {
+	if env := os.Getenv("CXX"); env != "" {
+		if p, err := exec.LookPath(env); err == nil {
+			return p, nil
+		}
+		return "", fmt.Errorf("$CXX=%q not found on PATH", env)
+	}
+	for _, c := range []string{"c++", "clang++", "g++"} {
+		if p, err := exec.LookPath(c); err == nil {
+			return p, nil
+		}
+	}
+	return "", errors.New("no C++ compiler on PATH (install clang++ or g++)")
+}
+
 // PythonIncludeDir returns sysconfig.get_paths()['include'] for pyExe —
 // the directory containing Python.h. Cached per pyExe path is overkill for
 // now (one call per sync), so just invoke each time.
@@ -228,8 +246,14 @@ func PythonExtSuffix(pyExe string) (string, error) {
 }
 
 // hashSource produces the cache key for a source under a specific ABI/platform
-// and compiler config. Config changes (extra args, directives) bust the cache.
-func hashSource(content []byte, abiTag, plat string, cfg CythonConfig) string {
+// and compiler config. Config changes (extra args, directives, resolved
+// pkg-config flags, bundled .c file content) all bust the cache.
+//
+// extraFlags is the fully-resolved cc flag list returned by
+// resolveCythonFlags (includes pkg-config output and -I dirs). extraSrcs
+// is the absolute path list of bundled .c files; their contents are mixed
+// in too so editing a helper.c forces a rebuild.
+func hashSource(content []byte, abiTag, plat string, cfg CythonConfig, extraFlags, extraSrcs []string) string {
 	h := sha256.New()
 	h.Write(content)
 	h.Write([]byte{0})
@@ -237,14 +261,30 @@ func hashSource(content []byte, abiTag, plat string, cfg CythonConfig) string {
 	h.Write([]byte{0})
 	h.Write([]byte(plat))
 	h.Write([]byte{0})
-	for _, a := range cfg.ExtraCompileArgs {
-		h.Write([]byte(a))
-		h.Write([]byte{0})
-	}
 	for _, k := range sortedKeys(cfg.Directives) {
 		h.Write([]byte(k))
 		h.Write([]byte("="))
 		h.Write([]byte(cfg.Directives[k]))
+		h.Write([]byte{0})
+	}
+	// Compiler choice changes the binary; bust the cache when it does.
+	h.Write([]byte("compiler="))
+	h.Write([]byte(cfg.Compiler))
+	h.Write([]byte{0, 'c', 'c', '='})
+	h.Write([]byte(cfg.CC))
+	h.Write([]byte{0, 'c', 'x', 'x', '='})
+	h.Write([]byte(cfg.CXX))
+	h.Write([]byte{0})
+	for _, a := range extraFlags {
+		h.Write([]byte(a))
+		h.Write([]byte{0})
+	}
+	for _, p := range extraSrcs {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+		if data, err := os.ReadFile(p); err == nil {
+			h.Write(data)
+		}
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]

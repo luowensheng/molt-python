@@ -431,6 +431,7 @@ func readMoltSection(projectDir string) (*MoltSection, error) {
 func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDirs []string, verbose bool) (string, error) {
 	cfg := native.LoadCythonConfig(projectDir)
 	rustCfg := native.LoadRustConfig(projectDir)
+	zigCfg := native.LoadZigConfig(projectDir)
 
 	// ── Step 1: auto-discovered .pyx and .rs files ──────────────────────────
 	sources, err := native.Discover(projectDir, cfg)
@@ -474,7 +475,7 @@ func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDi
 					if verbose {
 						fmt.Printf("→ cython: %d source(s)\n", len(pyxSources))
 					}
-					arts, err := native.Compile(pyxSources, *abi, pyExe, cc, includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg)
+					arts, err := native.Compile(pyxSources, projectDir, *abi, pyExe, cc, includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg, zigCfg)
 					if err != nil {
 						return "", err
 					}
@@ -491,7 +492,7 @@ func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDi
 				if verbose {
 					fmt.Printf("→ rust:   %d source(s)\n", len(rsSources))
 				}
-				arts, err := native.Compile(rsSources, *abi, pyExe, "", includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg)
+				arts, err := native.Compile(rsSources, projectDir, *abi, pyExe, "", includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg, zigCfg)
 				if err != nil {
 					return "", err
 				}

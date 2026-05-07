@@ -14,7 +14,7 @@ import (
 // Compile runs the appropriate compiler for each source not already in cache.
 // Dispatches on s.Lang: "cython" → Cython+cc pipeline, "rust" → cargo.
 // Returns one Artifact per input source (cache hits inclusive).
-func Compile(sources []Source, abi pyabi.Info, pyExe, cc, includeDir, extSuffix string, syspathDirs []string, verbose bool, cfg CythonConfig, rust RustConfig) ([]Artifact, error) {
+func Compile(sources []Source, projectDir string, abi pyabi.Info, pyExe, cc, includeDir, extSuffix string, syspathDirs []string, verbose bool, cfg CythonConfig, rust RustConfig, zigCfg ZigConfig) ([]Artifact, error) {
 	plat := platTag(abi)
 	abiTag := abi.AbiTag
 	out := make([]Artifact, 0, len(sources))
@@ -32,7 +32,14 @@ func Compile(sources []Source, abi pyabi.Info, pyExe, cc, includeDir, extSuffix 
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", s.Path, err)
 		}
-		hash := hashSource(content, abiTag, plat, cfg)
+		// Resolve include_c / pkg_config / libraries / sources / etc.
+		// once per source so the result feeds both the hash and the
+		// compile.
+		extraFlags, extraSources, cxx, err := resolveCythonFlags(projectDir, s.Path, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("resolve cython flags %s: %w", s.Path, err)
+		}
+		hash := hashSource(content, abiTag, plat, cfg, extraFlags, extraSources)
 		soName := s.Basename + extSuffix
 
 		hit, cachedPath, err := hasCacheEntry(hash, soName)
@@ -63,7 +70,7 @@ func Compile(sources []Source, abi pyabi.Info, pyExe, cc, includeDir, extSuffix 
 			return nil, err
 		}
 		dest := filepath.Join(cdir, soName)
-		if err := compileOneInto(s, dest, pyExe, cc, includeDir, syspathDirs, cfg); err != nil {
+		if err := compileOneInto(s, dest, pyExe, cc, includeDir, syspathDirs, cfg, zigCfg, extraFlags, extraSources, cxx); err != nil {
 			return nil, err
 		}
 		if err := writeCacheMeta(hash, CacheEntry{
@@ -89,20 +96,30 @@ func Compile(sources []Source, abi pyabi.Info, pyExe, cc, includeDir, extSuffix 
 // intermediate lives in a temp dir that's cleaned up on exit; the .so
 // itself is committed to its final destination atomically only when both
 // cython and cc succeed.
-func compileOneInto(s Source, soDest, pyExe, cc, includeDir string, syspathDirs []string, cfg CythonConfig) error {
+func compileOneInto(s Source, soDest, pyExe, cc, includeDir string, syspathDirs []string, cfg CythonConfig, zigCfg ZigConfig, extraFlags, extraSources []string, cxx bool) error {
 	work, err := os.MkdirTemp("", "molt-cython-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(work)
 
-	cFile := filepath.Join(work, s.Basename+".c")
+	// In C++ mode the Cython output is a .cpp file (not .c), and we use
+	// the C++ compiler so the standard library + name mangling are
+	// resolved correctly when linking C++ extra-sources.
+	cExt := ".c"
+	if cxx {
+		cExt = ".cpp"
+	}
+	cFile := filepath.Join(work, s.Basename+cExt)
 	soStaging := filepath.Join(work, filepath.Base(soDest))
 
-	// Step 1: cython → .c. Pass any user-defined language directives.
+	// Step 1: cython → .c (or .cpp with --cplus).
 	// Honours the project's syspath so `python -m cython` can import Cython
 	// from the global store (it's a normal dep, not built into the interpreter).
 	cyArgs := []string{"-m", "cython", "--3str"}
+	if cxx {
+		cyArgs = append(cyArgs, "--cplus")
+	}
 	for _, k := range sortedKeys(cfg.Directives) {
 		cyArgs = append(cyArgs, "--directive", k+"="+cfg.Directives[k])
 	}
@@ -113,16 +130,34 @@ func compileOneInto(s Source, soDest, pyExe, cc, includeDir string, syspathDirs 
 		return fmt.Errorf("cython %s:\n%s", s.Path, string(out))
 	}
 
-	// Step 2: cc → .so (in temp). We then move into place so a half-built
-	// cache entry never lingers if cc fails between writes.
+	// Step 2: cc / c++ → .so (in temp). We then move into place so a
+	// half-built cache entry never lingers if compilation fails.
+	//
+	// resolveCompilerCommands returns a command vector ([prog, args...])
+	// so things like `cc = "ccache zig cc"` or `compiler = "zig"` work
+	// uniformly with the existing per-source argument list.
+	ccCmd, cxxCmd, err := resolveCompilerCommands(cfg, zigCfg, cc, cxx)
+	if err != nil {
+		return fmt.Errorf("resolve compiler: %w", err)
+	}
+	cmdVec := ccCmd
+	if cxx {
+		cmdVec = cxxCmd
+	}
 	args := []string{"-O2", "-shared", "-fPIC", "-I", includeDir, "-o", soStaging, cFile}
 	if runtime.GOOS == "darwin" {
 		args = append([]string{"-undefined", "dynamic_lookup"}, args...)
 	}
-	args = append(args, cfg.ExtraCompileArgs...)
-	build := exec.Command(cc, args...)
+	// Bundled .c/.cpp sources (from include_c / Sources) compile in alongside.
+	args = append(args, extraSources...)
+	// Resolved flags: include dirs, defines, std, user extra args,
+	// pkg-config output, -L, -l.
+	args = append(args, extraFlags...)
+	full := append([]string{}, cmdVec...)
+	full = append(full, args...)
+	build := exec.Command(full[0], full[1:]...)
 	if out, err := build.CombinedOutput(); err != nil {
-		return fmt.Errorf("cc %s:\n%s", s.Path, string(out))
+		return fmt.Errorf("%s %s:\n%s", filepath.Base(full[0]), s.Path, string(out))
 	}
 
 	if err := os.Rename(soStaging, soDest); err != nil {

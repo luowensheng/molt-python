@@ -102,6 +102,71 @@ type CythonConfig struct {
 	// Directives are Cython language-level settings passed as
 	// --directive key=value. E.g. {"boundscheck": "false"}.
 	Directives map[string]string
+
+	// PkgConfig is a list of pkg-config package names. For each, molt
+	// runs `pkg-config --cflags --libs <name>` at build time and merges
+	// the resulting flags into the cc invocation. Lets you use
+	// brew/system/Nix-installed C libraries without hand-coding -I/-L/-l.
+	// Example: ["libsodium", "openssl"].
+	PkgConfig []string
+
+	// IncludeC turns on automatic C/header bundling. When true:
+	//   1. Each Paths root is added to -I, so headers anywhere in the
+	//      project are includable as `#include "A/B/C.h"`.
+	//   2. Every .c file found under Paths (excluding ones generated next
+	//      to a .pyx of the same basename) is compiled in alongside the
+	//      Cython-generated C and linked into the .so.
+	IncludeC bool
+
+	// IncludeDirs are extra -I directories. Each is appended verbatim to
+	// the cc invocation. Project-relative paths are resolved against the
+	// project dir at build time.
+	IncludeDirs []string
+
+	// Sources is an explicit allow-list of .c / .cpp / .cc / .cxx files to
+	// compile in. Used when IncludeC is too greedy, or to bring in C++
+	// code (which IncludeC won't pick up). Project-relative paths.
+	// Glob patterns supported: "src/**/*.c", "vendor/*/lib.cpp", etc.
+	Sources []string
+
+	// Libraries is a list of library names to link, sugar for "-l<name>".
+	// Order is preserved so dependent libs can come before dependencies.
+	// Example: ["opencv_core", "opencv_imgproc", "opencv_highgui"].
+	Libraries []string
+
+	// LibraryDirs is a list of dirs to add as "-L<dir>". Glob patterns
+	// supported (resolved against project dir, kept only if dir exists).
+	LibraryDirs []string
+
+	// Defines is a map of preprocessor macros: each entry becomes
+	// "-DKEY=VALUE", or "-DKEY" when the value is "" or "1". Iterated in
+	// sorted order so the cache hash is deterministic.
+	Defines map[string]string
+
+	// Std selects the language standard: passed as "-std=<value>".
+	// Examples: "c11", "c17", "c++17", "c++20", "gnu++17". Empty means
+	// no -std flag.
+	Std string
+
+	// Language overrides the auto-detected language. "c" or "c++".
+	// When unset, molt picks C++ if any source matches *.cpp / *.cc /
+	// *.cxx OR the .pyx contains `# distutils: language = c++`.
+	Language string
+
+	// Compiler is a shortcut for picking a toolchain.
+	//   "" / "auto" / "system"   → $CC/$CXX or cc/clang/gcc on PATH
+	//   "zig"                     → "zig cc" / "zig c++"
+	// Anything else is treated as the literal name of a binary on PATH
+	// (e.g. "clang-17"); the C++ counterpart adds "++" if missing.
+	Compiler string
+
+	// CC is an explicit C compiler command, with args, whitespace-split.
+	// Overrides Compiler. Examples: "zig cc", "ccache clang -O2".
+	CC string
+
+	// CXX is an explicit C++ compiler command, with args, whitespace-split.
+	// Overrides Compiler. Examples: "zig c++", "ccache clang++ -O2".
+	CXX string
 }
 
 // LoadCythonConfig reads [tool.molt.cython] and [tool.molt.cython.directives]
@@ -111,6 +176,7 @@ func LoadCythonConfig(projectDir string) CythonConfig {
 	cfg := CythonConfig{
 		Paths:      []string{".", "src"},
 		Directives: map[string]string{},
+		Defines:    map[string]string{},
 	}
 
 	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
@@ -122,6 +188,7 @@ func LoadCythonConfig(projectDir string) CythonConfig {
 		sectionNone       = 0
 		sectionCython     = 1
 		sectionDirectives = 2
+		sectionDefines    = 3
 	)
 
 	section := sectionNone
@@ -143,6 +210,8 @@ func LoadCythonConfig(projectDir string) CythonConfig {
 				section = sectionCython
 			case "[tool.molt.cython.directives]":
 				section = sectionDirectives
+			case "[tool.molt.cython.defines]":
+				section = sectionDefines
 			default:
 				section = sectionNone
 			}
@@ -173,14 +242,112 @@ func LoadCythonConfig(projectDir string) CythonConfig {
 					cfg.ExtraCompileArgs = arr
 					argsSet = true
 				}
+			case "pkg_config":
+				if arr := parseTOMLStringArray(val); arr != nil {
+					cfg.PkgConfig = arr
+				}
+			case "include_c":
+				v := strings.ToLower(strings.Trim(val, `"'`))
+				cfg.IncludeC = (v == "true" || v == "1" || v == "yes")
+			case "include_dirs":
+				if arr := parseTOMLStringArray(val); arr != nil {
+					cfg.IncludeDirs = arr
+				}
+			case "sources":
+				if arr := parseTOMLStringArray(val); arr != nil {
+					cfg.Sources = arr
+				}
+			case "libraries":
+				if arr := parseTOMLStringArray(val); arr != nil {
+					cfg.Libraries = arr
+				}
+			case "library_dirs":
+				if arr := parseTOMLStringArray(val); arr != nil {
+					cfg.LibraryDirs = arr
+				}
+			case "std":
+				if v := strings.Trim(val, `"'`); v != "" {
+					cfg.Std = v
+				}
+			case "language":
+				if v := strings.Trim(val, `"'`); v != "" {
+					cfg.Language = v
+				}
+			case "compiler":
+				cfg.Compiler = strings.Trim(val, `"'`)
+			case "cc":
+				cfg.CC = strings.Trim(val, `"'`)
+			case "cxx":
+				cfg.CXX = strings.Trim(val, `"'`)
 			}
 		case sectionDirectives:
 			cfg.Directives[key] = strings.Trim(val, `"'`)
+		case sectionDefines:
+			cfg.Defines[key] = strings.Trim(val, `"'`)
 		}
 	}
 
 	_ = pathsSet
 	_ = argsSet
+	return cfg
+}
+
+// ZigConfig holds optional overrides read from [tool.molt.zig] in
+// pyproject.toml. Zig is auto-installed under
+// ~/.molt/toolchains/zig/<version>/ when needed (i.e. when a user opts in
+// via `[tool.molt.cython] compiler = "zig"`).
+type ZigConfig struct {
+	// Version pins the zig release to install/use. Default is
+	// ZigDefaultVersion. Honoured only when EnsureZig has to download —
+	// an existing zig on PATH is used regardless of its version.
+	Version string
+
+	// AutoInstall, when false, makes molt fail loudly if `zig` isn't on
+	// PATH instead of downloading. Defaults to true. Useful in offline
+	// CI where you want all toolchain installs done up front.
+	AutoInstall bool
+}
+
+// LoadZigConfig reads [tool.molt.zig] from pyproject.toml.
+func LoadZigConfig(projectDir string) ZigConfig {
+	cfg := ZigConfig{
+		Version:     ZigDefaultVersion,
+		AutoInstall: true,
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
+	if err != nil {
+		return cfg
+	}
+	inSection := false
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if ci := strings.Index(line, " #"); ci >= 0 {
+			line = strings.TrimSpace(line[:ci])
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inSection = (line == "[tool.molt.zig]")
+			continue
+		}
+		if !inSection || line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		switch key {
+		case "version":
+			if v := strings.Trim(val, `"'`); v != "" {
+				cfg.Version = v
+			}
+		case "auto_install":
+			v := strings.ToLower(strings.Trim(val, `"'`))
+			cfg.AutoInstall = !(v == "false" || v == "0" || v == "no")
+		}
+	}
 	return cfg
 }
 
