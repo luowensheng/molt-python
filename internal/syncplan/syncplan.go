@@ -21,6 +21,7 @@ import (
 
 	"molt/internal/editor"
 	"molt/internal/lockparse"
+	"molt/internal/native"
 	"molt/internal/projstate"
 	"molt/internal/pyabi"
 	"molt/internal/python"
@@ -207,6 +208,38 @@ func Sync(projectDir string, opts Options) error {
 			break
 		}
 	}
+	// User-declared extra_paths from [tool.molt] extra_paths = [...].
+	// Inserted between the project source dir and the global-store dirs so
+	// user code takes precedence over installed packages but installed
+	// packages still resolve. Eliminates the need for sys.path.insert(...)
+	// boilerplate at the top of scripts.
+	if sec, err := readMoltSection(absProj); err == nil && len(sec.ExtraPaths) > 0 {
+		expanded := make([]string, 0, len(sec.ExtraPaths))
+		for _, p := range sec.ExtraPaths {
+			path := p
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(absProj, path)
+			}
+			path = filepath.Clean(path)
+			if st, err := os.Stat(path); err != nil || !st.IsDir() {
+				if opts.Verbose {
+					fmt.Fprintf(os.Stderr, "warn: extra_paths entry %q does not exist (skipped)\n", p)
+				}
+				continue
+			}
+			expanded = append(expanded, path)
+		}
+		// Insert after the project source dir (index 0 if present, 0 otherwise).
+		insertAt := 0
+		if len(syspathDirs) > 0 {
+			insertAt = 1
+		}
+		merged := make([]string, 0, len(syspathDirs)+len(expanded))
+		merged = append(merged, syspathDirs[:insertAt]...)
+		merged = append(merged, expanded...)
+		merged = append(merged, syspathDirs[insertAt:]...)
+		syspathDirs = merged
+	}
 
 	platTag := ""
 	if len(abi.Platforms) > 0 {
@@ -224,6 +257,26 @@ func Sync(projectDir string, opts Options) error {
 	}
 	if err := syspath.Save(spec); err != nil {
 		return fmt.Errorf("write syspath.json: %w", err)
+	}
+
+	// 7b. Cython compilation. Skipped silently when there are no .pyx
+	// files. Warns + skips when Cython isn't a dep, or when no C compiler
+	// is on PATH. Compiled artefacts are content-keyed in ~/.molt/native/
+	// and symlinked into projstate.Dir(p)/cython/. That dir gets appended
+	// to syspathDirs *before* sitecustomize/shim generation so the new
+	// extension modules are importable from the very next `molt run`.
+	if cythonDir, err := compileCythonIfPresent(absProj, pyExe, abi, syspathDirs, opts.Verbose); err != nil {
+		return err
+	} else if cythonDir != "" {
+		// Prepend so Python resolves the cython package's __init__.py FIRST.
+		// That __init__.py extends __path__ to include the user's src/<pkg>/,
+		// merging .so files (from here) with .py modules (from src/) into
+		// one importable package namespace.
+		syspathDirs = append([]string{cythonDir}, syspathDirs...)
+		spec.Syspath = syspathDirs
+		if err := syspath.Save(spec); err != nil {
+			return fmt.Errorf("re-write syspath.json after cython: %w", err)
+		}
 	}
 
 	// 8. Write sitecustomize.py — calls site.addsitedir on each store dir so .pth files work.
@@ -284,18 +337,27 @@ func mtime(path string) time.Time {
 	return st.ModTime()
 }
 
-// readRequirementsFiles returns the list of requirements.txt paths declared
-// in [tool.molt] requirements_files = [...] in pyproject.toml. Paths are
-// resolved relative to the project root. Best-effort — malformed config
-// returns an empty list rather than failing sync.
-func readRequirementsFiles(projectDir string) ([]string, error) {
+// MoltSection is the parsed [tool.molt] block from pyproject.toml. All
+// fields are optional; missing keys map to nil/zero. Paths in *Files /
+// ExtraPaths are resolved relative to the project root.
+type MoltSection struct {
+	RequirementsFiles []string // [tool.molt] requirements / requirements_files
+	ExtraPaths        []string // [tool.molt] extra_paths — added to PYTHONPATH
+}
+
+// readMoltSection parses the [tool.molt] table from pyproject.toml using
+// the existing tiny TOML scanner. Best-effort: malformed config returns
+// an empty section rather than failing sync. Recognised keys:
+//
+//   - requirements (string or array of strings)
+//   - requirements_files (array of strings) — alias of `requirements`
+//   - extra_paths (array of strings)
+func readMoltSection(projectDir string) (*MoltSection, error) {
 	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
 	if err != nil {
 		return nil, err
 	}
-	// We're scanning a small TOML subset: find the [tool.molt] table, then
-	// look for `requirements_files = [...]` (or `requirements`). Stop at
-	// the next [section].
+	out := &MoltSection{}
 	lines := strings.Split(string(data), "\n")
 	inMolt := false
 	for i := 0; i < len(lines); i++ {
@@ -307,40 +369,158 @@ func readRequirementsFiles(projectDir string) ([]string, error) {
 		if !inMolt {
 			continue
 		}
-		if !(strings.HasPrefix(line, "requirements_files") || strings.HasPrefix(line, "requirements")) {
-			continue
-		}
 		eq := strings.Index(line, "=")
 		if eq < 0 {
 			continue
 		}
+		key := strings.TrimSpace(line[:eq])
 		val := strings.TrimSpace(line[eq+1:])
-		// Single-string form: requirements = "requirements.txt".
+
+		// Multi-line array accumulation (used for both requirements and extra_paths).
+		switch key {
+		case "requirements", "requirements_files", "extra_paths":
+		default:
+			continue
+		}
+		// Single-string form (only valid for requirements / requirements_files).
 		if strings.HasPrefix(val, `"`) && strings.HasSuffix(val, `"`) && len(val) >= 2 {
 			f := val[1 : len(val)-1]
-			return []string{filepath.Join(projectDir, f)}, nil
+			if key != "extra_paths" {
+				out.RequirementsFiles = append(out.RequirementsFiles, filepath.Join(projectDir, f))
+			}
+			continue
 		}
-		// Array form, possibly multi-line. Accumulate until ].
+		// Array form, possibly multi-line — accumulate until ].
 		for !strings.Contains(val, "]") && i+1 < len(lines) {
 			i++
 			val += " " + strings.TrimSpace(lines[i])
 		}
 		open := strings.Index(val, "[")
-		close := strings.Index(val, "]")
-		if open < 0 || close < 0 || close <= open {
-			return nil, nil
+		closeIdx := strings.Index(val, "]")
+		if open < 0 || closeIdx < 0 || closeIdx <= open {
+			continue
 		}
-		body := val[open+1 : close]
-		var out []string
+		body := val[open+1 : closeIdx]
+		var arr []string
 		for _, raw := range strings.Split(body, ",") {
 			t := strings.TrimSpace(raw)
 			if len(t) >= 2 && strings.HasPrefix(t, `"`) && strings.HasSuffix(t, `"`) {
-				out = append(out, filepath.Join(projectDir, t[1:len(t)-1]))
+				arr = append(arr, t[1:len(t)-1])
 			}
 		}
-		return out, nil
+		switch key {
+		case "requirements", "requirements_files":
+			for _, p := range arr {
+				out.RequirementsFiles = append(out.RequirementsFiles, filepath.Join(projectDir, p))
+			}
+		case "extra_paths":
+			out.ExtraPaths = append(out.ExtraPaths, arr...)
+		}
 	}
-	return nil, nil
+	return out, nil
+}
+
+// compileCythonIfPresent runs the Cython pipeline (discover, compile,
+// place project view, write native.json) when the project has any .pyx
+// files. Returns the absolute cython output dir to append to syspath, or
+// "" when nothing was compiled (no .pyx files, or Cython/cc unavailable).
+//
+// Errors propagate only for hard failures (a .pyx file with a syntax
+// error, a C compile that fails). Soft cases — Cython not in deps, no C
+// compiler on PATH — print a warning and return "".
+func compileCythonIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDirs []string, verbose bool) (string, error) {
+	cfg := native.LoadCythonConfig(projectDir)
+	sources, err := native.Discover(projectDir, cfg)
+	if err != nil {
+		return "", fmt.Errorf("cython discover: %w", err)
+	}
+	if len(sources) == 0 {
+		return "", nil
+	}
+	if !native.CythonAvailable(pyExe, syspathDirs) {
+		fmt.Fprintln(os.Stderr,
+			"warn: .pyx files found but Cython is not installed in this project — add it with `molt add Cython`")
+		return "", nil
+	}
+	cc, err := native.CCompiler()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warn: skipping Cython build: %v\n", err)
+		return "", nil
+	}
+	includeDir, err := native.PythonIncludeDir(pyExe)
+	if err != nil {
+		return "", err
+	}
+	extSuffix, err := native.PythonExtSuffix(pyExe)
+	if err != nil {
+		return "", err
+	}
+	if verbose {
+		fmt.Printf("→ cython: %d source(s)\n", len(sources))
+	}
+	arts, err := native.Compile(sources, *abi, pyExe, cc, includeDir, extSuffix, syspathDirs, verbose, cfg)
+	if err != nil {
+		return "", err
+	}
+	if err := native.PlaceProjectView(projectDir, arts); err != nil {
+		return "", err
+	}
+	if err := writeNativeManifest(projectDir, arts); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: write native.json: %v\n", err)
+	}
+	return filepath.Join(projstate.Dir(projectDir), "cython"), nil
+}
+
+// writeNativeManifest emits projstate.Dir(p)/native.json — read by the
+// builder's injectCythonArtifacts and by `molt gc`'s reachability scan.
+func writeNativeManifest(projectDir string, arts []native.Artifact) error {
+	type entry struct {
+		Hash      string `json:"hash"`
+		Src       string `json:"src"`
+		So        string `json:"so"`
+		Module    string `json:"module"`
+		Abi       string `json:"abi"`
+		Platform  string `json:"platform"`
+		LastBuilt string `json:"last_built"`
+	}
+	doc := struct {
+		Cython map[string]entry `json:"cython,omitempty"`
+	}{Cython: map[string]entry{}}
+	now := nowRFC3339()
+	for _, a := range arts {
+		rel, _ := filepath.Rel(projectDir, a.Source.Path)
+		soRel := "cython/"
+		if a.Source.PackagePath != "" {
+			soRel += a.Source.PackagePath + "/"
+		}
+		soRel += a.SoName
+		doc.Cython[a.Source.Module] = entry{
+			Hash:      a.Hash,
+			Src:       rel,
+			So:        soRel,
+			Module:    a.Source.Module,
+			Abi:       a.AbiTag,
+			Platform:  a.Plat,
+			LastBuilt: now,
+		}
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(projstate.Native(projectDir), data, 0o644)
+}
+
+func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// readRequirementsFiles is a thin wrapper preserved for callers that
+// only need that subset.
+func readRequirementsFiles(projectDir string) ([]string, error) {
+	sec, err := readMoltSection(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	return sec.RequirementsFiles, nil
 }
 
 func needsLock(projectDir, lockPath string) bool {

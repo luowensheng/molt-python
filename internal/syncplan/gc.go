@@ -1,13 +1,16 @@
 package syncplan
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"molt/internal/lockparse"
+	"molt/internal/native"
 	"molt/internal/projstate"
 	"molt/internal/store"
+	"molt/internal/tooldb"
 )
 
 // GC scans every project in the registry, collects the wheel-key set
@@ -90,9 +93,32 @@ func GC(dryRun bool) error {
 		}
 	}
 
+	// Find orphaned tools (`molt tool install`) whose source dir is gone.
+	orphanTools := []*tooldb.Tool{}
+	if ts, err := tooldb.List(); err == nil {
+		for _, t := range ts {
+			if !t.ProjectAlive() {
+				orphanTools = append(orphanTools, t)
+			}
+		}
+	}
+
+	// Find unreferenced entries under ~/.molt/native/. An entry is
+	// unreferenced when no live project's native.json mentions its hash.
+	orphanNative := []native.ListedEntry{}
+	if cacheEntries, err := native.ListCacheEntries(); err == nil && len(cacheEntries) > 0 {
+		live := liveNativeHashes()
+		for _, ce := range cacheEntries {
+			if _, ok := live[ce.Hash]; !ok {
+				orphanNative = append(orphanNative, ce)
+			}
+		}
+	}
+
 	if dryRun {
-		fmt.Printf("would remove %d store entr%s; would drop %d stale project(s); would prune %d orphan state dir(s):\n",
-			len(candidates), pluralS(len(candidates)), len(staleProjects), len(orphanStates))
+		fmt.Printf("would remove %d store entr%s; would drop %d stale project(s); would prune %d orphan state dir(s); would uninstall %d orphan tool(s); would prune %d unreferenced native cache entr%s:\n",
+			len(candidates), pluralS(len(candidates)), len(staleProjects), len(orphanStates), len(orphanTools),
+			len(orphanNative), pluralS(len(orphanNative)))
 		for _, c := range candidates {
 			fmt.Printf("  - %s\n", filepath.Join(st.Root, c))
 		}
@@ -105,6 +131,12 @@ func GC(dryRun bool) error {
 				origin = "(no meta.json)"
 			}
 			fmt.Printf("  - state: %s  (was %s)\n", e.Dir, origin)
+		}
+		for _, t := range orphanTools {
+			fmt.Printf("  - tool: %s  (was %s)\n", t.Name, t.ProjectDir)
+		}
+		for _, n := range orphanNative {
+			fmt.Printf("  - native: %s  (%s — %s)\n", n.Dir, n.Meta.Lang, n.Meta.Source)
 		}
 		return nil
 	}
@@ -132,12 +164,58 @@ func GC(dryRun bool) error {
 			fmt.Fprintf(os.Stderr, "warn: remove state %s: %v\n", e.Dir, err)
 		}
 	}
+	for _, t := range orphanTools {
+		if err := tooldb.Uninstall(t.Name); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: uninstall tool %s: %v\n", t.Name, err)
+		}
+	}
+	for _, n := range orphanNative {
+		if err := os.RemoveAll(n.Dir); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: remove native %s: %v\n", n.Dir, err)
+		}
+	}
 	if err := saveRegistry(r); err != nil {
 		return err
 	}
-	fmt.Printf("✓ removed %d store entr%s, dropped %d stale project(s), pruned %d orphan state dir(s)\n",
-		len(candidates), pluralS(len(candidates)), len(staleProjects), len(orphanStates))
+	fmt.Printf("✓ removed %d store entr%s, dropped %d stale project(s), pruned %d orphan state dir(s), uninstalled %d orphan tool(s), pruned %d unreferenced native cache entr%s\n",
+		len(candidates), pluralS(len(candidates)), len(staleProjects), len(orphanStates), len(orphanTools),
+		len(orphanNative), pluralS(len(orphanNative)))
 	return nil
+}
+
+// liveNativeHashes builds a set of every native-cache hash referenced by
+// any live project's native.json. Used by GC to avoid pruning artefacts
+// that are still in use by a project on disk.
+func liveNativeHashes() map[string]struct{} {
+	live := map[string]struct{}{}
+	entries, err := projstate.ListAll()
+	if err != nil {
+		return live
+	}
+	for _, e := range entries {
+		if !e.ProjectAlive {
+			continue
+		}
+		nativePath := projstate.Native(e.ProjectDir)
+		data, err := os.ReadFile(nativePath)
+		if err != nil {
+			continue
+		}
+		var doc struct {
+			Cython map[string]struct {
+				Hash string `json:"hash"`
+			} `json:"cython"`
+		}
+		if err := json.Unmarshal(data, &doc); err != nil {
+			continue
+		}
+		for _, c := range doc.Cython {
+			if c.Hash != "" {
+				live[c.Hash] = struct{}{}
+			}
+		}
+	}
+	return live
 }
 
 func pluralS(n int) string {

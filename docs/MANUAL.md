@@ -22,8 +22,12 @@ deep-dive on the package store specifically, read `docs/global-store.md`.
    - 7.2 [Python versions](#72-python-versions)
    - 7.3 [Run & tasks](#73-run--tasks)
    - 7.4 [Build & deploy](#74-build--deploy)
-   - 7.5 [uv passthrough](#75-uv-passthrough)
-   - 7.6 [Diagnostics & meta](#76-diagnostics--meta)
+   - 7.5 [Multi-project ops](#75-multi-project-ops)
+   - 7.6 [Global tools](#76-global-tools)
+   - 7.7 [Cython without ceremony](#77-cython-without-ceremony)
+   - 7.8 [Eliminating sys.path.insert boilerplate](#78-eliminating-syspathinsert-boilerplate)
+   - 7.9 [uv passthrough](#79-uv-passthrough)
+   - 7.10 [Diagnostics & meta](#710-diagnostics--meta)
 8. [End-to-end workflows](#8-end-to-end-workflows)
 9. [Concurrency and integrity](#9-concurrency-and-integrity)
 10. [Troubleshooting](#10-troubleshooting)
@@ -937,12 +941,15 @@ PyPI.
 
 #### Built-binary commands
 
-The binary produced by `molt build` exposes two namespaces:
+The binary produced by `molt build` separates user tasks from molt's
+meta operations cleanly:
 
 ```
-$ ./myapp                        # runs the default entry (main.py / __main__.py)
-$ ./myapp <task> [args...]       # runs a task from [tool.molt.tasks]
-$ ./myapp molt <meta> [...]      # introspection / install lifecycle
+$ ./myapp                        # default entry (main.py / __main__.py)
+$ ./myapp <task> [args...]       # task from [tool.molt.tasks]
+$ ./myapp <flags...>             # if first arg is flag-shaped, passes through to default entry
+$ ./myapp -- <args...>           # explicit escape — args go to default entry
+$ ./myapp --<meta> [args...]     # molt meta command (install/info/version/...)
 ```
 
 User tasks come from the project's `[tool.molt.tasks]` block — embedded at
@@ -963,20 +970,30 @@ $ ./myapp worker --concurrency 4
 $ ./myapp migrate --dry-run
 ```
 
-Meta commands accessible via the `molt` namespace (also work bare for
-backward compat — user tasks of the same name shadow them, in which case
-use `molt`):
+Meta commands live entirely under reserved `--<flag>` form. The reserved
+set is closed (8 flags) so user task names can never accidentally collide:
 
-| Command | Purpose |
+| Flag | Purpose |
 |---|---|
-| `<bin> molt install [--prefix DIR] [--offline] [--verbose] [--no-verify]` | Extract payload, set up env. |
-| `<bin> molt run [<task>] [args...]` | Explicit dispatch — bypasses any task/meta name collision. |
-| `<bin> molt verify [--deep]` | Recompute root hash; compare to embedded. |
-| `<bin> molt info` | Name, version, build time, target, integrity, install state, defined tasks. |
-| `<bin> molt version` | `<name> <version>`. |
-| `<bin> molt hash` | Embedded root hash, hex (script-friendly). |
-| `<bin> molt commands` | List defined tasks (one per line). |
-| `<bin> molt uninstall` | Remove the install. |
+| `<bin> --install [--prefix DIR] [--offline] [--verbose] [--no-verify]` | Extract payload, set up env. |
+| `<bin> --uninstall` | Remove the install. |
+| `<bin> --verify [--deep]` | Recompute root hash; compare to embedded. |
+| `<bin> --info` | Name, version, build time, target, integrity, install state, defined tasks. |
+| `<bin> --version` | `<name> <version>`. |
+| `<bin> --hash` | Embedded root hash, hex (script-friendly). |
+| `<bin> --commands` | List defined tasks (one per line). |
+| `<bin> --help` / `-h` | Usage. |
+
+**Conflict escape.** If your program legitimately uses one of those flags
+(e.g. argparse's `--version`), prefix args with `--`:
+
+```
+$ ./myapp -- --version       # default entry receives --version
+$ ./myapp --version          # molt prints the build's version
+```
+
+This is the standard Unix convention. The first `--` is the molt-flag
+terminator; everything after goes to the program.
 
 ##### Environment exposed to user code
 
@@ -1095,7 +1112,310 @@ Changed: 4 file(s)
 Total size change: +12 bytes
 ```
 
-### 7.5 uv passthrough
+### 7.5 Multi-project ops
+
+Once a project has been synced, it appears in molt's registry. The
+`project` subcommand surfaces the registry; the global `--project` flag
+targets a registered project from anywhere — no `cd` required.
+
+#### `molt project list`
+
+```
+$ molt project list
+NAME              HASH              LAST SYNC            STATE           PATH
+myapp             1a2b3c4d5e6f7g8h  2026-05-04 14:22:01  ✓ alive         /Users/me/work/myapp
+tagctl            9c1b3a2d8e4f5e7d  2026-05-03 10:15:33  ✓ alive         /Users/me/work/tagctl
+old-experiment    f7e8d9c0a1b2c3d4  2026-04-12 09:00:01  ✗ source missing /Users/me/old/experiment
+
+3 project(s); state at /Users/me/.molt/projects
+```
+
+#### `molt --project <q> <command>`
+
+`<q>` is matched in three forms (in order):
+
+1. Absolute path — `--project /Users/me/work/myapp`
+2. Hash prefix — `--project 1a2b3c` (≥ 4 hex chars; ambiguous → error with candidates)
+3. Basename — `--project myapp` (unique match wins; ambiguous → error)
+
+Works with every command that operates on "the current project" —
+`run`, `sync`, `add`, `remove`, `lock`, `tree`, `info`, `python`,
+`where`, `editor`, `task`. Position-flexible: works as
+`molt --project foo run dev` or `molt run --project foo dev`.
+
+```
+$ cd /tmp
+$ molt --project myapp run dev          # dispatch myapp's `dev` task from /tmp
+$ molt --project myapp sync              # re-sync myapp from anywhere
+$ molt --project tagctl info             # show tagctl's status
+```
+
+Commands that take a project as an arg (`init`, `build`, `package`,
+`adopt`, `capture`, `assemble`) ignore `--project` — those define a *new*
+project at cwd or arg.
+
+#### `molt project info <q>`, `molt project where <q> [<key>]`
+
+Same surface as plain `molt info` and `molt where`, but for any registered
+project.
+
+#### `molt project cd <q>`
+
+Print the project's source path. Shell idiom:
+
+```
+$ cd "$(molt project cd myapp)"
+```
+
+#### `molt project purge <q>`
+
+Drop registry + state dir. The project's source directory is **never
+touched**. Renamed from `remove` because that was ambiguous.
+
+```
+$ molt project purge old-experiment
+✓ purged old-experiment
+```
+
+##### Bulk purge filters
+
+```
+$ molt project purge --older-than 30d   # by last_sync age (units: d, w, h, m, s)
+$ molt project purge --unused           # source dir is gone
+$ molt project purge --dry-run          # preview only
+$ molt project purge --older-than 30d --yes   # skip confirmation
+```
+
+Bulk operations require interactive confirmation by default (or `--yes`
+for scripted use). `--state-only` keeps the registry entry but drops the
+materialised state — useful to free disk without forgetting a project.
+
+#### `molt project reinit <path>`
+
+Re-register a previously purged project. Takes a path because post-purge
+molt no longer knows the name.
+
+```
+$ molt project purge old-experiment
+$ ls /Users/me/old/experiment/pyproject.toml   # source still there
+$ molt project reinit /Users/me/old/experiment
+```
+
+### 7.6 Global tools
+
+Like `uv tool install` / `pipx`: install a project's CLI globally so
+`<name>` runs from any cwd. Distinct from `molt build`:
+
+| | `molt build` | `molt tool install` |
+|---|---|---|
+| Output | Self-contained binary | Tiny shell shim |
+| Dep changes | Need to rebuild | Reflected immediately |
+| Cython/multipy recompile | Need to rebuild | Reflected immediately |
+| Target | Any machine, no Python required | Dev machine only |
+| Invocation | `./myapp` | `myapp` (on PATH) |
+
+#### `molt tool install [<path>] [--name <n>] [--task <task>]`
+
+Registers the project at `<path>` (default cwd) as a global tool.
+
+```
+$ cd ~/work/myapp
+$ molt tool install
+✓ installed tool "myapp"
+  shim:    /Users/me/.molt/bin/myapp
+  source:  /Users/me/work/myapp
+
+/Users/me/.molt/bin is not on your PATH. Add this to your shell profile:
+  export PATH="/Users/me/.molt/bin:$PATH"
+
+$ myapp                       # runs from anywhere
+```
+
+The shim is generated as `~/.molt/bin/<name>` (POSIX shell script;
+`.cmd` on Windows). Each invocation re-resolves the project's current
+syspath, so dep changes take effect with no re-install. `--name` and
+`--task` override defaults; `--force` overwrites an existing tool.
+
+#### `molt tool list`, `molt tool show <name>`, `molt tool uninstall <name>`
+
+```
+$ molt tool list
+NAME                 TASK       LAST UPDATE          STATE           SOURCE
+myapp                (default)  2026-05-04 14:22:01  ✓ alive         /Users/me/work/myapp
+tagctl               serve      2026-05-03 10:15:33  ✓ alive         /Users/me/work/tagctl
+
+2 tool(s); shims at /Users/me/.molt/bin
+
+$ molt tool uninstall tagctl
+✓ uninstalled tool "tagctl"
+```
+
+`molt gc` automatically prunes orphan tools (whose source dir disappeared)
+alongside orphan project state.
+
+#### `molt tool path`
+
+Print `~/.molt/bin/` for shell PATH wiring:
+
+```
+$ molt tool path
+/Users/me/.molt/bin
+
+# .zshrc / .bashrc:
+export PATH="$(molt tool path):$PATH"
+```
+
+### 7.7 Cython without ceremony
+
+Drop a `.pyx` next to a `.py` in `src/`, run `molt sync`, and `import` works.
+No `setup.py`, no `[build-system]` wiring, no manual `cythonize` call. molt
+discovers `.pyx` files at sync time, compiles them with the project's
+uv-managed Python + the system C compiler, caches the output by content
+hash at `~/.molt/native/<hash>/`, and merges the compiled extensions back
+into your package via a generated `__init__.py` shim.
+
+```sh
+$ molt init --template src fastmath
+$ cd fastmath
+$ cat > src/fastmath/_inner.pyx <<'EOF'
+def add(int a, int b):
+    return a + b
+EOF
+$ cat > src/fastmath/__main__.py <<'EOF'
+from fastmath._inner import add
+print(add(2, 3))
+EOF
+$ molt add Cython
+$ molt run
+→ cython: 1 source(s)
+  ↻ cython  fastmath._inner
+result: 5
+```
+
+Edit the `.pyx`, re-run, and only the changed module recompiles
+(content-hash cache hit otherwise). No build script, no `[build-system]`
+config, no `try / except ImportError` shadow trick.
+
+##### How it works
+
+1. **Discover.** Sync walks `<project>/src/` for `*.pyx`, pairs each with
+   its dotted module name (`src/fastmath/_inner.pyx` → `fastmath._inner`).
+
+2. **Cache key.** `sha256(content || abi_tag || platform)`. Same source,
+   same Python ABI → cache hit. Different ABI → separate cache entry.
+
+3. **Compile.**
+
+   ```sh
+   <spec.Python> -m cython --3str -o /tmp/<rand>/<mod>.c <src>.pyx
+   <cc> -O2 -shared -fPIC -I<py-include> -o <out>/<mod>.<ext_suffix> /tmp/<rand>/<mod>.c
+   ```
+
+   - `<spec.Python>` is the uv-managed interpreter — never your system
+     `python3`. `PYTHONPATH` is set so Cython resolves out of molt's
+     global store.
+   - `<cc>` is the first usable compiler on PATH (`cc` → `clang` → `gcc`,
+     or `$CC` if set).
+   - `<ext_suffix>` is `.cpython-311-darwin.so` etc., from
+     `sysconfig.get_config_var('EXT_SUFFIX')`.
+
+4. **Cache.** Output goes to `~/.molt/native/<hash>/<mod>.<ext_suffix>` plus
+   a `meta.json` sidecar. Shared across every project on the machine.
+
+5. **Project view.** `~/.molt/projects/<base>-<hash>/cython/<pkg>/<mod>.<ext_suffix>`
+   is symlinked to the cache (hard copy on Windows). The cython dir is
+   prepended to `Spec.Syspath` so Python finds the merged package.
+
+6. **Path merge.** Each `cython/<pkg>/__init__.py` is generated by molt
+   to extend `__path__` so the user's `src/<pkg>/` (with `.py` modules) is
+   union'd with the cython dir (with `.so` modules). One importable
+   package, two locations on disk, no source-tree pollution.
+
+##### Editor support
+
+Pyright and Pylance pick up the cython dirs through the existing
+`extraPaths` plumbing — `molt editor pyright` re-runs after every sync.
+Type stubs (`*.pyi`) work as expected; Cython generates accurate ones
+when invoked with `--3str`.
+
+##### Edge cases
+
+| Case | Behaviour |
+|---|---|
+| No `.pyx` files | No-op; sync proceeds unchanged. |
+| Cython not in deps | Warning at sync, no compilation. Existing `.so` files keep working. Add it: `molt add Cython`. |
+| C compiler missing | Warning, sync skips compilation. Install `clang` or `gcc`. |
+| `.pyx` syntax error | Sync fails with the full Cython error + offending source. |
+| C compile error | Sync fails with the cc output. |
+| Source unchanged since last build | Cache hit; no work. |
+| Source content same but different ABI | New cache entry per ABI; both coexist for multi-version projects. |
+| `molt project purge` | Project state removed; cache survives for future re-syncs. |
+| `molt gc` | Prunes `~/.molt/native/` entries no live project's `native.json` references. |
+
+##### `molt build` — bundling Cython into binaries
+
+`molt build` injects compiled `.so` files into the binary's payload at
+`src/<pkg>/<mod>.<ext_suffix>`, next to the source modules. Cross-build is
+refused if the cython artefact's OS+arch doesn't match the build target —
+build on the target host, or on a host with a matching cross-toolchain
+configured (deferred to a future round).
+
+> **Caveat — built-binary Python ABI.** `molt build`'s install lifecycle
+> currently symlinks to whatever `python3` is on the target host, *not*
+> the molt-managed Python from build time. If the target's `python3` has
+> a different ABI than the build's (e.g. 3.14 host vs 3.11 build), the
+> Cython `.so` won't load — you'll see `No module named <pkg>._<mod>`.
+> This is a pre-existing limitation of `molt build` (any native wheel has
+> the same issue); for now, ensure target hosts have a matching CPython
+> minor version. A follow-up will bundle the uv-managed Python into the
+> binary so this just works.
+
+### 7.8 Eliminating `sys.path.insert` boilerplate
+
+Common Python pain — shared code outside the package's installed location:
+
+```python
+# top of every script
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+```
+
+Instead, declare those paths in `pyproject.toml`:
+
+```toml
+[tool.molt]
+extra_paths = ["../shared", "vendor/lib", "scripts"]
+```
+
+molt adds them to `Spec.Syspath` at sync time, so they're on `PYTHONPATH`
+for every `molt run` / `<bin> task` / structured task invocation, and
+editor configs (`.vscode/settings.json`, `pyrightconfig.json`)
+auto-include them via `extraPaths` — IntelliSense and goto-def work
+without sys.path hacks.
+
+```toml
+# pyproject.toml
+[tool.molt]
+extra_paths = ["../shared"]
+```
+
+```python
+# main.py — no sys.path.insert needed
+import shared_helpers
+print(shared_helpers.OK)
+```
+
+```
+$ molt sync
+$ molt run main.py
+hello from shared
+```
+
+Resolution: each entry is relative to the project root (absolute paths
+taken as-is). Missing paths emit a warning at sync but don't fail.
+Order in `Syspath`: project source → extra_paths → global-store dirs.
+
+### 7.9 uv passthrough
 
 #### `molt uv path`
 
@@ -1123,7 +1443,7 @@ $ molt uv pip compile requirements.in
 $ molt uv cache clean
 ```
 
-### 7.6 Diagnostics & meta
+### 7.10 Diagnostics & meta
 
 #### `molt where [<key>]`
 

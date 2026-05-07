@@ -76,6 +76,12 @@ func UvEnv(projectDir string) string { return filepath.Join(Dir(projectDir), uvE
 // Meta returns Dir()/meta.json (back-pointer to the original project).
 func Meta(projectDir string) string { return filepath.Join(Dir(projectDir), metaFile) }
 
+// Native returns Dir()/native.json — the per-project manifest of compiled
+// native artefacts (cython now, multipy in future). Drives `molt build`'s
+// bundling step and `molt gc`'s reachability analysis for the global
+// ~/.molt/native cache.
+func Native(projectDir string) string { return filepath.Join(Dir(projectDir), "native.json") }
+
 // MetaInfo is the on-disk schema for meta.json.
 type MetaInfo struct {
 	ProjectDir  string    `json:"project_dir"`

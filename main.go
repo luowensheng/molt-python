@@ -11,8 +11,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"molt/internal/adopt"
 	"molt/internal/builder"
@@ -21,6 +24,7 @@ import (
 	"molt/internal/projstate"
 	"molt/internal/python"
 	"molt/internal/store"
+	"molt/internal/tooldb"
 	"molt/internal/syncplan"
 	"molt/internal/syspath"
 	"molt/internal/tasks"
@@ -34,9 +38,40 @@ var (
 	version string
 	date    string
 	commit  string
+
+	// globalProjectOverride holds the absolute path of a project resolved
+	// from a `--project <q>` flag at the top of the args. When non-empty,
+	// commands that would normally operate on the cwd's project (run,
+	// sync, add, info, where, etc.) operate on this path instead. Set
+	// once in main() before dispatch; never mutated thereafter.
+	globalProjectOverride string
 )
 
+// projectRoot returns the absolute project path that "the current command"
+// should target. When the `--project` flag is set, that wins; otherwise
+// fall back to cwd. Commands that take a project as a positional arg
+// (init, build, package, adopt, capture, assemble) intentionally do NOT
+// call this — they always work on cwd / the user-provided arg.
+func projectRoot() string {
+	if globalProjectOverride != "" {
+		return globalProjectOverride
+	}
+	d, _ := os.Getwd()
+	return d
+}
+
 func main() {
+	// Resolve --project / -p before dispatch. Position-flexible: works as
+	// `molt --project foo run dev` or `molt run --project foo dev`. Stops
+	// at `--`. After this call, os.Args is rewritten with the flag pair
+	// removed so each command's own flag parsing sees a clean slice.
+	if rewritten, err := applyProjectFlag(os.Args); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	} else {
+		os.Args = rewritten
+	}
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(1)
@@ -87,6 +122,10 @@ func main() {
 		err = cmdTask(os.Args[2:])
 	case "template":
 		err = cmdTemplate(os.Args[2:])
+	case "project":
+		err = cmdProject(os.Args[2:])
+	case "tool":
+		err = cmdTool(os.Args[2:])
 	case "where":
 		err = cmdWhere(os.Args[2:])
 	case "editor":
@@ -161,9 +200,35 @@ Path discovery:
 
 Editor integration:
   editor [vscode|pyright]          Write/refresh editor configs (auto-detect if no name)
-  add      [--dev] <pkg...>        Add dependency
+
+Multi-project:
+  project list                     List every registered project
+  project info <q>                 Detailed view of one project
+  project where <q> [<key>]        Same keys as 'where', for a remote project
+  project purge <q>                Drop tracking + state (source untouched)
+  project purge --older-than <d>   Bulk purge by age (e.g. 30d, 8w)
+  project purge --unused           Bulk purge projects whose source is missing
+  project purge --dry-run          Preview without removing
+  project reinit <path>            Re-register a previously purged project
+  project cd <q>                   Print the project's source path
+
+Tool registry (~/.molt/bin global shims):
+  tool install [<path>]            Register the project's CLI globally
+                                     --name <n>   tool name (default: project basename)
+                                     --task <t>   task to run (default: default entry)
+  tool list                        List registered tools
+  tool show <name>                 Show one tool's details
+  tool uninstall <name>            Remove a tool's shim + metadata
+  tool path                        Print ~/.molt/bin (add this to your PATH)
+
+Global flags:
+  --project / -p <q>               Operate on a registered project from anywhere
+                                     (skipped for: init, build, package, adopt, capture, assemble)
+
+Dependencies & sync:
+  add      [--dev] [-r <file>] <pkg...>   Add dependency (or from requirements.txt)
   remove   [--dev] <pkg...>        Remove dependency
-  sync     [--frozen] [--refresh]  Install lockfile into ~/.molt/pkg + write .molt/syspath.json
+  sync     [--frozen] [--refresh]  Install lockfile into ~/.molt/pkg + write per-project state
   lock                             Regenerate uv.lock
   gc       [--dry-run]             Remove ~/.molt/pkg entries no project references
   uv       <args...>               Raw passthrough to uv
@@ -301,7 +366,7 @@ func cmdPackage(args []string) error {
 	wheelOnly := fs.Bool("wheel", false, "Build only the wheel (.whl)")
 	fs.Parse(args)
 
-	absDir, _ := filepath.Abs(".")
+	absDir := projectRoot()
 	uvArgs := []string{"build", "--out-dir", *output}
 	switch {
 	case *sdistOnly && *wheelOnly:
@@ -635,7 +700,7 @@ func cmdAdd(args []string) error {
 	if fs.NArg() == 0 && len(reqFiles) == 0 {
 		return fmt.Errorf("usage: molt add [--dev] [-r requirements.txt] [package...]")
 	}
-	absDir, _ := filepath.Abs(".")
+	absDir := projectRoot()
 	if err := internuv.Add(absDir, fs.Args(), internuv.AddOptions{Dev: *dev, RequirementFiles: reqFiles}); err != nil {
 		return err
 	}
@@ -649,7 +714,7 @@ func cmdRemove(args []string) error {
 	if fs.NArg() == 0 {
 		return fmt.Errorf("usage: molt remove <package...>")
 	}
-	absDir, _ := filepath.Abs(".")
+	absDir := projectRoot()
 	if err := internuv.Remove(absDir, fs.Args(), *dev); err != nil {
 		return err
 	}
@@ -661,17 +726,17 @@ func cmdSync(args []string) error {
 	frozen := fs.Bool("frozen", false, "Fail if lockfile needs updating")
 	refresh := fs.Bool("refresh", false, "Force-reinstall all packages")
 	fs.Parse(args)
-	absDir, _ := filepath.Abs(".")
+	absDir := projectRoot()
 	return syncplan.Sync(absDir, syncplan.Options{Frozen: *frozen, Refresh: *refresh, Verbose: true})
 }
 
 func cmdLock(args []string) error {
-	absDir, _ := filepath.Abs(".")
+	absDir := projectRoot()
 	return internuv.Lock(absDir)
 }
 
 func cmdTree(args []string) error {
-	absDir, _ := filepath.Abs(".")
+	absDir := projectRoot()
 	return internuv.Tree(absDir)
 }
 
@@ -694,7 +759,7 @@ func cmdPython(args []string) error {
 		return fmt.Errorf("usage: molt python <list|install|use|remove|which|run|audit|conflicts|isolation-check>")
 	}
 
-	mgr, err := python.New(cwd())
+	mgr, err := python.New(projectRoot())
 	if err != nil {
 		return err
 	}
@@ -772,10 +837,10 @@ func cmdPython(args []string) error {
 		// Default path: invoke the project's Python interpreter directly.
 		// Auto-syncs if the project hasn't been materialised yet, so this
 		// works immediately after `molt init` with no extra steps.
-		if err := ensureSynced(cwd()); err != nil {
+		if err := ensureSynced(projectRoot()); err != nil {
 			return err
 		}
-		spec, err := syspath.Load(cwd())
+		spec, err := syspath.Load(projectRoot())
 		if err != nil {
 			return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
 		}
@@ -792,8 +857,24 @@ func cmdPython(args []string) error {
 // ── Task runner ───────────────────────────────────────────────────────────────
 
 func cmdRun(args []string) error {
+	// `--` escape: treat everything after `--` as args to the default
+	// entry. `molt run --` → default entry, no args. `molt run -- --version`
+	// → default entry with ["--version"]. Mirrors the launcher's escape.
+	if len(args) > 0 && args[0] == "--" {
+		return runDefaultEntryWithArgs(args[1:])
+	}
+	// Flag-shaped first arg (e.g. `demo --port 8080`) means the user is
+	// passing flags to their program, not naming a task. Forward verbatim
+	// to the default entry. Tasks are always plain positional names.
+	if len(args) > 0 && strings.HasPrefix(args[0], "-") && args[0] != "--watch" {
+		return runDefaultEntryWithArgs(args)
+	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: molt run <task|binary> [-- extra-args]")
+		// No task / script given. Auto-resolve to the project's default
+		// entry: main.py at the root, or `python -m <pkg>` for src layout.
+		// This is what `<bin>` (no args) does for built binaries; mirror it
+		// here so `molt run` and the tool shim form behave the same.
+		return runDefaultEntry()
 	}
 
 	taskName := args[0]
@@ -811,7 +892,7 @@ func cmdRun(args []string) error {
 	// .molt/syspath.json, so any task that uses `python` (or any console
 	// shim) would fail with "command not found". Sync once to materialise
 	// the env, then proceed.
-	if err := ensureSynced(cwd()); err != nil {
+	if err := ensureSynced(projectRoot()); err != nil {
 		return err
 	}
 
@@ -819,20 +900,66 @@ func cmdRun(args []string) error {
 	// project's Python interpreter on the script. Detected by .py suffix
 	// + file existing on disk. Lets users run a project with nothing but
 	// pyproject.toml + main.py, no task definition required.
+	//
+	// When --project redirects, resolve the script relative to the project
+	// root (not cwd) so the same command works regardless of where the user
+	// invokes it from.
 	if strings.HasSuffix(taskName, ".py") {
-		if _, err := os.Stat(taskName); err == nil {
-			return runPythonScript(cwd(), taskName, args[1:])
+		candidates := []string{taskName}
+		if !filepath.IsAbs(taskName) {
+			candidates = append(candidates, filepath.Join(projectRoot(), taskName))
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				return runPythonScript(projectRoot(), c, args[1:])
+			}
 		}
 	}
 
-	r := tasks.New(cwd())
+	r := tasks.New(projectRoot())
 	if err := r.Run(taskName, watch, extraArgs); err == nil {
 		return nil
 	} else if !errors.Is(err, tasks.ErrTaskNotFound) {
 		return err
 	}
 
-	return runExec(cwd(), append([]string{taskName}, args[1:]...))
+	return runExec(projectRoot(), append([]string{taskName}, args[1:]...))
+}
+
+// runDefaultEntry is the no-args form. Equivalent to runDefaultEntryWithArgs(nil).
+func runDefaultEntry() error { return runDefaultEntryWithArgs(nil) }
+
+// runDefaultEntryWithArgs dispatches the project's default entry with the
+// given trailing args. Mirrors the built binary's no-args behaviour:
+// detect the entry from the layout and exec it.
+func runDefaultEntryWithArgs(extraArgs []string) error {
+	proj := projectRoot()
+	if err := ensureSynced(proj); err != nil {
+		return err
+	}
+	// Prefer main.py at the root.
+	mainPy := filepath.Join(proj, "main.py")
+	if _, err := os.Stat(mainPy); err == nil {
+		return runPythonScript(proj, mainPy, extraArgs)
+	}
+	// Try src/<pkg>/__main__.py and <pkg>/__main__.py.
+	pkg := pyPackageName(filepath.Base(proj))
+	for _, c := range []string{
+		filepath.Join(proj, "src", pkg, "__main__.py"),
+		filepath.Join(proj, pkg, "__main__.py"),
+	} {
+		if _, err := os.Stat(c); err == nil {
+			// `python -m <pkg> [extra...]` — exec via spec.Python.
+			spec, err := syspath.Load(proj)
+			if err != nil {
+				return err
+			}
+			env := spec.BuildEnv(os.Environ())
+			argv := append([]string{spec.Python, "-m", pkg}, extraArgs...)
+			return syscall.Exec(spec.Python, argv, env)
+		}
+	}
+	return fmt.Errorf("no default entry found at %s — expected main.py or src/%s/__main__.py", proj, pkg)
 }
 
 // runPythonScript execs spec.Python on a script path under the project env.
@@ -893,7 +1020,7 @@ func cmdTask(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: molt task <list|add|remove>")
 	}
-	r := tasks.New(cwd())
+	r := tasks.New(projectRoot())
 	switch args[0] {
 	case "list":
 		return r.PrintList()
@@ -1016,10 +1143,454 @@ func cmdTemplateAdd(name, path string) error {
 	return nil
 }
 
+// ── Multi-project ops ────────────────────────────────────────────────────────
+
+func cmdProject(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: molt project <list|info|where|purge|reinit|cd>")
+	}
+	switch args[0] {
+	case "list":
+		return cmdProjectList()
+	case "info":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt project info <name|hash|path>")
+		}
+		return cmdProjectInfo(args[1])
+	case "where":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt project where <name|hash|path> [<key>]")
+		}
+		key := ""
+		if len(args) >= 3 {
+			key = args[2]
+		}
+		return cmdProjectWhere(args[1], key)
+	case "purge":
+		return cmdProjectPurge(args[1:])
+	case "reinit":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt project reinit <path>")
+		}
+		return cmdProjectReinit(args[1])
+	case "cd":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt project cd <name|hash|path>")
+		}
+		entry, err := projstate.Resolve(args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Println(entry.ProjectDir)
+		return nil
+	default:
+		return fmt.Errorf("unknown project subcommand: %s", args[0])
+	}
+}
+
+func cmdProjectList() error {
+	entries, err := projstate.ListAll()
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Println("No registered projects. Run `molt sync` in a project to register it.")
+		return nil
+	}
+	// Sort: alive first, then by LastSync desc.
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].ProjectAlive != entries[j].ProjectAlive {
+			return entries[i].ProjectAlive
+		}
+		return entries[i].Meta.LastSync.After(entries[j].Meta.LastSync)
+	})
+	fmt.Printf("%-22s %-18s %-20s %-15s %s\n", "NAME", "HASH", "LAST SYNC", "STATE", "PATH")
+	for _, e := range entries {
+		name := filepath.Base(e.ProjectDir)
+		if name == "" {
+			name = "(no path)"
+		}
+		state := "✓ alive"
+		if !e.ProjectAlive {
+			state = "✗ source missing"
+		}
+		last := "(never)"
+		if !e.Meta.LastSync.IsZero() {
+			last = e.Meta.LastSync.Local().Format("2006-01-02 15:04:05")
+		}
+		fmt.Printf("%-22s %-18s %-20s %-15s %s\n", name, e.Hash, last, state, e.ProjectDir)
+	}
+	fmt.Printf("\n%d project(s); state at %s\n", len(entries), projstate.Root())
+	return nil
+}
+
+func cmdProjectInfo(query string) error {
+	entry, err := projstate.Resolve(query)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Name:        %s\n", filepath.Base(entry.ProjectDir))
+	fmt.Printf("Path:        %s\n", entry.ProjectDir)
+	fmt.Printf("Hash:        %s\n", entry.Hash)
+	fmt.Printf("State dir:   %s\n", entry.Dir)
+	if !entry.Meta.Created.IsZero() {
+		fmt.Printf("Created:     %s\n", entry.Meta.Created.Local().Format(time.RFC3339))
+	}
+	if !entry.Meta.LastSync.IsZero() {
+		fmt.Printf("Last sync:   %s\n", entry.Meta.LastSync.Local().Format(time.RFC3339))
+	}
+	if entry.ProjectAlive {
+		fmt.Println("Source:      ✓ alive")
+	} else {
+		fmt.Println("Source:      ✗ missing — pyproject.toml not found at original path")
+	}
+	if spec, err := syspath.Load(entry.ProjectDir); err == nil {
+		fmt.Printf("Python bin:  %s\n", spec.Python)
+		fmt.Printf("Env:         %d store path(s)\n", len(spec.Syspath))
+	}
+	return nil
+}
+
+func cmdProjectWhere(query, key string) error {
+	entry, err := projstate.Resolve(query)
+	if err != nil {
+		return err
+	}
+	if key != "" {
+		path, err := wherePath(entry.ProjectDir, key)
+		if err != nil {
+			return err
+		}
+		fmt.Println(path)
+		return nil
+	}
+	// No key — labelled table for the resolved project.
+	pairs := [][2]string{
+		{"path", entry.ProjectDir},
+		{"state", projstate.Dir(entry.ProjectDir)},
+		{"bin", projstate.Bin(entry.ProjectDir)},
+		{"syspath", projstate.Syspath(entry.ProjectDir)},
+		{"sitecustomize", projstate.SiteCustomize(entry.ProjectDir)},
+		{"uv-env", projstate.UvEnv(entry.ProjectDir)},
+	}
+	if spec, err := syspath.Load(entry.ProjectDir); err == nil {
+		pairs = append([][2]string{{"python", spec.Python}}, pairs...)
+	}
+	for _, p := range pairs {
+		fmt.Printf("  %-14s %s\n", p[0], p[1])
+	}
+	return nil
+}
+
+func cmdProjectPurge(args []string) error {
+	fs := flag.NewFlagSet("project purge", flag.ExitOnError)
+	olderThan := fs.String("older-than", "", "Bulk purge: projects whose last sync is older than this duration (e.g. 30d, 12h)")
+	unused := fs.Bool("unused", false, "Bulk purge: projects whose source dir no longer exists")
+	dryRun := fs.Bool("dry-run", false, "Preview only; nothing is removed")
+	stateOnly := fs.Bool("state-only", false, "Keep registry entry; remove only the materialised state dir")
+	yes := fs.Bool("yes", false, "Skip confirmation prompt for bulk operations")
+	fs.Parse(args)
+
+	// Decide which entries to act on.
+	bulk := *olderThan != "" || *unused
+	var targets []projstate.Entry
+
+	if bulk {
+		all, err := projstate.ListAll()
+		if err != nil {
+			return err
+		}
+		var cutoff time.Time
+		if *olderThan != "" {
+			d, err := parseDuration(*olderThan)
+			if err != nil {
+				return fmt.Errorf("--older-than %q: %w", *olderThan, err)
+			}
+			cutoff = time.Now().Add(-d)
+		}
+		for _, e := range all {
+			if *unused && !e.ProjectAlive {
+				targets = append(targets, e)
+				continue
+			}
+			if !cutoff.IsZero() && !e.Meta.LastSync.IsZero() && e.Meta.LastSync.Before(cutoff) {
+				targets = append(targets, e)
+			}
+		}
+		if fs.NArg() > 0 {
+			return fmt.Errorf("--older-than / --unused don't take a positional name argument")
+		}
+	} else {
+		if fs.NArg() == 0 {
+			return fmt.Errorf("usage: molt project purge <name|hash|path>\n   or: molt project purge --older-than <duration>\n   or: molt project purge --unused")
+		}
+		entry, err := projstate.Resolve(fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		targets = []projstate.Entry{entry}
+	}
+
+	if len(targets) == 0 {
+		fmt.Println("No projects matched.")
+		return nil
+	}
+
+	// Print and possibly confirm.
+	fmt.Printf("%d project(s) to purge:\n", len(targets))
+	for _, e := range targets {
+		fmt.Printf("  - %s [%s]  %s\n", filepath.Base(e.ProjectDir), e.Hash, e.ProjectDir)
+	}
+	if *dryRun {
+		fmt.Println("(dry-run — nothing removed)")
+		return nil
+	}
+	if bulk && !*yes {
+		fmt.Print("Proceed? [y/N] ")
+		var resp string
+		fmt.Scanln(&resp)
+		if !strings.EqualFold(strings.TrimSpace(resp), "y") && !strings.EqualFold(strings.TrimSpace(resp), "yes") {
+			fmt.Println("Aborted.")
+			return nil
+		}
+	}
+
+	for _, e := range targets {
+		if err := os.RemoveAll(e.Dir); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: remove %s: %v\n", e.Dir, err)
+			continue
+		}
+		if !*stateOnly {
+			if err := registryDrop(e.ProjectDir); err != nil {
+				fmt.Fprintf(os.Stderr, "warn: drop registry for %s: %v\n", e.ProjectDir, err)
+			}
+		}
+		fmt.Printf("✓ purged %s\n", filepath.Base(e.ProjectDir))
+	}
+	return nil
+}
+
+// registryDrop removes a project from ~/.molt/registry.json. Best-effort —
+// missing registry / missing entry are silent successes.
+func registryDrop(projectDir string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(home, ".molt", "registry.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var reg struct {
+		Projects map[string]string `json:"projects"`
+	}
+	if err := json.Unmarshal(data, &reg); err != nil {
+		return err
+	}
+	delete(reg.Projects, projectDir)
+	out, err := json.MarshalIndent(&reg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
+}
+
+func cmdProjectReinit(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(abs, "pyproject.toml")); err != nil {
+		return fmt.Errorf("no pyproject.toml at %s — not a molt project", abs)
+	}
+	fmt.Printf("Reinitialising project at %s...\n", abs)
+	return syncplan.Sync(abs, syncplan.Options{Verbose: true})
+}
+
+// ── Tool registry ────────────────────────────────────────────────────────────
+
+func cmdTool(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: molt tool <install|list|show|uninstall|path>")
+	}
+	switch args[0] {
+	case "install":
+		return cmdToolInstall(args[1:])
+	case "list":
+		return cmdToolList()
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt tool show <name>")
+		}
+		return cmdToolShow(args[1])
+	case "uninstall":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt tool uninstall <name>")
+		}
+		if err := tooldb.Uninstall(args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("✓ uninstalled tool %q\n", args[1])
+		return nil
+	case "path":
+		bin, err := tooldb.BinDir()
+		if err != nil {
+			return err
+		}
+		fmt.Println(bin)
+		return nil
+	default:
+		return fmt.Errorf("unknown tool subcommand: %s", args[0])
+	}
+}
+
+func cmdToolInstall(args []string) error {
+	fs := flag.NewFlagSet("tool install", flag.ExitOnError)
+	name := fs.String("name", "", "Tool name (default: project basename)")
+	task := fs.String("task", "", "Task to dispatch (default: project's default entry)")
+	force := fs.Bool("force", false, "Overwrite an existing tool of the same name")
+	fs.Parse(args)
+
+	src := "."
+	if fs.NArg() > 0 {
+		src = fs.Arg(0)
+	}
+	abs, err := filepath.Abs(src)
+	if err != nil {
+		return err
+	}
+	resolvedName := *name
+	if resolvedName == "" {
+		resolvedName = filepath.Base(abs)
+	}
+	t, err := tooldb.Install(resolvedName, abs, *task, *force)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✓ installed tool %q\n", t.Name)
+	fmt.Printf("  shim:    %s\n", t.ShimPath())
+	fmt.Printf("  source:  %s\n", t.ProjectDir)
+	if t.Task != "" {
+		fmt.Printf("  task:    %s\n", t.Task)
+	}
+
+	// PATH bootstrap hint — print once if BinDir() isn't on PATH.
+	bin, _ := tooldb.BinDir()
+	if !pathContains(os.Getenv("PATH"), bin) {
+		fmt.Printf("\n%s is not on your PATH. Add this to your shell profile:\n", bin)
+		fmt.Printf("  export PATH=\"%s:$PATH\"\n", bin)
+	}
+	return nil
+}
+
+// pathContains reports whether the OS PATH env var contains dir as one
+// of its components.
+func pathContains(pathEnv, dir string) bool {
+	if pathEnv == "" || dir == "" {
+		return false
+	}
+	sep := string(os.PathListSeparator)
+	for _, p := range strings.Split(pathEnv, sep) {
+		if filepath.Clean(p) == filepath.Clean(dir) {
+			return true
+		}
+	}
+	return false
+}
+
+func cmdToolList() error {
+	tools, err := tooldb.List()
+	if err != nil {
+		return err
+	}
+	if len(tools) == 0 {
+		fmt.Println("No tools installed. Try: molt tool install")
+		return nil
+	}
+	fmt.Printf("%-20s %-10s %-20s %-15s %s\n", "NAME", "TASK", "LAST UPDATE", "STATE", "SOURCE")
+	for _, t := range tools {
+		state := "✓ alive"
+		if !t.ProjectAlive() {
+			state = "✗ source missing"
+		}
+		task := t.Task
+		if task == "" {
+			task = "(default)"
+		}
+		updated := "(never)"
+		if !t.Updated.IsZero() {
+			updated = t.Updated.Local().Format("2006-01-02 15:04:05")
+		}
+		fmt.Printf("%-20s %-10s %-20s %-15s %s\n", t.Name, task, updated, state, t.ProjectDir)
+	}
+	bin, _ := tooldb.BinDir()
+	fmt.Printf("\n%d tool(s); shims at %s\n", len(tools), bin)
+	return nil
+}
+
+func cmdToolShow(name string) error {
+	t, err := tooldb.Get(name)
+	if err != nil {
+		return fmt.Errorf("tool %q not found", name)
+	}
+	fmt.Printf("Name:        %s\n", t.Name)
+	fmt.Printf("Source:      %s\n", t.ProjectDir)
+	fmt.Printf("Shim:        %s\n", t.ShimPath())
+	if t.Task != "" {
+		fmt.Printf("Task:        %s\n", t.Task)
+	} else {
+		fmt.Println("Task:        (default entry)")
+	}
+	if !t.Created.IsZero() {
+		fmt.Printf("Created:     %s\n", t.Created.Local().Format(time.RFC3339))
+	}
+	if !t.Updated.IsZero() {
+		fmt.Printf("Updated:     %s\n", t.Updated.Local().Format(time.RFC3339))
+	}
+	if t.ProjectAlive() {
+		fmt.Println("State:       ✓ alive")
+		if spec, err := syspath.Load(t.ProjectDir); err == nil {
+			fmt.Printf("Python bin:  %s\n", spec.Python)
+		}
+	} else {
+		fmt.Println("State:       ✗ source missing")
+	}
+	return nil
+}
+
+// parseDuration extends time.ParseDuration with day/week suffixes commonly
+// expected by humans (e.g. "30d", "8w"). Falls back to time.ParseDuration
+// for everything else.
+func parseDuration(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	last := s[len(s)-1]
+	switch last {
+	case 'd', 'D':
+		n, err := strconv.Atoi(s[:len(s)-1])
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	case 'w', 'W':
+		n, err := strconv.Atoi(s[:len(s)-1])
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(n) * 7 * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
 // ── Path discovery ────────────────────────────────────────────────────────────
 
 func cmdWhere(args []string) error {
-	proj := cwd()
+	proj := projectRoot()
 
 	// Single-key form: print one path + newline. Script-friendly.
 	if len(args) >= 1 {
@@ -1104,7 +1675,7 @@ func cmdEditor(args []string) error {
 	fs.Parse(args)
 	rest := fs.Args()
 
-	proj := cwd()
+	proj := projectRoot()
 	spec, err := syspath.Load(proj)
 	if err != nil {
 		return fmt.Errorf("project not synced — run 'molt sync' first (no syspath.json)")
@@ -1149,7 +1720,7 @@ func cmdEditor(args []string) error {
 // ── Info ──────────────────────────────────────────────────────────────────────
 
 func cmdInfo() error {
-	dir := cwd()
+	dir := projectRoot()
 
 	pyprojectPath := filepath.Join(dir, "pyproject.toml")
 	data, err := os.ReadFile(pyprojectPath)
@@ -1317,11 +1888,6 @@ func cmdDoctor() error {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func cwd() string {
-	d, _ := os.Getwd()
-	return d
-}
-
 func hasFlag(args []string, flag string) bool {
 	for _, a := range args {
 		if a == flag {
@@ -1335,6 +1901,48 @@ func hasFlag(args []string, flag string) bool {
 // and returns the version (or "") plus args with that pair removed.
 // Stops scanning at "--" so user-supplied script args aren't accidentally
 // consumed (e.g. `molt python run -- -v` should pass -v to the script).
+// applyProjectFlag scans args for `--project <q>` (or `-p <q>`), resolves
+// the query via projstate.Resolve, and stores the absolute project path
+// in globalProjectOverride. Returns args with the flag pair removed.
+//
+// Skipped for commands that don't operate on a registered project (init,
+// build, package, adopt, capture, assemble) — those receive the unmodified
+// flag-stripped slice anyway, but the override is harmless if accidentally
+// set since they never call projectRoot().
+func applyProjectFlag(argv []string) ([]string, error) {
+	if len(argv) <= 1 {
+		return argv, nil
+	}
+	out := make([]string, 0, len(argv))
+	out = append(out, argv[0]) // program name
+	query := ""
+	i := 1
+	for i < len(argv) {
+		a := argv[i]
+		if a == "--" {
+			out = append(out, argv[i:]...)
+			break
+		}
+		if (a == "--project" || a == "-p") && i+1 < len(argv) {
+			query = argv[i+1]
+			i += 2
+			continue
+		}
+		out = append(out, a)
+		i++
+	}
+	if query == "" {
+		return out, nil
+	}
+	entry, err := projstate.Resolve(query)
+	if err != nil {
+		return out, err
+	}
+	abs, _ := filepath.Abs(entry.ProjectDir)
+	globalProjectOverride = abs
+	return out, nil
+}
+
 func extractPythonVersionFlag(args []string) (string, []string) {
 	out := make([]string, 0, len(args))
 	version := ""

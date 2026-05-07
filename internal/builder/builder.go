@@ -36,6 +36,7 @@ import (
 	"molt/embedder"
 	"molt/internal/integrity"
 	"molt/internal/moltcfg"
+	"molt/internal/projstate"
 	"molt/internal/tasks"
 	"molt/pkg/types"
 )
@@ -153,6 +154,15 @@ func (b *Builder) Build() error {
 	// the launcher can access its audit record without the sidecar file.
 	if err := reinjectIntegrityIntoPayload(payloadPath, integrityManifest); err != nil {
 		return fmt.Errorf("embed integrity into payload: %w", err)
+	}
+
+	// Inject any cython artefacts compiled during sync. They live OUTSIDE
+	// the project tree (under projstate.Dir/cython/), so the embedder's
+	// project-rooted walk doesn't pick them up — append them to the tar
+	// at src/<package_path>/<so_name> where Python's import machinery
+	// expects them.
+	if err := injectCythonArtifacts(payloadPath, b.cfg.ProjectPath, b.cfg.TargetOS, b.cfg.TargetArch); err != nil {
+		return fmt.Errorf("embed cython artefacts: %w", err)
 	}
 
 	// 6. Assemble: launcher + payload + extended trailer with root_hash.
@@ -460,6 +470,196 @@ func reinjectIntegrityIntoPayload(payloadPath string, m *types.IntegrityManifest
 		return err
 	}
 	return nil
+}
+
+// nativeManifestDoc mirrors the JSON shape written by syncplan's
+// writeNativeManifest. Only what we need at build time.
+type nativeManifestDoc struct {
+	Cython map[string]struct {
+		Hash     string `json:"hash"`
+		Src      string `json:"src"`
+		So       string `json:"so"`
+		Module   string `json:"module"`
+		Abi      string `json:"abi"`
+		Platform string `json:"platform"`
+	} `json:"cython"`
+}
+
+// injectCythonArtifacts reads projstate.Dir(p)/native.json and appends each
+// listed .so to the payload tar at src/<package_path>/<so_name> — exactly
+// where Python's import machinery expects extension modules in the tree.
+//
+// Cross-build refusal: if any artefact's recorded platform/abi doesn't
+// match the build target, the function errors with a clear message rather
+// than ship a broken binary.
+//
+// No-op when native.json is absent (project has no .pyx files).
+func injectCythonArtifacts(payloadPath, projectPath, targetOS, targetArch string) error {
+	manifestPath := filepath.Join(projstate.Dir(projectPath), "native.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var doc nativeManifestDoc
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse native.json: %w", err)
+	}
+	if len(doc.Cython) == 0 {
+		return nil
+	}
+	if err := refuseCrossBuild(doc, targetOS, targetArch); err != nil {
+		return err
+	}
+
+	// Resolve each artefact's on-disk .so path and the tar destination.
+	type pair struct{ tarPath, diskPath string }
+	var pairs []pair
+	stateRoot := projstate.Dir(projectPath)
+	for _, e := range doc.Cython {
+		// e.So is "cython/<pkg>/<file>.so" (project-view path); resolve
+		// to the symlinked .so under projstate.Dir(p).
+		viewPath := filepath.Join(stateRoot, filepath.FromSlash(e.So))
+		// Follow the symlink to land on the real file in the cache.
+		real, err := filepath.EvalSymlinks(viewPath)
+		if err != nil {
+			return fmt.Errorf("resolve cython artefact %s: %w", viewPath, err)
+		}
+		// The embedder uses PrefixInTar="src/" against RootDir = project
+		// root. So a project file at <root>/src/foo/bar.py lands in the
+		// tar as "src/src/foo/bar.py". The launcher strips one "src/"
+		// during extraction → install/src/foo/bar.py. Match that layout
+		// so cython .so files end up next to their .py siblings.
+		rel := strings.TrimPrefix(e.So, "cython/")
+		pairs = append(pairs, pair{tarPath: "src/src/" + rel, diskPath: real})
+	}
+
+	// Rewrite the tar in-memory adding the new entries at the end.
+	origData, err := os.ReadFile(payloadPath)
+	if err != nil {
+		return err
+	}
+	out, err := os.Create(payloadPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	gzr, err := gzip.NewReader(strings.NewReader(string(origData)))
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+	gzw := gzip.NewWriter(out)
+	defer gzw.Close()
+	tw := tar.NewWriter(gzw)
+	defer tw.Close()
+
+	tr := tar.NewReader(gzr)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if err := tw.WriteHeader(h); err != nil {
+			return err
+		}
+		if _, err := io.Copy(tw, tr); err != nil {
+			return err
+		}
+	}
+	for _, p := range pairs {
+		body, err := os.ReadFile(p.diskPath)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", p.diskPath, err)
+		}
+		hdr := &tar.Header{
+			Name:    p.tarPath,
+			Mode:    0o755,
+			Size:    int64(len(body)),
+			ModTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if _, err := tw.Write(body); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refuseCrossBuild fails the build when cython artefacts were compiled for
+// a different OS+arch than the build target. macOS version digits in the
+// PEP 425 platform tag (e.g. "macosx_14_0_arm64" vs "macosx_11_0_arm64")
+// are ignored — they're the macOS deployment-target floor, not the host
+// version, and don't matter for a build performed on this machine.
+func refuseCrossBuild(doc nativeManifestDoc, targetOS, targetArch string) error {
+	for mod, e := range doc.Cython {
+		if e.Platform == "" {
+			continue
+		}
+		if !platCompatible(e.Platform, targetOS, targetArch) {
+			return fmt.Errorf(
+				"cython artefact %s was compiled for %s; cannot embed in a %s/%s build "+
+					"(run molt build on the target host, or remove the .pyx files)",
+				mod, e.Platform, targetOS, targetArch)
+		}
+	}
+	return nil
+}
+
+// platCompatible matches a PEP 425 platform tag against a Go target os/arch.
+// Examples:
+//   ("macosx_14_0_arm64",  "darwin", "arm64") → true
+//   ("macosx_10_12_x86_64", "darwin", "amd64") → true
+//   ("macosx_14_0_arm64",  "linux",  "arm64") → false (different OS)
+//   ("linux_aarch64",      "linux",  "arm64") → true
+func platCompatible(plat, goOS, goArch string) bool {
+	switch goOS {
+	case "darwin":
+		if !strings.HasPrefix(plat, "macosx_") {
+			return false
+		}
+		return strings.HasSuffix(plat, archSuffixDarwin(goArch))
+	case "linux":
+		if !strings.HasPrefix(plat, "linux_") && !strings.HasPrefix(plat, "manylinux") {
+			return false
+		}
+		return strings.Contains(plat, archSuffixLinux(goArch))
+	case "windows":
+		return strings.HasPrefix(plat, "win") && strings.Contains(plat, archSuffixWindows(goArch))
+	}
+	return false
+}
+
+func archSuffixDarwin(goArch string) string {
+	if goArch == "amd64" {
+		return "x86_64"
+	}
+	return goArch
+}
+
+func archSuffixLinux(goArch string) string {
+	switch goArch {
+	case "amd64":
+		return "x86_64"
+	case "arm64":
+		return "aarch64"
+	}
+	return goArch
+}
+
+func archSuffixWindows(goArch string) string {
+	if goArch == "amd64" {
+		return "amd64"
+	}
+	return goArch
 }
 
 // assembleBinary writes launcher+payload+extendedTrailer. The trailer carries

@@ -166,87 +166,94 @@ const (
 // ── Entry ────────────────────────────────────────────────────────────────────
 
 func main() {
-	// Dispatch:
-	//   <app>                 → run the default entry (no args)
-	//   <app> <user-task>     → run a task from manifest.Tasks
-	//   <app> molt <meta>     → run a meta command (install/verify/info/...)
-	//   <app> install|...     → backward-compat: top-level meta names still work,
-	//                            but they're shadowed by user tasks of the same
-	//                            name. Use `<app> molt <name>` to disambiguate.
+	// Dispatch rule (resolves user-flag conflicts cleanly):
+	//
+	//   1. No args            → default entry (program's main).
+	//   2. First arg is `--`  → drop it, pass rest to default entry.
+	//                           Standard Unix escape for "everything is the
+	//                           program's args, not mine".
+	//   3. First arg starts with `--` (or is -h / -v) → meta flag. Reserved
+	//      set is closed; unknown flags error with a hint about `--`.
+	//   4. Otherwise positional. If it matches a user-defined task in
+	//      manifest.Tasks, run that task with the rest as args. If it
+	//      doesn't match, pass ALL of os.Args[1:] through to the default
+	//      entry — so the program's own subcommand parser handles it.
+	//
+	// Built binaries no longer expose a `molt` namespace; meta lives
+	// entirely under `--<name>` flags.
 	if len(os.Args) < 2 {
-		// No args → run default entry. cmdRun with no args invokes the
-		// project's main module/script.
-		if err := cmdRun(nil); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
+		runOrDie(cmdRun(nil))
 		return
 	}
 	first := os.Args[1]
 	rest := os.Args[2:]
 
-	// Explicit meta namespace.
-	if first == "molt" {
-		if err := dispatchMeta(rest); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
+	// `--` escape: everything after it is the program's responsibility.
+	if first == "--" {
+		runOrDie(cmdRun(rest))
 		return
 	}
 
-	// User-defined task takes precedence over backward-compat meta names.
-	// Try to load the manifest; if loading fails (corrupt binary etc.) we
-	// fall through to the meta dispatcher so `verify` / `version` still
-	// work for diagnostics.
+	// Meta flag namespace.
+	if isMetaFlag(first) {
+		runOrDie(dispatchMetaFlag(first, rest))
+		return
+	}
+
+	// Positional → user task or pass-through to default entry.
 	if m := loadManifestQuiet(); m != nil {
 		if _, ok := m.Tasks[first]; ok {
-			if err := runUserTask(m, first, rest); err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				os.Exit(1)
-			}
+			runOrDie(runUserTask(m, first, rest))
 			return
 		}
 	}
+	// No matching task: program owns the positional space.
+	runOrDie(cmdRun(os.Args[1:]))
+}
 
-	if err := dispatchMeta(append([]string{first}, rest...)); err != nil {
+// runOrDie prints the error to stderr and exits 1 if err is non-nil.
+func runOrDie(err error) {
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// dispatchMeta routes the install/uninstall/verify/info/version/run/hash
-// /commands meta subcommands. With no args, prints usage.
-func dispatchMeta(args []string) error {
-	if len(args) == 0 {
-		usage()
-		return nil
+// isMetaFlag reports whether a token belongs to the closed set of
+// molt-reserved meta flags. Anything else that *looks* like a flag (e.g.
+// the program's own `--port`) is passed through unchanged.
+func isMetaFlag(s string) bool {
+	switch s {
+	case "--install", "--uninstall", "--verify", "--info",
+		"--version", "--hash", "--commands", "--help", "-h", "-v":
+		return true
 	}
-	switch args[0] {
-	case "install":
-		return cmdInstall(args[1:])
-	case "run":
-		return cmdRun(args[1:])
-	case "verify":
-		return cmdVerify(args[1:])
-	case "uninstall":
-		return cmdUninstall(args[1:])
-	case "info":
+	return false
+}
+
+// dispatchMetaFlag routes a single meta flag to its handler.
+func dispatchMetaFlag(flag string, rest []string) error {
+	switch flag {
+	case "--install":
+		return cmdInstall(rest)
+	case "--uninstall":
+		return cmdUninstall(rest)
+	case "--verify":
+		return cmdVerify(rest)
+	case "--info":
 		return cmdInfo()
-	case "version", "--version", "-v":
+	case "--version", "-v":
 		return cmdVersion()
-	case "hash":
+	case "--hash":
 		return cmdHash()
-	case "commands":
+	case "--commands":
 		return cmdCommands()
-	case "help", "--help", "-h":
+	case "--help", "-h":
 		usage()
-		return nil
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
-		usage()
-		os.Exit(2)
 		return nil
 	}
+	// Unreachable — isMetaFlag gated us here.
+	return fmt.Errorf("unknown meta flag: %s", flag)
 }
 
 // loadManifestQuiet returns the embedded manifest or nil on any failure.
@@ -269,23 +276,26 @@ func loadManifestQuiet() *Manifest {
 
 func usage() {
 	self := filepath.Base(os.Args[0])
-	fmt.Fprintf(os.Stderr, `Usage: %[1]s [<task>] [args...]
-       %[1]s molt <meta-command> [args...]
+	fmt.Fprintf(os.Stderr, `Usage: %[1]s                          Run the default entry.
+       %[1]s <task> [args...]         Run a user task (from [tool.molt.tasks]).
+       %[1]s -- [args...]             Pass everything to the default entry.
+       %[1]s --<meta> [args...]       Run a molt meta command (see below).
 
-User tasks:
-  %[1]s                       Run the default entry point.
-  %[1]s <task> [args...]      Run a task from [tool.molt.tasks].
-  %[1]s molt commands         List defined tasks.
+Meta flags (reserved):
+  --install [--prefix DIR] [--offline] [--verbose] [--no-verify]
+                          Extract payload and set up hermetic environment.
+  --uninstall             Remove the installation.
+  --verify [--deep]       Recompute payload root hash; compare to trailer.
+  --info                  Print install metadata + defined tasks.
+  --version               Print app name and version.
+  --hash                  Print embedded root hash (hex, script-friendly).
+  --commands              List defined tasks (one per line).
+  --help, -h              This message.
 
-Meta commands (also available bare for backward compat):
-  %[1]s molt install [--prefix DIR] [--offline] [--verbose] [--no-verify]
-                              Extract payload and set up hermetic environment.
-  %[1]s molt run [TASK] [...] Explicit task dispatch (bypasses task/meta shadowing).
-  %[1]s molt verify           Recompute payload root hash; compare to trailer.
-  %[1]s molt uninstall        Remove the installation.
-  %[1]s molt info             Print install metadata + defined tasks.
-  %[1]s molt version          Print app name and version.
-  %[1]s molt hash             Print embedded root hash (hex, script-friendly).
+Conflict escape: if your program uses one of the reserved flags above,
+prefix args with `+"`--`"+` to pass everything through:
+
+  %[1]s -- --version      → runs default entry with --version, not molt's.
 
 Environment exposed to user code:
   MOLT_APP_DIR        Install directory (top-level).
@@ -388,8 +398,8 @@ func cmdInstall(args []string) error {
 
 	writeReceipt(installDir, m)
 	fmt.Printf("\n✓ Installed to %s\n", installDir)
-	fmt.Printf("  Run:       %s run\n", filepath.Base(os.Args[0]))
-	fmt.Printf("  Uninstall: %s uninstall\n", filepath.Base(os.Args[0]))
+	fmt.Printf("  Run:       %s\n", filepath.Base(os.Args[0]))
+	fmt.Printf("  Uninstall: %s --uninstall\n", filepath.Base(os.Args[0]))
 	return nil
 }
 
@@ -441,7 +451,7 @@ func cmdRun(args []string) error {
 	installDir, _ = filepath.Abs(installDir)
 	if _, err := os.Stat(filepath.Join(installDir, ".molt", "receipt.json")); err != nil {
 		return fmt.Errorf("not installed at %s — run %q first",
-			installDir, filepath.Base(os.Args[0])+" install")
+			installDir, filepath.Base(os.Args[0])+" --install")
 	}
 
 	// Optional launch-time integrity check.
@@ -774,7 +784,7 @@ func runUserTask(m *Manifest, name string, args []string) error {
 	}
 	installDir := resolveInstallDir(m.AppName, m.Version)
 	if _, err := os.Stat(filepath.Join(installDir, ".molt", "receipt.json")); err != nil {
-		return fmt.Errorf("not installed; run `%s molt install` first", m.AppName)
+		return fmt.Errorf("not installed; run `%s --install` first", m.AppName)
 	}
 	pythonBin := findPython(installDir)
 
@@ -1271,7 +1281,15 @@ func runPip(pip string, args []string, cwd string, verbose bool) error {
 // the hermetic install. Strips PYTHONHOME (breaks venv stdlib), prepends
 // venv/bin to PATH, applies molt.yaml env block then per-command overrides.
 func buildExecEnv(installDir string, m *Manifest, overrides map[string]string) []string {
+	// Build PYTHONPATH from the install root + a `src/` subdir if present.
+	// Projects scaffolded with `molt init --template src` ship their code
+	// under <installDir>/src/<pkg>/; we need that on PYTHONPATH so
+	// `python -m <pkg>` works. Flat-layout projects (main.py at the root)
+	// just use <installDir> alone.
 	srcDir := installDir
+	if st, err := os.Stat(filepath.Join(installDir, "src")); err == nil && st.IsDir() {
+		srcDir = filepath.Join(installDir, "src") + string(os.PathListSeparator) + installDir
+	}
 	venvDir := filepath.Join(installDir, ".venv")
 	venvBin := filepath.Join(venvDir, "bin")
 	if runtime.GOOS == "windows" {
