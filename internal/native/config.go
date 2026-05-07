@@ -366,6 +366,15 @@ type RustConfig struct {
 	// dependency. Default ["extension-module"]. If you add e.g. "abi3-py39"
 	// the generated cdylib becomes ABI-stable across Python versions.
 	Pyo3Features []string
+
+	// AutoPrelude controls whether molt prepends `use pyo3::prelude::*;`
+	// (and a couple of related types) to the user's .rs file at build
+	// time. Implemented by writing a tiny lib.rs wrapper in the build
+	// directory that does the imports and `include!`s the user's source.
+	// Skipped automatically when the file already contains a `use pyo3`
+	// line. Default true. Disable with auto_prelude = false to keep the
+	// user's file as the literal crate root.
+	AutoPrelude bool
 }
 
 // LoadRustConfig reads [tool.molt.rust] from pyproject.toml in projectDir.
@@ -374,6 +383,7 @@ func LoadRustConfig(projectDir string) RustConfig {
 	cfg := RustConfig{
 		Pyo3Version:  "0.24",
 		Pyo3Features: []string{"extension-module"},
+		AutoPrelude:  true,
 	}
 
 	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
@@ -410,6 +420,9 @@ func LoadRustConfig(projectDir string) RustConfig {
 			if arr := parseTOMLStringArray(val); arr != nil {
 				cfg.Pyo3Features = arr
 			}
+		case "auto_prelude":
+			v := strings.ToLower(strings.Trim(val, `"'`))
+			cfg.AutoPrelude = !(v == "false" || v == "0" || v == "no")
 		}
 	}
 	return cfg
