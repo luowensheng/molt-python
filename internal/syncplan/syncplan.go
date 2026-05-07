@@ -265,7 +265,7 @@ func Sync(projectDir string, opts Options) error {
 	// and symlinked into projstate.Dir(p)/cython/. That dir gets appended
 	// to syspathDirs *before* sitecustomize/shim generation so the new
 	// extension modules are importable from the very next `molt run`.
-	if cythonDir, err := compileCythonIfPresent(absProj, pyExe, abi, syspathDirs, opts.Verbose); err != nil {
+	if cythonDir, err := compileNativeIfPresent(absProj, pyExe, abi, syspathDirs, opts.Verbose); err != nil {
 		return err
 	} else if cythonDir != "" {
 		// Prepend so Python resolves the cython package's __init__.py FIRST.
@@ -275,7 +275,7 @@ func Sync(projectDir string, opts Options) error {
 		syspathDirs = append([]string{cythonDir}, syspathDirs...)
 		spec.Syspath = syspathDirs
 		if err := syspath.Save(spec); err != nil {
-			return fmt.Errorf("re-write syspath.json after cython: %w", err)
+			return fmt.Errorf("re-write syspath.json after native build: %w", err)
 		}
 	}
 
@@ -420,52 +420,116 @@ func readMoltSection(projectDir string) (*MoltSection, error) {
 	return out, nil
 }
 
-// compileCythonIfPresent runs the Cython pipeline (discover, compile,
-// place project view, write native.json) when the project has any .pyx
-// files. Returns the absolute cython output dir to append to syspath, or
-// "" when nothing was compiled (no .pyx files, or Cython/cc unavailable).
+// compileNativeIfPresent runs the full native build pipeline:
+//  1. Auto-discover .pyx (Cython) and .rs (Rust/PyO3) files.
+//  2. Build [[tool.molt.native]] external modules (Rust projects, C, C++, etc.).
 //
-// Errors propagate only for hard failures (a .pyx file with a syntax
-// error, a C compile that fails). Soft cases — Cython not in deps, no C
-// compiler on PATH — print a warning and return "".
-func compileCythonIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDirs []string, verbose bool) (string, error) {
+// Returns the absolute cython view dir to prepend to syspath, or "" when
+// nothing was compiled. Hard failures (syntax errors, build failures) are
+// returned as errors. Soft cases (Cython/cargo not installed, no C compiler)
+// print a warning and continue.
+func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDirs []string, verbose bool) (string, error) {
 	cfg := native.LoadCythonConfig(projectDir)
+
+	// ── Step 1: auto-discovered .pyx and .rs files ──────────────────────────
 	sources, err := native.Discover(projectDir, cfg)
 	if err != nil {
-		return "", fmt.Errorf("cython discover: %w", err)
+		return "", fmt.Errorf("native discover: %w", err)
 	}
-	if len(sources) == 0 {
-		return "", nil
-	}
-	if !native.CythonAvailable(pyExe, syspathDirs) {
-		fmt.Fprintln(os.Stderr,
-			"warn: .pyx files found but Cython is not installed in this project — add it with `molt add Cython`")
-		return "", nil
-	}
-	cc, err := native.CCompiler()
+
+	extSuffix, err := native.PythonExtSuffix(pyExe)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warn: skipping Cython build: %v\n", err)
-		return "", nil
+		return "", err
 	}
 	includeDir, err := native.PythonIncludeDir(pyExe)
 	if err != nil {
 		return "", err
 	}
-	extSuffix, err := native.PythonExtSuffix(pyExe)
+
+	var allArts []native.Artifact
+
+	if len(sources) > 0 {
+		// Separate Cython and Rust sources for availability checks.
+		var pyxSources, rsSources []native.Source
+		for _, s := range sources {
+			if s.Lang == "rust" {
+				rsSources = append(rsSources, s)
+			} else {
+				pyxSources = append(pyxSources, s)
+			}
+		}
+
+		if len(pyxSources) > 0 {
+			if !native.CythonAvailable(pyExe, syspathDirs) {
+				fmt.Fprintln(os.Stderr,
+					"warn: .pyx files found but Cython is not installed — add it with `molt add Cython`")
+				pyxSources = nil
+			} else {
+				cc, err := native.CCompiler()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warn: skipping Cython build: %v\n", err)
+					pyxSources = nil
+				} else {
+					if verbose {
+						fmt.Printf("→ cython: %d source(s)\n", len(pyxSources))
+					}
+					arts, err := native.Compile(pyxSources, *abi, pyExe, cc, includeDir, extSuffix, syspathDirs, verbose, cfg)
+					if err != nil {
+						return "", err
+					}
+					allArts = append(allArts, arts...)
+				}
+			}
+		}
+
+		if len(rsSources) > 0 {
+			if !native.CargoAvailable() {
+				fmt.Fprintln(os.Stderr,
+					"warn: .rs files found but cargo is not on PATH — install Rust from https://rustup.rs")
+			} else {
+				if verbose {
+					fmt.Printf("→ rust:   %d source(s)\n", len(rsSources))
+				}
+				arts, err := native.Compile(rsSources, *abi, pyExe, "", includeDir, extSuffix, syspathDirs, verbose, cfg)
+				if err != nil {
+					return "", err
+				}
+				allArts = append(allArts, arts...)
+			}
+		}
+	}
+
+	// ── Step 2: [[tool.molt.native]] external modules ───────────────────────
+	extMods, err := native.LoadExternalModules(projectDir, includeDir)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "warn: load external modules: %v\n", err)
+	} else if len(extMods) > 0 {
+		abiTag := abi.AbiTag
+		plat := ""
+		for _, p := range abi.Platforms {
+			if p != "any" && p != "" {
+				plat = p
+				break
+			}
+		}
+		if verbose {
+			fmt.Printf("→ native: %d external module(s)\n", len(extMods))
+		}
+		extArts, _, err := native.CheckAndRebuild(extMods, projectDir, abiTag, plat, extSuffix, verbose)
+		if err != nil {
+			return "", err
+		}
+		allArts = append(allArts, extArts...)
+	}
+
+	if len(allArts) == 0 {
+		return "", nil
+	}
+
+	if err := native.PlaceProjectView(projectDir, allArts); err != nil {
 		return "", err
 	}
-	if verbose {
-		fmt.Printf("→ cython: %d source(s)\n", len(sources))
-	}
-	arts, err := native.Compile(sources, *abi, pyExe, cc, includeDir, extSuffix, syspathDirs, verbose, cfg)
-	if err != nil {
-		return "", err
-	}
-	if err := native.PlaceProjectView(projectDir, arts); err != nil {
-		return "", err
-	}
-	if err := writeNativeManifest(projectDir, arts); err != nil {
+	if err := writeNativeManifest(projectDir, allArts); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: write native.json: %v\n", err)
 	}
 	return filepath.Join(projstate.Dir(projectDir), "cython"), nil
@@ -484,8 +548,14 @@ func writeNativeManifest(projectDir string, arts []native.Artifact) error {
 		LastBuilt string `json:"last_built"`
 	}
 	doc := struct {
-		Cython map[string]entry `json:"cython,omitempty"`
-	}{Cython: map[string]entry{}}
+		Cython   map[string]entry `json:"cython,omitempty"`
+		Rust     map[string]entry `json:"rust,omitempty"`
+		External map[string]entry `json:"external,omitempty"`
+	}{
+		Cython:   map[string]entry{},
+		Rust:     map[string]entry{},
+		External: map[string]entry{},
+	}
 	now := nowRFC3339()
 	for _, a := range arts {
 		rel, _ := filepath.Rel(projectDir, a.Source.Path)
@@ -494,7 +564,7 @@ func writeNativeManifest(projectDir string, arts []native.Artifact) error {
 			soRel += a.Source.PackagePath + "/"
 		}
 		soRel += a.SoName
-		doc.Cython[a.Source.Module] = entry{
+		e := entry{
 			Hash:      a.Hash,
 			Src:       rel,
 			So:        soRel,
@@ -503,12 +573,55 @@ func writeNativeManifest(projectDir string, arts []native.Artifact) error {
 			Platform:  a.Plat,
 			LastBuilt: now,
 		}
+		switch a.Source.Lang {
+		case "rust":
+			doc.Rust[a.Source.Module] = e
+		case "external":
+			doc.External[a.Source.Module] = e
+		default:
+			doc.Cython[a.Source.Module] = e
+		}
 	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(projstate.Native(projectDir), data, 0o644)
+}
+
+// NativeChanged reports whether any native source (.pyx, .rs, or
+// [[tool.molt.native]] entry) is newer than the last native.json written by
+// sync. Uses mtime comparison — fast and dependency-free.
+// Returns false on any error (conservative: avoids spurious rebuilds).
+func NativeChanged(projectDir string) bool {
+	nativeJsonPath := projstate.Native(projectDir)
+	info, err := os.Stat(nativeJsonPath)
+	if err != nil {
+		// No native.json yet — changed only if there are sources to compile.
+		cfg := native.LoadCythonConfig(projectDir)
+		srcs, _ := native.Discover(projectDir, cfg)
+		extMods, _ := native.LoadExternalModules(projectDir, "")
+		return len(srcs) > 0 || len(extMods) > 0
+	}
+	cutoff := info.ModTime()
+
+	// Auto-discovered .pyx and .rs sources.
+	cfg := native.LoadCythonConfig(projectDir)
+	srcs, _ := native.Discover(projectDir, cfg)
+	for _, s := range srcs {
+		if fi, err := os.Stat(s.Path); err == nil && fi.ModTime().After(cutoff) {
+			return true
+		}
+	}
+
+	// [[tool.molt.native]] external modules.
+	extMods, _ := native.LoadExternalModules(projectDir, "")
+	for _, m := range extMods {
+		if native.AnyFileNewerThan(m.SrcDir, cutoff) {
+			return true
+		}
+	}
+	return false
 }
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }

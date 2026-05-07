@@ -25,6 +25,7 @@ import (
 	"molt/internal/python"
 	"molt/internal/store"
 	"molt/internal/tooldb"
+	"molt/internal/nativepreset"
 	"molt/internal/syncplan"
 	"molt/internal/syspath"
 	"molt/internal/tasks"
@@ -130,6 +131,10 @@ func main() {
 		err = cmdWhere(os.Args[2:])
 	case "editor":
 		err = cmdEditor(os.Args[2:])
+
+	// ── Native presets ────────────────────────────────────────────────────
+	case "native-preset":
+		err = cmdNativePreset(os.Args[2:])
 
 	// ── Global package store ──────────────────────────────────────────────
 	case "gc":
@@ -965,6 +970,7 @@ func runDefaultEntryWithArgs(extraArgs []string) error {
 // runPythonScript execs spec.Python on a script path under the project env.
 // Used for the `molt run main.py` single-file flow.
 func runPythonScript(projectDir, script string, scriptArgs []string) error {
+	nativeCheckAndSync(projectDir)
 	spec, err := syspath.Load(projectDir)
 	if err != nil {
 		return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
@@ -973,6 +979,19 @@ func runPythonScript(projectDir, script string, scriptArgs []string) error {
 	env := spec.BuildEnv(os.Environ())
 	argv := append([]string{spec.Python, abs}, scriptArgs...)
 	return syscall.Exec(spec.Python, argv, env)
+}
+
+// nativeCheckAndSync checks whether any native sources (.pyx, .rs, or
+// [[tool.molt.native]] entries) have changed since the last sync. If so, it
+// runs a full sync to recompile and re-wire the syspath. Fast no-op when
+// nothing changed.
+func nativeCheckAndSync(projectDir string) {
+	if syncplan.NativeChanged(projectDir) {
+		fmt.Fprintln(os.Stderr, "→ native sources changed, recompiling…")
+		if err := syncplan.Sync(projectDir, syncplan.Options{Verbose: true}); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: native sync: %v\n", err)
+		}
+	}
 }
 
 // ensureSynced runs `molt sync` if .molt/syspath.json is missing. No-op when
@@ -1002,6 +1021,9 @@ func runExec(projectDir string, argv []string) error {
 		return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
 	}
 	bin := argv[0]
+	if bin == "python" || bin == "python3" {
+		nativeCheckAndSync(projectDir)
+	}
 	resolved := ""
 	if bin == "python" || bin == "python3" {
 		resolved = spec.Python
@@ -1997,6 +2019,75 @@ func resolvePythonVersion(version string) (string, error) {
 			version, err, strings.TrimSpace(string(out)))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func cmdNativePreset(args []string) error {
+	if len(args) == 0 {
+		fmt.Println("usage: molt native-preset <list|show|add|remove> [args]")
+		return nil
+	}
+	switch args[0] {
+	case "list":
+		presets, err := nativepreset.Load()
+		if err != nil {
+			return err
+		}
+		if len(presets) == 0 {
+			fmt.Println("no presets defined")
+			return nil
+		}
+		for _, p := range presets {
+			fmt.Printf("%-12s  build: %s\n", p.Name, p.Build)
+		}
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt native-preset show <name>")
+		}
+		p, err := nativepreset.Find(args[1])
+		if err != nil {
+			return err
+		}
+		if p == nil {
+			return fmt.Errorf("preset %q not found", args[1])
+		}
+		fmt.Printf("name:         %s\n", p.Name)
+		fmt.Printf("build:        %s\n", p.Build)
+		fmt.Printf("output:       %s\n", p.Output)
+		if len(p.SrcPatterns) > 0 {
+			fmt.Printf("src_patterns: %s\n", strings.Join(p.SrcPatterns, ", "))
+		}
+	case "add":
+		fs := flag.NewFlagSet("native-preset add", flag.ContinueOnError)
+		name := fs.String("name", "", "preset name (required)")
+		build := fs.String("build", "", "build command template (required)")
+		output := fs.String("output", "", "output path template (required)")
+		var srcPats []string
+		fs.Func("src-patterns", "glob patterns for change detection (comma-separated)", func(s string) error {
+			for _, p := range strings.Split(s, ",") {
+				if p = strings.TrimSpace(p); p != "" {
+					srcPats = append(srcPats, p)
+				}
+			}
+			return nil
+		})
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *name == "" || *build == "" || *output == "" {
+			return fmt.Errorf("--name, --build, and --output are required")
+		}
+		return nativepreset.Add(nativepreset.Preset{
+			Name: *name, Build: *build, Output: *output, SrcPatterns: srcPats,
+		})
+	case "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt native-preset remove <name>")
+		}
+		return nativepreset.Remove(args[1])
+	default:
+		return fmt.Errorf("unknown native-preset command %q", args[0])
+	}
+	return nil
 }
 
 // cleanPythonEnv returns parent with VIRTUAL_ENV / PYTHONHOME / PYTHONPATH

@@ -473,16 +473,35 @@ func reinjectIntegrityIntoPayload(payloadPath string, m *types.IntegrityManifest
 }
 
 // nativeManifestDoc mirrors the JSON shape written by syncplan's
-// writeNativeManifest. Only what we need at build time.
+// writeNativeManifest. Covers Cython, Rust, and external (generic) modules.
 type nativeManifestDoc struct {
-	Cython map[string]struct {
-		Hash     string `json:"hash"`
-		Src      string `json:"src"`
-		So       string `json:"so"`
-		Module   string `json:"module"`
-		Abi      string `json:"abi"`
-		Platform string `json:"platform"`
-	} `json:"cython"`
+	Cython   map[string]nativeEntry `json:"cython"`
+	Rust     map[string]nativeEntry `json:"rust"`
+	External map[string]nativeEntry `json:"external"`
+}
+
+type nativeEntry struct {
+	Hash     string `json:"hash"`
+	Src      string `json:"src"`
+	So       string `json:"so"`
+	Module   string `json:"module"`
+	Abi      string `json:"abi"`
+	Platform string `json:"platform"`
+}
+
+// allEntries flattens all three buckets into one slice.
+func (d nativeManifestDoc) allEntries() []nativeEntry {
+	var out []nativeEntry
+	for _, e := range d.Cython {
+		out = append(out, e)
+	}
+	for _, e := range d.Rust {
+		out = append(out, e)
+	}
+	for _, e := range d.External {
+		out = append(out, e)
+	}
+	return out
 }
 
 // injectCythonArtifacts reads projstate.Dir(p)/native.json and appends each
@@ -507,7 +526,8 @@ func injectCythonArtifacts(payloadPath, projectPath, targetOS, targetArch string
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return fmt.Errorf("parse native.json: %w", err)
 	}
-	if len(doc.Cython) == 0 {
+	entries := doc.allEntries()
+	if len(entries) == 0 {
 		return nil
 	}
 	if err := refuseCrossBuild(doc, targetOS, targetArch); err != nil {
@@ -518,7 +538,7 @@ func injectCythonArtifacts(payloadPath, projectPath, targetOS, targetArch string
 	type pair struct{ tarPath, diskPath string }
 	var pairs []pair
 	stateRoot := projstate.Dir(projectPath)
-	for _, e := range doc.Cython {
+	for _, e := range entries {
 		// e.So is "cython/<pkg>/<file>.so" (project-view path); resolve
 		// to the symlinked .so under projstate.Dir(p).
 		viewPath := filepath.Join(stateRoot, filepath.FromSlash(e.So))
@@ -600,15 +620,15 @@ func injectCythonArtifacts(payloadPath, projectPath, targetOS, targetArch string
 // are ignored — they're the macOS deployment-target floor, not the host
 // version, and don't matter for a build performed on this machine.
 func refuseCrossBuild(doc nativeManifestDoc, targetOS, targetArch string) error {
-	for mod, e := range doc.Cython {
+	for _, e := range doc.allEntries() {
 		if e.Platform == "" {
 			continue
 		}
 		if !platCompatible(e.Platform, targetOS, targetArch) {
 			return fmt.Errorf(
-				"cython artefact %s was compiled for %s; cannot embed in a %s/%s build "+
-					"(run molt build on the target host, or remove the .pyx files)",
-				mod, e.Platform, targetOS, targetArch)
+				"native artefact %s was compiled for %s; cannot embed in a %s/%s build "+
+					"(run molt build on the target host, or remove native source files)",
+				e.Module, e.Platform, targetOS, targetArch)
 		}
 	}
 	return nil

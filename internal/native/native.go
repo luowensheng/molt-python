@@ -78,13 +78,24 @@ func Discover(projectDir string, cfg CythonConfig) ([]Source, error) {
 			}
 			if d.IsDir() {
 				name := d.Name()
-				if name == "__pycache__" || strings.HasPrefix(name, ".") {
+				if name == "__pycache__" || name == "target" || strings.HasPrefix(name, ".") {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if !strings.HasSuffix(p, ".pyx") {
+			isPyx := strings.HasSuffix(p, ".pyx")
+			isRs := strings.HasSuffix(p, ".rs")
+			if !isPyx && !isRs {
 				return nil
+			}
+			// For .rs files, only include PyO3 modules.
+			lang := "cython"
+			if isRs {
+				mode, err := DetectRustMode(p)
+				if err != nil || mode != RustModePyO3 {
+					return nil
+				}
+				lang = "rust"
 			}
 			absP, err := filepath.Abs(p)
 			if err != nil {
@@ -107,7 +118,7 @@ func Discover(projectDir string, cfg CythonConfig) ([]Source, error) {
 				mod = strings.ReplaceAll(pkgPath, "/", ".") + "." + basename
 			}
 			out = append(out, Source{
-				Lang:        "cython",
+				Lang:        lang,
 				Path:        absP,
 				Module:      mod,
 				PackagePath: pkgPath,
