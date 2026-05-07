@@ -14,13 +14,13 @@ import (
 // Compile runs the appropriate compiler for each source not already in cache.
 // Dispatches on s.Lang: "cython" → Cython+cc pipeline, "rust" → cargo.
 // Returns one Artifact per input source (cache hits inclusive).
-func Compile(sources []Source, abi pyabi.Info, pyExe, cc, includeDir, extSuffix string, syspathDirs []string, verbose bool, cfg CythonConfig) ([]Artifact, error) {
+func Compile(sources []Source, abi pyabi.Info, pyExe, cc, includeDir, extSuffix string, syspathDirs []string, verbose bool, cfg CythonConfig, rust RustConfig) ([]Artifact, error) {
 	plat := platTag(abi)
 	abiTag := abi.AbiTag
 	out := make([]Artifact, 0, len(sources))
 	for _, s := range sources {
 		if s.Lang == "rust" {
-			art, err := BuildRustFile(s, abiTag, plat, extSuffix, verbose)
+			art, err := BuildRustFile(s, abiTag, plat, extSuffix, verbose, rust)
 			if err != nil {
 				return nil, err
 			}

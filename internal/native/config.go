@@ -184,6 +184,70 @@ func LoadCythonConfig(projectDir string) CythonConfig {
 	return cfg
 }
 
+// RustConfig holds optional overrides read from [tool.molt.rust] in
+// pyproject.toml. Used by BuildRustFile to populate the auto-generated
+// Cargo.toml for single-.rs PyO3 builds. All fields have defaults so
+// callers never need to check for zero values.
+type RustConfig struct {
+	// Pyo3Version is the version requirement written into the generated
+	// Cargo.toml under [dependencies]. Default "0.24" (the first pyo3
+	// release supporting Python 3.14). Bump in pyproject.toml when newer
+	// Python versions need newer pyo3 support.
+	Pyo3Version string
+
+	// Pyo3Features overrides the cargo features enabled on the pyo3
+	// dependency. Default ["extension-module"]. If you add e.g. "abi3-py39"
+	// the generated cdylib becomes ABI-stable across Python versions.
+	Pyo3Features []string
+}
+
+// LoadRustConfig reads [tool.molt.rust] from pyproject.toml in projectDir.
+// Missing file or section returns defaults silently.
+func LoadRustConfig(projectDir string) RustConfig {
+	cfg := RustConfig{
+		Pyo3Version:  "0.24",
+		Pyo3Features: []string{"extension-module"},
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
+	if err != nil {
+		return cfg
+	}
+
+	inSection := false
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if ci := strings.Index(line, " #"); ci >= 0 {
+			line = strings.TrimSpace(line[:ci])
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inSection = (line == "[tool.molt.rust]")
+			continue
+		}
+		if !inSection || line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		switch key {
+		case "pyo3_version":
+			if v := strings.Trim(val, `"'`); v != "" {
+				cfg.Pyo3Version = v
+			}
+		case "pyo3_features":
+			if arr := parseTOMLStringArray(val); arr != nil {
+				cfg.Pyo3Features = arr
+			}
+		}
+	}
+	return cfg
+}
+
 // parseTOMLStringArray parses a TOML inline string array like ["a", "b"] or
 // ['a', 'b']. Returns nil when the value doesn't look like an array so the
 // caller can leave the default in place.

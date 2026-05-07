@@ -43,13 +43,21 @@ func CargoAvailable() bool {
 }
 
 // hashRustFile produces a cache key for a single .rs source file.
-func hashRustFile(content []byte, abiTag, plat string) string {
+// pyo3 version + features participate so bumping pyproject.toml's
+// [tool.molt.rust] invalidates stale cached binaries.
+func hashRustFile(content []byte, abiTag, plat string, rust RustConfig) string {
 	h := sha256.New()
 	h.Write(content)
 	h.Write([]byte{0})
 	h.Write([]byte(abiTag))
 	h.Write([]byte{0})
 	h.Write([]byte(plat))
+	h.Write([]byte{0})
+	h.Write([]byte(rust.Pyo3Version))
+	for _, f := range rust.Pyo3Features {
+		h.Write([]byte{0})
+		h.Write([]byte(f))
+	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
@@ -137,7 +145,12 @@ func fileExists(p string) bool {
 
 // generateCargo writes a minimal Cargo.toml for a single .rs PyO3 file.
 // The [lib] path is absolute so cargo can compile the file from the build dir.
-func generateCargo(buildDir, rsPath, module string) error {
+// pyo3 version and features come from [tool.molt.rust] in pyproject.toml.
+func generateCargo(buildDir, rsPath, module string, rust RustConfig) error {
+	feats := make([]string, len(rust.Pyo3Features))
+	for i, f := range rust.Pyo3Features {
+		feats[i] = fmt.Sprintf("%q", f)
+	}
 	content := fmt.Sprintf(`[package]
 name = %q
 version = "0.1.0"
@@ -149,20 +162,20 @@ crate-type = ["cdylib"]
 path = %q
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
-`, module, module, rsPath)
+pyo3 = { version = %q, features = [%s] }
+`, module, module, rsPath, rust.Pyo3Version, strings.Join(feats, ", "))
 	return os.WriteFile(filepath.Join(buildDir, "Cargo.toml"), []byte(content), 0o644)
 }
 
 // BuildRustFile compiles a single .rs file (PyO3 mode) via cargo.
 // Generates a Cargo.toml in ~/.molt/native/rust-build/ and runs cargo there
 // so the user's project directory is never modified.
-func BuildRustFile(s Source, abiTag, plat, extSuffix string, verbose bool) (Artifact, error) {
+func BuildRustFile(s Source, abiTag, plat, extSuffix string, verbose bool, rust RustConfig) (Artifact, error) {
 	content, err := os.ReadFile(s.Path)
 	if err != nil {
 		return Artifact{}, fmt.Errorf("read %s: %w", s.Path, err)
 	}
-	hash := hashRustFile(content, abiTag, plat)
+	hash := hashRustFile(content, abiTag, plat, rust)
 	soName := s.Basename + extSuffix
 
 	if hit, cachedPath, err := hasCacheEntry(hash, soName); err != nil {
@@ -188,12 +201,17 @@ func BuildRustFile(s Source, abiTag, plat, extSuffix string, verbose bool) (Arti
 	if err := os.MkdirAll(buildDir, 0o755); err != nil {
 		return Artifact{}, err
 	}
-	if err := generateCargo(buildDir, s.Path, s.Module); err != nil {
+	if err := generateCargo(buildDir, s.Path, s.Module, rust); err != nil {
 		return Artifact{}, fmt.Errorf("generate Cargo.toml for %s: %w", s.Path, err)
 	}
 
 	cmd := exec.Command("cargo", "build", "--release")
 	cmd.Dir = buildDir
+	// Allow building against Python versions newer than pyo3 officially
+	// supports — pyo3's build script bails otherwise. Using the stable
+	// ABI is the upstream-recommended workaround and only kicks in when
+	// the runtime Python is actually newer than pyo3's max.
+	cmd.Env = append(os.Environ(), "PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return Artifact{}, fmt.Errorf("cargo build %s:\n%s", s.Path, string(out))
 	}
