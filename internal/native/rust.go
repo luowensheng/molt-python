@@ -143,15 +143,21 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// generateCargo writes a minimal Cargo.toml for a single .rs PyO3 file.
-// The [lib] path is absolute so cargo can compile the file from the build dir.
-// pyo3 version and features come from [tool.molt.rust] in pyproject.toml.
+// generateCargo writes a minimal Cargo.toml + build.rs for a single .rs
+// PyO3 file. The [lib] path is absolute so cargo compiles the user's source
+// from the build dir. pyo3 version and features come from [tool.molt.rust].
+//
+// The build.rs calls pyo3_build_config::add_extension_module_link_args(),
+// which is required on macOS (-undefined dynamic_lookup) and silently does
+// the right thing on Linux / Windows. Without it, linking a cdylib that
+// uses the `extension-module` feature fails on macOS with hundreds of
+// undefined `_Py*` symbols.
 func generateCargo(buildDir, rsPath, module string, rust RustConfig) error {
 	feats := make([]string, len(rust.Pyo3Features))
 	for i, f := range rust.Pyo3Features {
 		feats[i] = fmt.Sprintf("%q", f)
 	}
-	content := fmt.Sprintf(`[package]
+	cargo := fmt.Sprintf(`[package]
 name = %q
 version = "0.1.0"
 edition = "2021"
@@ -163,8 +169,18 @@ path = %q
 
 [dependencies]
 pyo3 = { version = %q, features = [%s] }
-`, module, module, rsPath, rust.Pyo3Version, strings.Join(feats, ", "))
-	return os.WriteFile(filepath.Join(buildDir, "Cargo.toml"), []byte(content), 0o644)
+
+[build-dependencies]
+pyo3-build-config = %q
+`, module, module, rsPath, rust.Pyo3Version, strings.Join(feats, ", "), rust.Pyo3Version)
+	if err := os.WriteFile(filepath.Join(buildDir, "Cargo.toml"), []byte(cargo), 0o644); err != nil {
+		return err
+	}
+	const buildRs = `fn main() {
+    pyo3_build_config::add_extension_module_link_args();
+}
+`
+	return os.WriteFile(filepath.Join(buildDir, "build.rs"), []byte(buildRs), 0o644)
 }
 
 // BuildRustFile compiles a single .rs file (PyO3 mode) via cargo.
