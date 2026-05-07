@@ -432,12 +432,19 @@ func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDi
 	cfg := native.LoadCythonConfig(projectDir)
 	rustCfg := native.LoadRustConfig(projectDir)
 	zigCfg := native.LoadZigConfig(projectDir)
+	kernCfg := native.LoadKernelConfig(projectDir)
 
 	// ── Step 1: auto-discovered .pyx and .rs files ──────────────────────────
 	sources, err := native.Discover(projectDir, cfg)
 	if err != nil {
 		return "", fmt.Errorf("native discover: %w", err)
 	}
+	// Also discover kernel manifests (*.molt.toml) — language-agnostic.
+	kernels, err := native.DiscoverKernels(projectDir, kernCfg)
+	if err != nil {
+		return "", fmt.Errorf("kernel discover: %w", err)
+	}
+	sources = append(sources, kernels...)
 
 	extSuffix, err := native.PythonExtSuffix(pyExe)
 	if err != nil {
@@ -451,12 +458,15 @@ func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDi
 	var allArts []native.Artifact
 
 	if len(sources) > 0 {
-		// Separate Cython and Rust sources for availability checks.
-		var pyxSources, rsSources []native.Source
+		// Separate by language for per-toolchain availability checks.
+		var pyxSources, rsSources, kernelSources []native.Source
 		for _, s := range sources {
-			if s.Lang == "rust" {
+			switch s.Lang {
+			case "rust":
 				rsSources = append(rsSources, s)
-			} else {
+			case "kernel":
+				kernelSources = append(kernelSources, s)
+			default:
 				pyxSources = append(pyxSources, s)
 			}
 		}
@@ -498,6 +508,17 @@ func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDi
 				}
 				allArts = append(allArts, arts...)
 			}
+		}
+
+		if len(kernelSources) > 0 {
+			if verbose {
+				fmt.Printf("→ kernel: %d module(s)\n", len(kernelSources))
+			}
+			arts, err := native.Compile(kernelSources, projectDir, *abi, pyExe, "", includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg, zigCfg)
+			if err != nil {
+				return "", err
+			}
+			allArts = append(allArts, arts...)
 		}
 	}
 

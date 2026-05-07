@@ -27,6 +27,14 @@ func Compile(sources []Source, projectDir string, abi pyabi.Info, pyExe, cc, inc
 			out = append(out, art)
 			continue
 		}
+		if s.Lang == "kernel" {
+			art, err := BuildKernelModule(s, pyExe, abiTag, plat, extSuffix, verbose, zigCfg, includeDir)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, art)
+			continue
+		}
 
 		content, err := os.ReadFile(s.Path)
 		if err != nil {

@@ -46,6 +46,11 @@ type Artifact struct {
 	SoName string // "_inner.cpython-311-darwin.so" — full PEP 3149 name
 	AbiTag string
 	Plat   string
+	// Siblings are extra files (e.g. <name>.pyi for IDE/typechecker
+	// support) that should be staged into the project view next to the
+	// .so. Each entry is an absolute path; the staged filename is
+	// filepath.Base(entry). Only used by zig kernels so far.
+	Siblings []string
 }
 
 // Discover walks the project for native sources. Scans every root listed in
@@ -370,6 +375,21 @@ func PlaceProjectView(projectDir string, artifacts []Artifact) error {
 		} else {
 			if err := os.Symlink(a.Path, dest); err != nil {
 				return fmt.Errorf("symlink %s → %s: %w", dest, a.Path, err)
+			}
+		}
+		// Stage sibling files (e.g. .pyi stubs) alongside the .so under
+		// the same package path, using their basenames.
+		for _, sib := range a.Siblings {
+			sibDest := filepath.Join(dir, filepath.Base(sib))
+			_ = os.Remove(sibDest)
+			if runtime.GOOS == "windows" {
+				if err := copyFile(sib, sibDest); err != nil {
+					return err
+				}
+			} else {
+				if err := os.Symlink(sib, sibDest); err != nil {
+					return fmt.Errorf("symlink %s → %s: %w", sibDest, sib, err)
+				}
 			}
 		}
 	}

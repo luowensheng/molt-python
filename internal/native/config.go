@@ -351,6 +351,91 @@ func LoadZigConfig(projectDir string) ZigConfig {
 	return cfg
 }
 
+// KernelConfig holds settings for manifest-driven kernel modules,
+// read from [tool.molt.native_kernel] in pyproject.toml.
+//
+// A "kernel" is a manifest file (`<name>.molt.toml`) that describes a
+// Python module's exported functions. molt finds the manifest, looks
+// for a sibling source file matching one of `source_extensions`,
+// generates a C glue layer from the manifest, compiles the source,
+// and links them into an importable .so plus a .pyi stub.
+//
+// The discovery is manifest-first and language-agnostic: molt doesn't
+// scan for .zig or .rs etc. directly — it scans for manifests and the
+// configured source extensions only resolve siblings.
+type KernelConfig struct {
+	// Paths is project-relative dirs to scan for manifest files.
+	// Default: [".", "src"]. Mirrors CythonConfig.Paths.
+	Paths []string
+
+	// ManifestDir is an optional centralised directory for manifest
+	// files. When set, molt looks here in addition to scanning Paths.
+	// Sibling manifests still win on basename collision.
+	ManifestDir string
+
+	// SourceExtensions is the list of file extensions molt will try
+	// when matching a manifest to its source file. Default:
+	// [".zig", ".c", ".cpp", ".cc", ".cxx"]. The first one that has
+	// a sibling matching the manifest's basename wins.
+	SourceExtensions []string
+
+	// ManifestSuffixes is the list of manifest filename suffixes to
+	// recognise. Default: [".molt.toml"]. Future formats (.molt.json,
+	// .molt.yaml) plug in here.
+	ManifestSuffixes []string
+}
+
+// LoadKernelConfig parses [tool.molt.native_kernel] from pyproject.toml.
+func LoadKernelConfig(projectDir string) KernelConfig {
+	cfg := KernelConfig{
+		Paths:            []string{".", "src"},
+		SourceExtensions: []string{".zig", ".c", ".cpp", ".cc", ".cxx"},
+		ManifestSuffixes: []string{".molt.toml"},
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
+	if err != nil {
+		return cfg
+	}
+	inSection := false
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if ci := strings.Index(line, " #"); ci >= 0 {
+			line = strings.TrimSpace(line[:ci])
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inSection = (line == "[tool.molt.native_kernel]")
+			continue
+		}
+		if !inSection || line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		switch key {
+		case "paths":
+			if arr := parseTOMLStringArray(val); arr != nil {
+				cfg.Paths = arr
+			}
+		case "manifest_dir":
+			cfg.ManifestDir = strings.Trim(val, `"'`)
+		case "source_extensions":
+			if arr := parseTOMLStringArray(val); arr != nil {
+				cfg.SourceExtensions = arr
+			}
+		case "manifest_suffixes":
+			if arr := parseTOMLStringArray(val); arr != nil {
+				cfg.ManifestSuffixes = arr
+			}
+		}
+	}
+	return cfg
+}
+
 // RustConfig holds optional overrides read from [tool.molt.rust] in
 // pyproject.toml. Used by BuildRustFile to populate the auto-generated
 // Cargo.toml for single-.rs PyO3 builds. All fields have defaults so
