@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"molt/internal/kernelbuilder"
 )
 
 // NativeModuleConfig is one [[tool.molt.native]] entry from pyproject.toml.
@@ -395,6 +397,12 @@ type KernelConfig struct {
 
 // LoadKernelConfig parses [tool.molt.native_kernel] and the per-extension
 // [tool.molt.native_kernel.build.<ext>] subsections from pyproject.toml.
+//
+// SourceExtensions is auto-extended with any extension that has a
+// configured builder (global ~/.molt/kernel-builders.yaml or per-project
+// override). So `molt kernel-builder add odin --from-template` makes
+// .odin a watched extension automatically — no per-project pyproject
+// edit needed.
 func LoadKernelConfig(projectDir string) KernelConfig {
 	cfg := KernelConfig{
 		Paths:            []string{".", "src"},
@@ -402,9 +410,12 @@ func LoadKernelConfig(projectDir string) KernelConfig {
 		ManifestSuffixes: []string{".molt.toml"},
 		Builders:         map[string]string{},
 	}
+	// Read pyproject.toml if present, otherwise fall through to the
+	// auto-extension block (so global builders still extend the
+	// watched-extensions list even when no pyproject exists).
 	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
 	if err != nil {
-		return cfg
+		return augmentKernelExtensions(cfg)
 	}
 
 	// Section state: "" = not in our section, "main" = [tool.molt.native_kernel],
@@ -461,6 +472,33 @@ func LoadKernelConfig(projectDir string) KernelConfig {
 			if key == "command" {
 				ext := strings.TrimPrefix(section, "build:")
 				cfg.Builders[ext] = strings.Trim(val, `"'`)
+			}
+		}
+	}
+
+	return augmentKernelExtensions(cfg)
+}
+
+// augmentKernelExtensions extends cfg.SourceExtensions with any extension
+// that has a builder configured (per-project or globally), so adding a
+// builder via `molt kernel-builder add <ext>` automatically makes that
+// extension a watched source extension. Dedup keys are trimmed-dot.
+func augmentKernelExtensions(cfg KernelConfig) KernelConfig {
+	seen := map[string]bool{}
+	for _, e := range cfg.SourceExtensions {
+		seen[strings.TrimPrefix(e, ".")] = true
+	}
+	for ext := range cfg.Builders {
+		if !seen[ext] {
+			cfg.SourceExtensions = append(cfg.SourceExtensions, "."+ext)
+			seen[ext] = true
+		}
+	}
+	if globalBuilders, err := kernelbuilder.Load(); err == nil {
+		for _, b := range globalBuilders {
+			if !seen[b.Ext] {
+				cfg.SourceExtensions = append(cfg.SourceExtensions, "."+b.Ext)
+				seen[b.Ext] = true
 			}
 		}
 	}

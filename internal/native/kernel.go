@@ -184,14 +184,14 @@ func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose 
 		manifest.Module = s.Basename
 	}
 
-	// Resolve the sibling source file — required for MVP (pre-built .so
-	// + manifest path is a future extension).
-	srcPath, lang, ok := ResolveSource(s.Path, manifest,
-		[]string{".zig", ".c", ".cpp", ".cc", ".cxx"})
+	// Resolve the sibling source file using whatever extensions are
+	// watched (defaults + any extension with a configured builder).
+	exts := kernCfg.SourceExtensions
+	srcPath, lang, ok := ResolveSource(s.Path, manifest, exts)
 	if !ok {
 		return Artifact{}, fmt.Errorf(
-			"%s: no source file found (looked for %s.{zig,c,cpp,cc,cxx} alongside)",
-			s.Path, s.Basename)
+			"%s: no source file found (tried extensions: %s)",
+			s.Path, strings.Join(exts, " "))
 	}
 	srcData, err := os.ReadFile(srcPath)
 	if err != nil {
