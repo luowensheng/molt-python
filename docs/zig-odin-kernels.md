@@ -528,7 +528,7 @@ To ship this feature:
 - [ ] `internal/native/sigparse_test.go` — parser tests
 - [ ] `internal/native/ctypes_emit_test.go` — emitter tests
 - [ ] `docs/zig-odin-kernels.md` — this file (doc + spec)
-- [ ] At least one example project under `walkthroughs/` showing the
+- [ ] At least one example project under `demos/` showing the
       end-to-end flow for each language
 
 When all are in place and tests pass, the user-facing claim is:

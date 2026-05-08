@@ -3,7 +3,7 @@
 A complete, opinionated tour of every feature molt ships, with examples
 and rationale. This is the document you read once to know what molt
 *does*; for command-by-command precision use [`MANUAL.md`](MANUAL.md);
-for cookbook-style recipes use [`USAGE.md`](../USAGE.md).
+for runnable example projects see [`demos/`](../demos/).
 
 ## Table of contents
 
@@ -1102,7 +1102,7 @@ verification, cross-compile builds.
 
 ## Where to go next
 
-- [`USAGE.md`](../USAGE.md) — cookbook recipes for every common task
+- [`demos/`](../demos/) — six runnable example projects you can `cd` into
 - [`MANUAL.md`](MANUAL.md) — exhaustive command reference
 - [`global-store.md`](global-store.md) — store architecture deep dive
 - [`kernel-modules.md`](kernel-modules.md) — kernel-module reference

@@ -2,8 +2,8 @@
 
 A complete, opinionated tour of every feature molt ships, with examples
 and rationale. This is the document you read once to know what molt
-*does*; for command-by-command precision use [`MANUAL.md`](MANUAL.md);
-for cookbook-style recipes use [`USAGE.md`](../USAGE.md).
+*does*; for command-by-command precision use [`docs/MANUAL.md`](docs/MANUAL.md);
+for runnable example projects see [`demos/`](demos/).
 
 ## Table of contents
 
@@ -1090,13 +1090,13 @@ verification, cross-compile builds.
 
 ## Where to go next
 
-- [`USAGE.md`](../USAGE.md) — cookbook recipes for every common task
-- [`MANUAL.md`](MANUAL.md) — exhaustive command reference
-- [`global-store.md`](global-store.md) — store architecture deep dive
-- [`kernel-modules.md`](kernel-modules.md) — kernel-module reference
-- [`zig-odin-kernels.md`](zig-odin-kernels.md) — design rationale for
+- [`demos/`](demos/) — six runnable example projects
+- [`docs/MANUAL.md`](docs/MANUAL.md) — exhaustive command reference
+- [`docs/global-store.md`](docs/global-store.md) — store architecture deep dive
+- [`docs/kernel-modules.md`](docs/kernel-modules.md) — kernel-module reference
+- [`docs/zig-odin-kernels.md`](docs/zig-odin-kernels.md) — design rationale for
   the manifest-driven kernel pipeline
-- [`native-modules.md`](native-modules.md) — `[[tool.molt.native]]`
+- [`docs/native-modules.md`](docs/native-modules.md) — `[[tool.molt.native]]`
   recipes and presets
 
 For each individual command, `molt <cmd> --help` is built-in.
