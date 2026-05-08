@@ -117,8 +117,12 @@ func main() {
 		err = cmdPython(os.Args[2:])
 
 	// ── Task runner ────────────────────────────────────────────────────────
+	case "exec":
+		err = cmdExec(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
+	case "activate":
+		err = cmdActivate(os.Args[2:])
 	case "task":
 		err = cmdTask(os.Args[2:])
 	case "template":
@@ -979,6 +983,68 @@ func runPythonScript(projectDir, script string, scriptArgs []string) error {
 	env := spec.BuildEnv(os.Environ())
 	argv := append([]string{spec.Python, abs}, scriptArgs...)
 	return syscall.Exec(spec.Python, argv, env)
+}
+
+// cmdExec runs an arbitrary binary from the molt environment, bypassing task
+// lookup. Use `molt exec uvicorn --port 8000` to reach any console-script shim.
+func cmdExec(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: molt exec <command> [args...]")
+	}
+	if err := ensureSynced(projectRoot()); err != nil {
+		return err
+	}
+	return runExec(projectRoot(), args)
+}
+
+// cmdActivate prints shell export commands that wire the molt environment into
+// the caller's current shell session. Run: eval $(molt activate)
+func cmdActivate(args []string) error {
+	fs := flag.NewFlagSet("activate", flag.ExitOnError)
+	shellFlag := fs.String("shell", "", "shell syntax: bash, zsh, fish (default: auto-detect)")
+	fs.Parse(args) //nolint:errcheck
+
+	proj := projectRoot()
+	if err := ensureSynced(proj); err != nil {
+		return err
+	}
+	spec, err := syspath.Load(proj)
+	if err != nil {
+		return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
+	}
+
+	shell := *shellFlag
+	if shell == "" {
+		shell = detectShell()
+	}
+
+	stateDir := spec.StateDir()
+	binDir := filepath.Join(stateDir, syspath.BinDirName)
+	pyPath := strings.Join(append([]string{stateDir}, spec.Syspath...), string(os.PathListSeparator))
+
+	switch shell {
+	case "fish":
+		fmt.Printf("set -x PYTHONPATH %q;\n", pyPath)
+		fmt.Printf("set -x PATH %q $PATH;\n", binDir)
+		fmt.Printf("set -x MOLT_PROJECT %q;\n", proj)
+		fmt.Printf("set -x MOLT_PYTHON %q;\n", spec.Python)
+		fmt.Println("set -e VIRTUAL_ENV 2>/dev/null; true")
+		fmt.Println("set -e PYTHONHOME 2>/dev/null; true")
+	default: // bash / zsh / posix
+		fmt.Printf("export PYTHONPATH=%q\n", pyPath)
+		fmt.Printf("export PATH=%q:\"$PATH\"\n", binDir)
+		fmt.Printf("export MOLT_PROJECT=%q\n", proj)
+		fmt.Printf("export MOLT_PYTHON=%q\n", spec.Python)
+		fmt.Println("unset VIRTUAL_ENV PYTHONHOME 2>/dev/null; true")
+	}
+	return nil
+}
+
+func detectShell() string {
+	if strings.Contains(os.Getenv("SHELL"), "fish") {
+		return "fish"
+	}
+	return "bash"
 }
 
 // nativeCheckAndSync checks whether any native sources (.pyx, .rs, or
