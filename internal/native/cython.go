@@ -14,7 +14,7 @@ import (
 // Compile runs the appropriate compiler for each source not already in cache.
 // Dispatches on s.Lang: "cython" → Cython+cc pipeline, "rust" → cargo.
 // Returns one Artifact per input source (cache hits inclusive).
-func Compile(sources []Source, projectDir string, abi pyabi.Info, pyExe, cc, includeDir, extSuffix string, syspathDirs []string, verbose bool, cfg CythonConfig, rust RustConfig, zigCfg ZigConfig) ([]Artifact, error) {
+func Compile(sources []Source, projectDir string, abi pyabi.Info, pyExe, cc, includeDir, extSuffix string, syspathDirs []string, verbose bool, cfg CythonConfig, rust RustConfig, zigCfg ZigConfig, kernCfg KernelConfig) ([]Artifact, error) {
 	plat := platTag(abi)
 	abiTag := abi.AbiTag
 	out := make([]Artifact, 0, len(sources))
@@ -28,7 +28,7 @@ func Compile(sources []Source, projectDir string, abi pyabi.Info, pyExe, cc, inc
 			continue
 		}
 		if s.Lang == "kernel" {
-			art, err := BuildKernelModule(s, pyExe, abiTag, plat, extSuffix, verbose, zigCfg, includeDir)
+			art, err := BuildKernelModule(s, pyExe, abiTag, plat, extSuffix, verbose, zigCfg, kernCfg, includeDir)
 			if err != nil {
 				return nil, err
 			}

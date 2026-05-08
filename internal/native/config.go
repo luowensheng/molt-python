@@ -383,20 +383,34 @@ type KernelConfig struct {
 	// recognise. Default: [".molt.toml"]. Future formats (.molt.json,
 	// .molt.yaml) plug in here.
 	ManifestSuffixes []string
+
+	// Builders is the per-extension build-command override read from
+	// [tool.molt.native_kernel.build.<ext>] sections. Keys are extension
+	// names without the leading dot ("zig", "odin", "c", ...). Values are
+	// command templates with the same {token} vocabulary as
+	// ~/.molt/kernel-builders.yaml. Project-level overrides beat the
+	// global YAML which beats the built-in defaults.
+	Builders map[string]string
 }
 
-// LoadKernelConfig parses [tool.molt.native_kernel] from pyproject.toml.
+// LoadKernelConfig parses [tool.molt.native_kernel] and the per-extension
+// [tool.molt.native_kernel.build.<ext>] subsections from pyproject.toml.
 func LoadKernelConfig(projectDir string) KernelConfig {
 	cfg := KernelConfig{
 		Paths:            []string{".", "src"},
 		SourceExtensions: []string{".zig", ".c", ".cpp", ".cc", ".cxx"},
 		ManifestSuffixes: []string{".molt.toml"},
+		Builders:         map[string]string{},
 	}
 	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
 	if err != nil {
 		return cfg
 	}
-	inSection := false
+
+	// Section state: "" = not in our section, "main" = [tool.molt.native_kernel],
+	// "build:<ext>" = [tool.molt.native_kernel.build.<ext>].
+	const buildPrefix = "[tool.molt.native_kernel.build."
+	section := ""
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -404,10 +418,18 @@ func LoadKernelConfig(projectDir string) KernelConfig {
 			line = strings.TrimSpace(line[:ci])
 		}
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			inSection = (line == "[tool.molt.native_kernel]")
+			switch {
+			case line == "[tool.molt.native_kernel]":
+				section = "main"
+			case strings.HasPrefix(line, buildPrefix) && strings.HasSuffix(line, "]"):
+				ext := strings.TrimSuffix(strings.TrimPrefix(line, buildPrefix), "]")
+				section = "build:" + ext
+			default:
+				section = ""
+			}
 			continue
 		}
-		if !inSection || line == "" || strings.HasPrefix(line, "#") {
+		if section == "" || line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		idx := strings.IndexByte(line, '=')
@@ -416,20 +438,29 @@ func LoadKernelConfig(projectDir string) KernelConfig {
 		}
 		key := strings.TrimSpace(line[:idx])
 		val := strings.TrimSpace(line[idx+1:])
-		switch key {
-		case "paths":
-			if arr := parseTOMLStringArray(val); arr != nil {
-				cfg.Paths = arr
+
+		switch {
+		case section == "main":
+			switch key {
+			case "paths":
+				if arr := parseTOMLStringArray(val); arr != nil {
+					cfg.Paths = arr
+				}
+			case "manifest_dir":
+				cfg.ManifestDir = strings.Trim(val, `"'`)
+			case "source_extensions":
+				if arr := parseTOMLStringArray(val); arr != nil {
+					cfg.SourceExtensions = arr
+				}
+			case "manifest_suffixes":
+				if arr := parseTOMLStringArray(val); arr != nil {
+					cfg.ManifestSuffixes = arr
+				}
 			}
-		case "manifest_dir":
-			cfg.ManifestDir = strings.Trim(val, `"'`)
-		case "source_extensions":
-			if arr := parseTOMLStringArray(val); arr != nil {
-				cfg.SourceExtensions = arr
-			}
-		case "manifest_suffixes":
-			if arr := parseTOMLStringArray(val); arr != nil {
-				cfg.ManifestSuffixes = arr
+		case strings.HasPrefix(section, "build:"):
+			if key == "command" {
+				ext := strings.TrimPrefix(section, "build:")
+				cfg.Builders[ext] = strings.Trim(val, `"'`)
 			}
 		}
 	}

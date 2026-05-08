@@ -26,11 +26,13 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"molt/internal/kernelbuilder"
 )
 
 // kernelRecipeVersion is mixed into the cache hash; bump on any change
 // to how the build pipeline drives the compilers / generators.
-const kernelRecipeVersion = "v1"
+const kernelRecipeVersion = "v2"
 
 // DiscoverKernels walks projectDir + cfg.Paths (and cfg.ManifestDir if
 // set) for files ending in any of cfg.ManifestSuffixes. Each manifest
@@ -140,8 +142,10 @@ func hasAnySuffix(name string, suffixes []string) bool {
 //   - source content (if a source file exists)
 //   - ABI tag, platform
 //   - python include dir (encodes Python version via headers)
+//   - resolved build command (so editing global YAML or project override
+//     forces a rebuild)
 //   - recipe version
-func hashKernel(manifestData, sourceData []byte, abiTag, plat, pyInclude string) string {
+func hashKernel(manifestData, sourceData []byte, abiTag, plat, pyInclude, buildCmd string) string {
 	h := sha256.New()
 	h.Write(manifestData)
 	h.Write([]byte{0})
@@ -152,6 +156,8 @@ func hashKernel(manifestData, sourceData []byte, abiTag, plat, pyInclude string)
 	h.Write([]byte(plat))
 	h.Write([]byte{0})
 	h.Write([]byte(pyInclude))
+	h.Write([]byte{0})
+	h.Write([]byte(buildCmd))
 	h.Write([]byte{0})
 	h.Write([]byte(kernelRecipeVersion))
 	return hex.EncodeToString(h.Sum(nil))[:16]
@@ -165,7 +171,7 @@ func hashKernel(manifestData, sourceData []byte, abiTag, plat, pyInclude string)
 // The Source.Path here is the manifest path, not the source file —
 // DiscoverKernels writes it that way so the rest of molt's pipeline
 // (caching, staging) treats the manifest as the unit of work.
-func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose bool, zigCfg ZigConfig, pyInclude string) (Artifact, error) {
+func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose bool, zigCfg ZigConfig, kernCfg KernelConfig, pyInclude string) (Artifact, error) {
 	manifestData, err := os.ReadFile(s.Path)
 	if err != nil {
 		return Artifact{}, fmt.Errorf("read manifest %s: %w", s.Path, err)
@@ -192,7 +198,18 @@ func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose 
 		return Artifact{}, fmt.Errorf("read source %s: %w", srcPath, err)
 	}
 
-	hash := hashKernel(manifestData, srcData, abiTag, plat, pyInclude)
+	// Resolve the build-command template *before* hashing so the cache
+	// key depends on which builder will run (project override / global
+	// YAML / built-in). The template still has tokens like {source} —
+	// that's fine: the template, not the resolved command, is what
+	// matters for "did the recipe change?". Token substitution happens
+	// later inside compileKernelSource.
+	buildTemplate, err := lookupBuilder(lang, kernCfg)
+	if err != nil {
+		return Artifact{}, err
+	}
+
+	hash := hashKernel(manifestData, srcData, abiTag, plat, pyInclude, buildTemplate)
 	soName := s.Basename + extSuffix
 
 	if hit, cachedPath, err := hasCacheEntry(hash, soName); err != nil {
@@ -227,7 +244,7 @@ func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose 
 
 	// Compile the user's source to a position-independent object.
 	objPath := filepath.Join(buildDir, s.Basename+".o")
-	if err := compileKernelSource(lang, srcPath, objPath, zigCfg); err != nil {
+	if _, err := compileKernelSource(lang, srcPath, objPath, zigCfg, kernCfg, pyInclude); err != nil {
 		return Artifact{}, err
 	}
 
@@ -286,49 +303,91 @@ func cachedKernelArtifact(s Source, hash, soPath, soName, abiTag, plat string) A
 	}
 }
 
-// compileKernelSource compiles srcPath (in language `lang`) to a
-// position-independent object file at objPath. Per-language adapters
-// pick the right toolchain.
-func compileKernelSource(lang, srcPath, objPath string, zigCfg ZigConfig) error {
-	switch lang {
-	case "zig":
-		zigBin, err := EnsureZig(zigCfg.Version)
-		if err != nil {
-			return fmt.Errorf("locate zig: %w", err)
-		}
-		cmd := exec.Command(zigBin, "build-obj",
-			"-O", "ReleaseFast",
-			"-fPIC",
-			"-femit-bin="+objPath,
-			srcPath)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("zig build-obj %s:\n%s", srcPath, string(out))
-		}
-		return nil
-
-	case "c":
-		cc, err := CCompiler()
-		if err != nil {
-			return err
-		}
-		cmd := exec.Command(cc, "-c", "-O2", "-fPIC", "-o", objPath, srcPath)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("cc -c %s:\n%s", srcPath, string(out))
-		}
-		return nil
-
-	case "cpp":
-		cxx, err := CXXCompiler()
-		if err != nil {
-			return err
-		}
-		cmd := exec.Command(cxx, "-c", "-O2", "-fPIC", "-o", objPath, srcPath)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("c++ -c %s:\n%s", srcPath, string(out))
-		}
-		return nil
+// compileKernelSource compiles srcPath to a position-independent object
+// file at objPath using the per-extension build command resolved from
+// (highest priority first):
+//
+//   1. project's [tool.molt.native_kernel.build.<ext>]
+//   2. ~/.molt/kernel-builders.yaml
+//   3. built-in defaults (kernelbuilder.DefaultBuilders())
+//
+// `lang` is the extension without the leading dot ("zig", "c", "odin", …).
+//
+// Returns the resolved command string (after token substitution) so the
+// caller can mix it into the cache hash — that way changing the project
+// override or the global YAML invalidates the cache automatically.
+func compileKernelSource(lang, srcPath, objPath string, zigCfg ZigConfig, kernCfg KernelConfig, pyInclude string) (string, error) {
+	template, err := lookupBuilder(lang, kernCfg)
+	if err != nil {
+		return "", err
 	}
-	return fmt.Errorf("unsupported source language %q for kernel module", lang)
+
+	tokens, err := buildTokens(srcPath, objPath, zigCfg, pyInclude)
+	if err != nil {
+		return "", err
+	}
+
+	resolved := kernelbuilder.Resolve(template, tokens)
+	argv := kernelbuilder.SplitCommand(resolved)
+	if len(argv) == 0 {
+		return "", fmt.Errorf("empty build command for .%s", lang)
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("%s build (.%s) failed:\n  %s\n%s",
+			argv[0], lang, resolved, string(out))
+	}
+	return resolved, nil
+}
+
+// lookupBuilder finds the build-command template for the given extension,
+// honouring the project → global → built-in priority order.
+func lookupBuilder(ext string, kernCfg KernelConfig) (string, error) {
+	ext = strings.TrimPrefix(ext, ".")
+	// 1. Per-project override
+	if cmd, ok := kernCfg.Builders[ext]; ok && cmd != "" {
+		return cmd, nil
+	}
+	// 2. Global ~/.molt/kernel-builders.yaml
+	b, found, err := kernelbuilder.Find(ext)
+	if err != nil {
+		return "", err
+	}
+	if found {
+		return b.Command, nil
+	}
+	// 3. Built-in defaults (also seeded into the global YAML on first
+	// load, but available here for the case where the file is unreachable)
+	for _, d := range kernelbuilder.DefaultBuilders() {
+		if d.Ext == ext {
+			return d.Command, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"no kernel builder for .%s — add one with `molt kernel-builder add %s '<command>'`",
+		ext, ext)
+}
+
+// buildTokens populates the substitution map for a single build invocation.
+// Lazily resolves zig / cc / cxx only if the template actually references
+// them — but for simplicity we just resolve all three up front and let
+// kernelbuilder.Resolve replace what's referenced.
+func buildTokens(srcPath, objPath string, zigCfg ZigConfig, pyInclude string) (map[string]string, error) {
+	t := map[string]string{
+		"source":      srcPath,
+		"output":      objPath,
+		"include_dir": pyInclude,
+	}
+	if zigBin, err := EnsureZig(zigCfg.Version); err == nil {
+		t["zig"] = zigBin
+	}
+	if cc, err := CCompiler(); err == nil {
+		t["cc"] = cc
+	}
+	if cxx, err := CXXCompiler(); err == nil {
+		t["cxx"] = cxx
+	}
+	return t, nil
 }
 
 // linkKernelSO compiles glue.c (with Python.h) and links it together

@@ -485,7 +485,7 @@ func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDi
 					if verbose {
 						fmt.Printf("→ cython: %d source(s)\n", len(pyxSources))
 					}
-					arts, err := native.Compile(pyxSources, projectDir, *abi, pyExe, cc, includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg, zigCfg)
+					arts, err := native.Compile(pyxSources, projectDir, *abi, pyExe, cc, includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg, zigCfg, kernCfg)
 					if err != nil {
 						return "", err
 					}
@@ -502,7 +502,7 @@ func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDi
 				if verbose {
 					fmt.Printf("→ rust:   %d source(s)\n", len(rsSources))
 				}
-				arts, err := native.Compile(rsSources, projectDir, *abi, pyExe, "", includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg, zigCfg)
+				arts, err := native.Compile(rsSources, projectDir, *abi, pyExe, "", includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg, zigCfg, kernCfg)
 				if err != nil {
 					return "", err
 				}
@@ -514,7 +514,7 @@ func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDi
 			if verbose {
 				fmt.Printf("→ kernel: %d module(s)\n", len(kernelSources))
 			}
-			arts, err := native.Compile(kernelSources, projectDir, *abi, pyExe, "", includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg, zigCfg)
+			arts, err := native.Compile(kernelSources, projectDir, *abi, pyExe, "", includeDir, extSuffix, syspathDirs, verbose, cfg, rustCfg, zigCfg, kernCfg)
 			if err != nil {
 				return "", err
 			}
