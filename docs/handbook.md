@@ -753,6 +753,18 @@ fits.
 
 ## Runtime environment: `extra_paths`
 
+molt has **two** `extra_paths` fields with different jobs — pick the
+right one for what you're trying to do:
+
+| Field | What it adds to | Use for |
+|---|---|---|
+| `[tool.molt] extra_paths` | `PYTHONPATH` | Python source files outside the project (shared helper modules, ad-hoc script dirs). See [`MANUAL.md` § 7.8](MANUAL.md#78-eliminating-syspathinsert-boilerplate). |
+| `[tool.molt.runtime] extra_paths` | `PATH` + dynamic-linker / framework vars | Native binaries, shared libraries (`.so` / `.dylib` / `.dll`), macOS frameworks. |
+
+The runtime variant is what you want for vendored `.so`s, helper
+binaries, and any other non-Python artifact you want findable at
+runtime:
+
 ```toml
 [tool.molt.runtime]
 extra_paths = ["vendor/lib", "vendor/bin", "vendor/Frameworks"]

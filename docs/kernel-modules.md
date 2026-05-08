@@ -18,6 +18,9 @@ This document is the user-facing reference. For the design rationale, see [zig-o
 - [Manifest schema](#manifest-schema)
 - [Configuration in `pyproject.toml`](#configuration-in-pyprojecttoml)
 - [Examples](#examples)
+- [Pre-built `.so` binding](#pre-built-so-binding)
+- [Kernel builders](#kernel-builders)
+- [Runtime path setup with `[tool.molt.runtime]`](#runtime-path-setup-with-toolmoltruntime)
 - [Type reference](#type-reference)
 - [What gets generated](#what-gets-generated)
 - [Cache behaviour](#cache-behaviour)
@@ -459,6 +462,139 @@ Path is relative to the manifest's directory.
 
 ---
 
+## Pre-built `.so` binding
+
+If you already have a compiled shared library — vendor-supplied,
+downloaded as a release asset, or built outside molt — you don't need
+a source file. Drop a `<name>.so` (or `lib<name>.so` / `.dylib` /
+`.dll`) next to a `<name>.molt.toml` and molt generates a
+**dlopen-style wrapper** around it.
+
+```
+project/
+├── crypto.molt.toml
+└── libcrypto.so          # pre-built — vendor / download / external build
+```
+
+```toml
+# crypto.molt.toml
+[[fn]]
+name    = "encrypt"
+args    = [{ name = "key", type = "u32" }, { name = "data", type = "u32" }]
+returns = "u32"
+```
+
+```python
+import crypto
+crypto.encrypt(0xdeadbeef, 42)
+```
+
+molt detects the lack of a source file, generates a `glue.c` that
+`dlopen`s the lib at `PyInit_crypto` time, `dlsym`s each declared
+function into a static fn-pointer slot, and forwards Python calls
+through the pointers. Same `.pyi` stub generation as for source-built
+kernels.
+
+Three resolution modes (priority order):
+
+| Manifest field / file | Resolution |
+|---|---|
+| `library = "/abs/path/libfoo.so"` | Explicit absolute path. |
+| `library = "vendor/libfoo.so"` | Relative to manifest dir. |
+| (no `library`, no source sibling) | Sibling `<name>.so` / `lib<name>.so` / `.dylib` / `.dll`. |
+
+The wrapper has no link-time dependency on the impl `.so` — the impl
+is loaded at import time. Vendor updates trigger a wrapper rebuild
+via the cache hash (which mixes the impl's content) but no manual
+cleanup.
+
+### When to use this
+
+- Bind a brew/Nix-installed system library:
+  `library = "/opt/homebrew/lib/libsodium.dylib"`.
+- Bind a Rust crate built outside molt:
+  `library = "../rust-crate/target/release/libfoo.so"`.
+- Distribute a pre-compiled vendor SDK alongside Python source: ship
+  `vendor/libfoo.so` + `foo.molt.toml`; users get `import foo`.
+- Glue around system libs (zlib, libcurl, libcrypto) without writing
+  Cython.
+
+## Kernel builders
+
+A "kernel builder" is the recipe for compiling one source-file
+extension to a position-independent `.o`. Resolution order:
+
+1. **Per-project**: `[tool.molt.native_kernel.build.<ext>]` in
+   pyproject.toml.
+2. **Global**: `~/.molt/kernel-builders.yaml` (auto-seeded with
+   defaults on first use).
+3. **Built-in**: hardcoded fallbacks for `.zig`, `.c`, `.cpp`.
+
+```sh
+$ molt kernel-builder list
+ext     source                  command
+zig     global                  {zig} build-obj {source} -O ReleaseFast -fPIC -femit-bin={output}
+c       global                  {cc} -c -O2 -fPIC -o {output} {source}
+cpp     global                  {cxx} -c -O2 -fPIC -o {output} {source}
+
+$ molt kernel-builder add odin --from-template
+✓ added builder for .odin → ~/.molt/kernel-builders.yaml
+  command: odin build {source} -file -build-mode:obj -reloc-mode:pic -o:speed -out:{output}
+
+$ molt kernel-builder add nim 'nim c --app:staticlib --noMain --out:{output} {source}'
+$ molt kernel-builder add c '{zig} cc -c -O3 -DDEBUG=1 -fPIC -o {output} {source}' --local
+$ molt kernel-builder show odin
+$ molt kernel-builder remove odin
+$ molt kernel-builder edit             # opens ~/.molt/kernel-builders.yaml in $EDITOR
+$ molt kernel-builder reset            # restore seeded defaults
+$ molt kernel-builder path             # print global YAML path
+```
+
+Token vocabulary in commands: `{source}`, `{output}`, `{zig}`, `{cc}`,
+`{cxx}`, `{include_dir}`. Unknown tokens pass through unchanged.
+
+`--from-template` uses molt's curated commands for `zig`, `c`, `cpp`,
+`odin`, `nim`, `rs` (rustc no-PyO3), `f90`, `f95`. Languages outside
+that table require an explicit `<command>` argument.
+
+### Auto-watching
+
+Adding a builder for `.odin` (or any extension) **automatically** adds
+that extension to molt's source-extension watch list. You do NOT need
+to also edit `[tool.molt.native_kernel] source_extensions = [...]` —
+the builder registry IS the source of truth.
+
+```sh
+$ molt kernel-builder add odin --from-template
+# Now: any project with mathx.odin + mathx.molt.toml just works.
+```
+
+## Runtime path setup with `[tool.molt.runtime]`
+
+Kernel modules that depend on shared libraries at *runtime* (e.g. a
+pre-built `.so` whose impl in turn dlopens `libomp.so` or
+`libcrypto.so`) need those deps findable when Python loads the
+wrapper. The dedicated mechanism:
+
+```toml
+[tool.molt.runtime]
+extra_paths = ["vendor/lib", "vendor/bin", "vendor/Frameworks"]
+```
+
+Each entry is prepended to `PATH`, plus the platform-appropriate
+dynamic-linker var (`LD_LIBRARY_PATH` on Linux,
+`DYLD_FALLBACK_LIBRARY_PATH` and `DYLD_FALLBACK_FRAMEWORK_PATH` on
+macOS) when molt spawns Python. Drop a `.so` or a binary or a
+framework into one of those dirs and it's findable from any code in
+the Python process — your kernel wrapper, your other modules,
+`subprocess.run("foo")`, `ctypes.CDLL("...")`.
+
+**Note:** This is distinct from the older `[tool.molt] extra_paths`
+field, which adds *Python source* directories to `PYTHONPATH` (for
+sharing pure-Python helper modules across projects). The new
+`[tool.molt.runtime] extra_paths` is for native binaries and shared
+libraries.
+
 ## Type reference
 
 The same primitive table from above, expanded with the C-glue runtime conversions:
@@ -594,8 +730,7 @@ These are explicit gaps in the MVP. Each is straightforward to add when needed.
 - **No keyword-argument support.** Generated wrappers use `METH_VARARGS` only; `kwargs` are accepted but ignored at the C level. (The `.pyi` still lists names so kwarg-style calls work in the type checker.)
 - **No `[[type]]` definitions.** Types are limited to the primitive list; no user-defined types.
 - **TOML only.** `manifest_suffixes` is plumbed for `.molt.json` / `.molt.yaml` but the parser only handles `.molt.toml`.
-- **No pre-built `.so` support.** All kernels currently require a sibling source file.
-- **Wired languages: Zig, C, C++.** Adding Odin, Rust-without-PyO3, Nim, etc. requires one new arm in `compileKernelSource`.
+- **Wired languages out of the box: Zig, C, C++.** Adding Odin, Nim, Rust-without-PyO3, Fortran, etc. is one entry in `~/.molt/kernel-builders.yaml` (see [Kernel builders](#kernel-builders) below) — no molt code change.
 
 ---
 

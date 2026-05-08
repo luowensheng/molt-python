@@ -1,4 +1,23 @@
-# Native source modules: Zig and Odin (and any C-ABI language)
+# Native source modules — design notes
+
+> **Status:** This is the original design document for what became the
+> kernel-module system. It records why the architecture is shaped the
+> way it is, and what alternatives were considered. For the **current
+> user-facing reference**, see [`kernel-modules.md`](kernel-modules.md).
+> For the project-wide overview see [`handbook.md`](handbook.md).
+>
+> Several design points proposed here have since shipped:
+>
+> - Manifest-driven discovery (`*.molt.toml`)
+> - C glue + `PyInit_<name>` wrapper generation
+> - Auto-generated `.pyi` stubs for IDE / typechecker integration
+> - Per-extension build recipes (global + per-project) — see
+>   `molt kernel-builder` and [`kernel-modules.md`](kernel-modules.md#kernel-builders)
+> - Pre-built `.so` binding via dlopen wrapper — see
+>   [`kernel-modules.md`](kernel-modules.md#pre-built-so-binding)
+>
+> Other design points listed in this doc remain on the roadmap (pointer
+> types, struct types, generators).
 
 ## What this feature is
 

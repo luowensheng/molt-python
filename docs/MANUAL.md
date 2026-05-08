@@ -1370,6 +1370,40 @@ configured (deferred to a future round).
 > minor version. A follow-up will bundle the uv-managed Python into the
 > binary so this just works.
 
+##### Other native paths
+
+Cython is one of five native-module pipelines molt ships:
+
+| Pipeline | What you write | Reference |
+|---|---|---|
+| Cython | `.pyx` source | this section |
+| Rust + PyO3 | `.rs` source with `#[pymodule]` | [`handbook.md` → Rust + PyO3](handbook.md#rust--pyo3-modules) |
+| Kernel module (any C-ABI lang) | `<name>.molt.toml` + `<name>.zig`/`.c`/`.cpp`/`.odin`/… | [`kernel-modules.md`](kernel-modules.md) |
+| Pre-built `.so` binding | `<name>.molt.toml` + `<name>.so` | [`kernel-modules.md` → Pre-built `.so`](kernel-modules.md#pre-built-so-binding) |
+| Multi-file external project | `[[tool.molt.native]]` recipe | [`native-modules.md`](native-modules.md) |
+
+Per-extension build commands for kernel modules are managed via
+`molt kernel-builder list / show / add / remove / edit / reset / path`.
+Adding support for Odin / Nim / Fortran / etc. is a one-line YAML edit
+(or `molt kernel-builder add <ext> --from-template`); see
+[`kernel-modules.md` → Kernel builders](kernel-modules.md#kernel-builders).
+
+For runtime path configuration (vendored `.so` files, helper binaries,
+macOS frameworks), use the `[tool.molt.runtime]` section:
+
+```toml
+[tool.molt.runtime]
+extra_paths = ["vendor/lib", "vendor/bin", "vendor/Frameworks"]
+```
+
+Each entry is prepended to `PATH`, and to the platform-appropriate
+dynamic-linker / framework env vars (`LD_LIBRARY_PATH` on Linux,
+`DYLD_FALLBACK_LIBRARY_PATH` and `DYLD_FALLBACK_FRAMEWORK_PATH` on
+macOS). This is **distinct from `[tool.molt] extra_paths`** in the
+next section, which adds *Python source* dirs to `PYTHONPATH`. The
+`runtime` variant is for native binaries and shared libraries; the
+top-level one is for Python code.
+
 ### 7.8 Eliminating `sys.path.insert` boilerplate
 
 Common Python pain — shared code outside the package's installed location:

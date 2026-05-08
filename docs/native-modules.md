@@ -1,6 +1,18 @@
 # Native Modules in Molt
 
-Molt lets you write performance-critical code in Cython, Rust, C, or C++ and import it from Python as if it were a normal `.py` file — no `setup.py`, no `pip install -e .`, no manual compilation step. Drop a `.pyx` or `.rs` file next to your `main.py`, run `molt sync`, and `import mathx` just works.
+Molt lets you write performance-critical code in Cython, Rust, C, C++,
+Zig, Odin, Nim, or any C-ABI language and import it from Python as if
+it were a normal `.py` file — no `setup.py`, no `pip install -e .`,
+no manual compilation step. Drop a source file next to your
+`main.py`, run `molt sync`, and `import mathx` just works.
+
+> **Looking for the lighter-weight single-file path?** The
+> manifest-driven **kernel module** system covers Zig, C, C++, Odin,
+> Nim, and any pre-built `.so` with a much smaller config surface.
+> See [`kernel-modules.md`](kernel-modules.md). Use the
+> `[[tool.molt.native]]` recipe pattern documented here when you have
+> a multi-file project (Cargo workspace, CMake, autotools, etc.) that
+> needs a real build command.
 
 ---
 
@@ -8,12 +20,22 @@ Molt lets you write performance-critical code in Cython, Rust, C, or C++ and imp
 
 When you run `molt sync`, Molt:
 
-1. **Discovers** native source files (`.pyx`, `.rs` with PyO3, and any `[[tool.molt.native]]` entries in `pyproject.toml`)
-2. **Compiles** each one into a shared library (`.so` / `.dylib` / `.pyd`) if its content has changed since the last build
-3. **Caches** the output in `~/.molt/native/<hash>/`, keyed by a hash of the source content, Python ABI, platform, and compiler flags — so cache hits are instant and cross-project
-4. **Places a view** by symlinking compiled libraries into the project's state directory and prepending it to `sys.path` before your Python process starts
+1. **Discovers** native source files (`.pyx`, `.rs` with PyO3,
+   `*.molt.toml` kernel manifests, and any `[[tool.molt.native]]`
+   entries in `pyproject.toml`)
+2. **Compiles** each one into a shared library (`.so` / `.dylib` /
+   `.pyd`) if its content has changed since the last build
+3. **Caches** the output in `~/.molt/native/<hash>/`, keyed by a hash
+   of the source content, Python ABI, platform, and compiler flags —
+   so cache hits are instant and cross-project
+4. **Places a view** by symlinking compiled libraries into the
+   project's state directory and prepending it to `sys.path` before
+   your Python process starts
 
-On subsequent `molt run python` / `molt run python3` calls, Molt automatically checks whether any source file is newer than the last compiled output. If anything changed, it recompiles before executing — no manual `molt sync` needed.
+On subsequent `molt run python` / `molt run python3` calls, Molt
+automatically checks whether any source file is newer than the last
+compiled output. If anything changed, it recompiles before executing
+— no manual `molt sync` needed.
 
 ---
 
@@ -23,6 +45,7 @@ On subsequent `molt run python` / `molt run python3` calls, Molt automatically c
 |---|---|---|
 | `*.pyx` | Auto-discovered in project paths | Cython → C → shared library |
 | `*.rs` with `#[pymodule]` / `use pyo3` | Auto-discovered in project paths | `cargo build --release` via auto-generated `Cargo.toml` |
+| `*.molt.toml` + sibling source / `.so` | Manifest-driven kernel module | See [`kernel-modules.md`](kernel-modules.md) — Zig, C, C++, Odin, Nim, pre-built libs |
 | Rust project folder (has `Cargo.toml`) | `[[tool.molt.native]]` in `pyproject.toml` | `cargo build --release` in that folder |
 | Any language with a shell build command | `[[tool.molt.native]]` with `build =` | User-defined shell command |
 
