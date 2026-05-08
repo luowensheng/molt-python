@@ -21,6 +21,7 @@ import (
 	"molt/internal/builder"
 	"molt/internal/editor"
 	"molt/internal/integrity"
+	"molt/internal/kernelbuilder"
 	"molt/internal/projstate"
 	"molt/internal/python"
 	"molt/internal/store"
@@ -139,6 +140,8 @@ func main() {
 	// ── Native presets ────────────────────────────────────────────────────
 	case "native-preset":
 		err = cmdNativePreset(os.Args[2:])
+	case "kernel-builder":
+		err = cmdKernelBuilder(os.Args[2:])
 
 	// ── Global package store ──────────────────────────────────────────────
 	case "gc":
@@ -229,6 +232,17 @@ Tool registry (~/.molt/bin global shims):
   tool show <name>                 Show one tool's details
   tool uninstall <name>            Remove a tool's shim + metadata
   tool path                        Print ~/.molt/bin (add this to your PATH)
+
+Kernel builders (~/.molt/kernel-builders.yaml — per-extension recipes):
+  kernel-builder list                       List builders (global + built-in)
+  kernel-builder show <ext>                 Show one builder's command
+  kernel-builder add <ext> <command>        Add/update a builder globally
+                                  --local             write to project pyproject.toml
+                                  --from-template     use molt's suggested command
+  kernel-builder remove <ext> [--local]     Remove a builder
+  kernel-builder edit                       $EDITOR ~/.molt/kernel-builders.yaml
+  kernel-builder reset                      Restore the seeded defaults
+  kernel-builder path                       Print the global YAML path
 
 Global flags:
   --project / -p <q>               Operate on a registered project from anywhere
@@ -2154,6 +2168,286 @@ func cmdNativePreset(args []string) error {
 		return fmt.Errorf("unknown native-preset command %q", args[0])
 	}
 	return nil
+}
+
+// ── kernel-builder: per-extension kernel build recipes ──────────────────────
+
+func cmdKernelBuilder(args []string) error {
+	if len(args) == 0 {
+		fmt.Println("usage: molt kernel-builder <list|show|add|remove|edit|reset|path> [args]")
+		fmt.Println("       --local on add/remove writes the project's pyproject.toml instead")
+		return nil
+	}
+	switch args[0] {
+	case "list":
+		return cmdKernelBuilderList()
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt kernel-builder show <ext>")
+		}
+		return cmdKernelBuilderShow(args[1])
+	case "add":
+		return cmdKernelBuilderAdd(args[1:])
+	case "remove":
+		return cmdKernelBuilderRemove(args[1:])
+	case "edit":
+		return cmdKernelBuilderEdit()
+	case "reset":
+		if err := kernelbuilder.Reset(); err != nil {
+			return err
+		}
+		fmt.Println("✓ kernel-builders.yaml reset to defaults")
+		return nil
+	case "path":
+		p, err := kernelbuilder.GlobalPath()
+		if err != nil {
+			return err
+		}
+		fmt.Println(p)
+		return nil
+	}
+	return fmt.Errorf("unknown kernel-builder command %q", args[0])
+}
+
+func cmdKernelBuilderList() error {
+	builders, err := kernelbuilder.Load()
+	if err != nil {
+		return err
+	}
+
+	// Build a quick "what does the global file declare?" map and a
+	// fallback-to-built-in summary so users can see the layered picture.
+	declared := map[string]bool{}
+	for _, b := range builders {
+		declared[b.Ext] = true
+	}
+
+	fmt.Printf("%-6s  %-22s  %s\n", "ext", "source", "command")
+	fmt.Println(strings.Repeat("─", 80))
+
+	// Print global entries.
+	for _, b := range builders {
+		fmt.Printf("%-6s  %-22s  %s\n", b.Ext, "global", b.Command)
+	}
+	// Print built-ins not also declared globally (this only happens if
+	// the user trimmed the global file to remove a default).
+	for _, d := range kernelbuilder.DefaultBuilders() {
+		if declared[d.Ext] {
+			continue
+		}
+		fmt.Printf("%-6s  %-22s  %s\n", d.Ext, "built-in (fallback)", d.Command)
+	}
+	return nil
+}
+
+func cmdKernelBuilderShow(ext string) error {
+	ext = strings.TrimPrefix(ext, ".")
+	if b, ok, err := kernelbuilder.Find(ext); err == nil && ok {
+		path, _ := kernelbuilder.GlobalPath()
+		fmt.Printf("ext      %s\n", b.Ext)
+		fmt.Printf("source   %s\n", path)
+		fmt.Printf("command  %s\n", b.Command)
+		return nil
+	}
+	for _, d := range kernelbuilder.DefaultBuilders() {
+		if d.Ext == ext {
+			fmt.Printf("ext      %s\n", d.Ext)
+			fmt.Println("source   built-in (fallback)")
+			fmt.Printf("command  %s\n", d.Command)
+			return nil
+		}
+	}
+	return fmt.Errorf("no builder for .%s — add one with `molt kernel-builder add %s '<command>'`", ext, ext)
+}
+
+func cmdKernelBuilderAdd(args []string) error {
+	// Allow flags to appear before *or* after positional args, which
+	// Go's stdlib flag package doesn't do natively.
+	flags, rest := extractFlags(args, map[string]bool{"local": true, "from-template": true})
+	local := flags["local"]
+	fromTpl := flags["from-template"]
+	_ = local
+	_ = fromTpl
+	if len(rest) < 1 {
+		return fmt.Errorf("usage: molt kernel-builder add [--local] [--from-template] <ext> [<command>]")
+	}
+	ext := strings.TrimPrefix(rest[0], ".")
+
+	var command string
+	switch {
+	case fromTpl:
+		tpl, ok := kernelbuilder.SuggestedTemplates[ext]
+		if !ok {
+			return fmt.Errorf("no suggested template for .%s — provide a command explicitly", ext)
+		}
+		command = tpl
+	case len(rest) >= 2:
+		command = rest[1]
+	default:
+		return fmt.Errorf("usage: molt kernel-builder add [--local] <ext> <command>  (or use --from-template)")
+	}
+
+	if local {
+		if err := writeKernelBuilderToPyproject(ext, command); err != nil {
+			return err
+		}
+		fmt.Printf("✓ wrote [tool.molt.native_kernel.build.%s] to pyproject.toml\n", ext)
+		fmt.Printf("  command: %s\n", command)
+		return nil
+	}
+	if err := kernelbuilder.Add(kernelbuilder.Builder{Ext: ext, Command: command}); err != nil {
+		return err
+	}
+	path, _ := kernelbuilder.GlobalPath()
+	fmt.Printf("✓ added builder for .%s → %s\n", ext, path)
+	fmt.Printf("  command: %s\n", command)
+	return nil
+}
+
+func cmdKernelBuilderRemove(args []string) error {
+	flags, rest := extractFlags(args, map[string]bool{"local": true})
+	local := flags["local"]
+	if len(rest) < 1 {
+		return fmt.Errorf("usage: molt kernel-builder remove [--local] <ext>")
+	}
+	ext := strings.TrimPrefix(rest[0], ".")
+	if local {
+		if err := removeKernelBuilderFromPyproject(ext); err != nil {
+			return err
+		}
+		fmt.Printf("✓ removed [tool.molt.native_kernel.build.%s] from pyproject.toml\n", ext)
+		return nil
+	}
+	if err := kernelbuilder.Remove(ext); err != nil {
+		return err
+	}
+	fmt.Printf("✓ removed builder for .%s\n", ext)
+	return nil
+}
+
+func cmdKernelBuilderEdit() error {
+	path, err := kernelbuilder.GlobalPath()
+	if err != nil {
+		return err
+	}
+	// Ensure the file exists (Load auto-seeds on missing).
+	if _, err := kernelbuilder.Load(); err != nil {
+		return err
+	}
+	editorBin := os.Getenv("EDITOR")
+	if editorBin == "" {
+		editorBin = "vi"
+	}
+	cmd := exec.Command(editorBin, path)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// extractFlags pulls boolean flags out of args from any position and
+// returns the resulting flag map + the remaining positional args. Each
+// recognised flag is `--name` (no value); unknown flags pass through
+// as positional, which is intentional so a typo doesn't get silently
+// dropped.
+func extractFlags(args []string, recognised map[string]bool) (map[string]bool, []string) {
+	flags := map[string]bool{}
+	var rest []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "--") {
+			name := strings.TrimPrefix(a, "--")
+			if recognised[name] {
+				flags[name] = true
+				continue
+			}
+		}
+		rest = append(rest, a)
+	}
+	return flags, rest
+}
+
+// writeKernelBuilderToPyproject appends or updates the
+// [tool.molt.native_kernel.build.<ext>] block in the current dir's
+// pyproject.toml. Conservative line-based editor — preserves the rest
+// of the file's formatting and comments.
+func writeKernelBuilderToPyproject(ext, command string) error {
+	pp, err := os.ReadFile("pyproject.toml")
+	if err != nil {
+		return fmt.Errorf("read pyproject.toml: %w", err)
+	}
+	header := fmt.Sprintf("[tool.molt.native_kernel.build.%s]", ext)
+	commandLine := fmt.Sprintf("command = %q", command)
+
+	lines := strings.Split(string(pp), "\n")
+	found := false
+	for i, line := range lines {
+		if strings.TrimSpace(line) == header {
+			found = true
+			// Replace the next non-blank line's `command = ...` if
+			// present, otherwise insert after the header.
+			for j := i + 1; j < len(lines); j++ {
+				t := strings.TrimSpace(lines[j])
+				if t == "" {
+					continue
+				}
+				if strings.HasPrefix(t, "[") {
+					// Section ended without a command line; insert one.
+					lines = append(lines[:j], append([]string{commandLine}, lines[j:]...)...)
+					break
+				}
+				if strings.HasPrefix(t, "command") {
+					lines[j] = commandLine
+					break
+				}
+				// Some unrelated key — leave it alone, just insert ours
+				// at the top of the section.
+				lines = append(lines[:i+1], append([]string{commandLine}, lines[i+1:]...)...)
+				break
+			}
+			break
+		}
+	}
+	if !found {
+		// Append a new block at end of file.
+		out := strings.TrimRight(string(pp), "\n") + "\n\n" + header + "\n" + commandLine + "\n"
+		return os.WriteFile("pyproject.toml", []byte(out), 0o644)
+	}
+	return os.WriteFile("pyproject.toml", []byte(strings.Join(lines, "\n")), 0o644)
+}
+
+// removeKernelBuilderFromPyproject deletes the
+// [tool.molt.native_kernel.build.<ext>] section and any keys directly
+// under it (until the next section or EOF).
+func removeKernelBuilderFromPyproject(ext string) error {
+	pp, err := os.ReadFile("pyproject.toml")
+	if err != nil {
+		return fmt.Errorf("read pyproject.toml: %w", err)
+	}
+	header := fmt.Sprintf("[tool.molt.native_kernel.build.%s]", ext)
+	lines := strings.Split(string(pp), "\n")
+	out := make([]string, 0, len(lines))
+	skipping := false
+	removed := false
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == header {
+			skipping = true
+			removed = true
+			continue
+		}
+		if skipping {
+			if strings.HasPrefix(t, "[") {
+				skipping = false
+			} else {
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	if !removed {
+		return fmt.Errorf("[tool.molt.native_kernel.build.%s] not found in pyproject.toml", ext)
+	}
+	return os.WriteFile("pyproject.toml", []byte(strings.Join(out, "\n")), 0o644)
 }
 
 // cleanPythonEnv returns parent with VIRTUAL_ENV / PYTHONHOME / PYTHONPATH
