@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 
+	"molt/internal/globalenv"
 	"molt/internal/projstate"
 	"molt/internal/runtimecfg"
 )
@@ -104,8 +105,11 @@ func (s *Spec) BuildEnv(parent []string) []string {
 	}
 	out = append(out, "PATH="+pathVal)
 	// Apply [tool.molt.runtime] extra_paths to PATH + dynamic-linker /
-	// framework vars. No-op when the section is missing.
-	out = runtimecfg.Load(s.ProjectDir).Apply(out)
+	// framework vars; merge env-var layers (~/.molt/env.yaml then
+	// project's [tool.molt.runtime.env]). All no-ops when their inputs
+	// are empty.
+	globalEnv, _ := globalenv.Load()
+	out = runtimecfg.Load(s.ProjectDir).Apply(out, globalEnv)
 	return out
 }
 
