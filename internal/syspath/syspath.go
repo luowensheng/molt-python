@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"molt/internal/projstate"
+	"molt/internal/runtimecfg"
 )
 
 // FileName / SiteCustomize are file names inside the per-project state
@@ -75,6 +76,10 @@ func Load(projectDir string) (*Spec, error) {
 // and the venv-related variables stripped so they can't leak in. The .molt
 // directory itself is prepended to PYTHONPATH so sitecustomize.py is imported
 // before user code; sitecustomize processes .pth files in each store dir.
+//
+// Also applies [tool.molt.runtime] extra_paths to PATH and the platform's
+// dynamic-linker / framework env vars so vendored binaries and libraries
+// drop into project dirs are findable without manual shell setup.
 func (s *Spec) BuildEnv(parent []string) []string {
 	moltDir := projectMoltDir(s.ProjectDir)
 	pyPath := append([]string{moltDir}, s.Syspath...)
@@ -98,6 +103,9 @@ func (s *Spec) BuildEnv(parent []string) []string {
 		}
 	}
 	out = append(out, "PATH="+pathVal)
+	// Apply [tool.molt.runtime] extra_paths to PATH + dynamic-linker /
+	// framework vars. No-op when the section is missing.
+	out = runtimecfg.Load(s.ProjectDir).Apply(out)
 	return out
 }
 
