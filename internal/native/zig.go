@@ -158,8 +158,15 @@ func installZig(version, targetDir string) error {
 	if runtime.GOOS == "windows" {
 		ext = "zip"
 	}
-	stem := fmt.Sprintf("zig-%s-%s-%s", osName, archName, version)
-	url := fmt.Sprintf("https://ziglang.org/download/%s/%s.%s", version, stem, ext)
+
+	// Zig flipped its release filename convention: pre-0.14 used
+	// "zig-<os>-<arch>-<ver>", 0.14+ uses "zig-<arch>-<os>-<ver>". We
+	// try the modern layout first; if that 404s, fall back to the old
+	// one so users on either side of the boundary work.
+	candidates := []string{
+		fmt.Sprintf("zig-%s-%s-%s", archName, osName, version), // 0.14+
+		fmt.Sprintf("zig-%s-%s-%s", osName, archName, version), // legacy
+	}
 
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return err
@@ -175,8 +182,20 @@ func installZig(version, targetDir string) error {
 	tmp.Close()
 	defer os.Remove(tmpPath)
 
-	if err := httpDownload(url, tmpPath); err != nil {
-		return fmt.Errorf("download %s: %w", url, err)
+	var lastErr error
+	var url string
+	for _, stem := range candidates {
+		url = fmt.Sprintf("https://ziglang.org/download/%s/%s.%s", version, stem, ext)
+		if err := httpDownload(url, tmpPath); err == nil {
+			lastErr = nil
+			break
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("download zig %s for %s/%s: %w (tried %d url shapes)",
+			version, osName, archName, lastErr, len(candidates))
 	}
 
 	// Extract directly into targetDir, stripping the top-level

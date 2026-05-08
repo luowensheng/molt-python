@@ -445,7 +445,7 @@ func compileKernelSource(lang, srcPath, objPath string, zigCfg ZigConfig, kernCf
 		return "", err
 	}
 
-	tokens, err := buildTokens(srcPath, objPath, zigCfg, pyInclude)
+	tokens, err := buildTokens(template, srcPath, objPath, zigCfg, pyInclude)
 	if err != nil {
 		return "", err
 	}
@@ -529,23 +529,36 @@ func lookupBuilder(ext string, kernCfg KernelConfig) (string, error) {
 		ext, ext)
 }
 
-// buildTokens populates the substitution map for a single build invocation.
-// Lazily resolves zig / cc / cxx only if the template actually references
-// them — but for simplicity we just resolve all three up front and let
-// kernelbuilder.Resolve replace what's referenced.
-func buildTokens(srcPath, objPath string, zigCfg ZigConfig, pyInclude string) (map[string]string, error) {
+// buildTokens populates the substitution map for one build invocation.
+// Resolves toolchain tokens only when the template actually references
+// them (no point installing zig if the template only uses {cc}), and
+// propagates resolution errors so the user sees the real cause instead
+// of a confusing "unresolved {zig}" downstream.
+func buildTokens(template, srcPath, objPath string, zigCfg ZigConfig, pyInclude string) (map[string]string, error) {
 	t := map[string]string{
 		"source":      srcPath,
 		"output":      objPath,
 		"include_dir": pyInclude,
 	}
-	if zigBin, err := EnsureZig(zigCfg.Version); err == nil {
+	if strings.Contains(template, "{zig}") {
+		zigBin, err := EnsureZig(zigCfg.Version)
+		if err != nil {
+			return nil, fmt.Errorf("zig required by build template but unavailable: %w", err)
+		}
 		t["zig"] = zigBin
 	}
-	if cc, err := CCompiler(); err == nil {
+	if strings.Contains(template, "{cc}") {
+		cc, err := CCompiler()
+		if err != nil {
+			return nil, fmt.Errorf("cc required by build template but unavailable: %w", err)
+		}
 		t["cc"] = cc
 	}
-	if cxx, err := CXXCompiler(); err == nil {
+	if strings.Contains(template, "{cxx}") {
+		cxx, err := CXXCompiler()
+		if err != nil {
+			return nil, fmt.Errorf("c++ required by build template but unavailable: %w", err)
+		}
 		t["cxx"] = cxx
 	}
 	return t, nil
