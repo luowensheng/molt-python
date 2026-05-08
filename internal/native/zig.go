@@ -13,12 +13,21 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
 // ZigDefaultVersion is the version molt installs when no `[tool.molt.zig]
 // version` is set. Bumped occasionally; users override it in pyproject.
 const ZigDefaultVersion = "0.14.1"
+
+// zigInstallMu serialises the install path of EnsureZig so concurrent
+// callers (e.g. parallel kernel builds) don't race to download +
+// extract the toolchain. The fast paths (env var, PATH, already-cached
+// install dir) don't take the lock — only the slow "needs install"
+// path does, with a re-check after acquisition so the second caller
+// just observes the file the first one wrote.
+var zigInstallMu sync.Mutex
 
 // EnsureZig returns an absolute path to a usable `zig` binary, in this
 // order of preference:
@@ -32,11 +41,16 @@ const ZigDefaultVersion = "0.14.1"
 // $ZIG entries are accepted regardless of their version — we don't try
 // to swap out a working zig the user already has. The download path is
 // only taken when nothing else works.
+//
+// Safe to call from multiple goroutines: the install path is mutex-
+// protected with a double-checked-locking pattern so concurrent callers
+// share one install rather than racing N downloads.
 func EnsureZig(version string) (string, error) {
 	if version == "" {
 		version = ZigDefaultVersion
 	}
 
+	// Fast paths — no lock needed, all read-only filesystem checks.
 	if env := os.Getenv("ZIG"); env != "" {
 		if p, err := exec.LookPath(env); err == nil {
 			return p, nil
@@ -51,6 +65,17 @@ func EnsureZig(version string) (string, error) {
 		return "", err
 	}
 	bin := filepath.Join(dir, zigBinaryName())
+	if _, err := os.Stat(bin); err == nil {
+		return bin, nil
+	}
+
+	// Slow path: actually need to download + extract. Serialise so
+	// parallel kernel-build workers don't all race to install at once.
+	zigInstallMu.Lock()
+	defer zigInstallMu.Unlock()
+
+	// Re-check after acquiring the lock — another goroutine may have
+	// just finished the install we were about to start.
 	if _, err := os.Stat(bin); err == nil {
 		return bin, nil
 	}

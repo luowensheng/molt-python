@@ -124,3 +124,29 @@ func TestJobsCount_RespectsEnv(t *testing.T) {
 		t.Errorf("default jobsCount() out of range: %d", got)
 	}
 }
+
+func TestUnresolvedTokens(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"clang -O2 -o /tmp/out /tmp/src.c", nil},
+		{"{zig} cc -o {output} {source}", []string{"{zig}", "{output}", "{source}"}},
+		{"already {resolved} but {missing} too", []string{"{resolved}", "{missing}"}},
+		{"deduped {x} and another {x}", []string{"{x}"}},
+		{"unbalanced {oops never closes", nil},
+		{"", nil},
+	}
+	for _, tc := range cases {
+		got := unresolvedTokens(tc.in)
+		if len(got) != len(tc.want) {
+			t.Errorf("input %q: got %v, want %v", tc.in, got, tc.want)
+			continue
+		}
+		for i, w := range tc.want {
+			if got[i] != w {
+				t.Errorf("input %q: got[%d] = %q, want %q", tc.in, i, got[i], w)
+			}
+		}
+	}
+}

@@ -451,6 +451,20 @@ func compileKernelSource(lang, srcPath, objPath string, zigCfg ZigConfig, kernCf
 	}
 
 	resolved := kernelbuilder.Resolve(template, tokens)
+
+	// Catch unresolved {tokens} before we hand the command to exec —
+	// otherwise the user gets a confusing "no such file" error pointing
+	// at a literal "{zig}" path. This usually means a toolchain
+	// dependency couldn't be resolved (e.g. zig auto-install failed).
+	if leftover := unresolvedTokens(resolved); len(leftover) > 0 {
+		return "", fmt.Errorf(
+			"unresolved tokens in build command for .%s: %s\n"+
+				"  template: %s\n"+
+				"  resolved: %s\n"+
+				"  (a required toolchain may have failed to install — check earlier output)",
+			lang, strings.Join(leftover, ", "), template, resolved)
+	}
+
 	argv := kernelbuilder.SplitCommand(resolved)
 	if len(argv) == 0 {
 		return "", fmt.Errorf("empty build command for .%s", lang)
@@ -461,6 +475,30 @@ func compileKernelSource(lang, srcPath, objPath string, zigCfg ZigConfig, kernCf
 			argv[0], lang, resolved, string(out))
 	}
 	return resolved, nil
+}
+
+// unresolvedTokens returns any "{name}" placeholders left in s after
+// substitution. Used to catch silent toolchain-resolution failures
+// before we hand a malformed command to exec.
+func unresolvedTokens(s string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for {
+		i := strings.IndexByte(s, '{')
+		if i < 0 {
+			return out
+		}
+		j := strings.IndexByte(s[i:], '}')
+		if j < 0 {
+			return out
+		}
+		tok := s[i : i+j+1]
+		if !seen[tok] {
+			seen[tok] = true
+			out = append(out, tok)
+		}
+		s = s[i+j+1:]
+	}
 }
 
 // lookupBuilder finds the build-command template for the given extension,
