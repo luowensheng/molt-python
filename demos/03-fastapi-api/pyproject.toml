@@ -1,0 +1,28 @@
+[project]
+name = "03-fastapi-api"
+version = "0.1.0"
+description = "FastAPI REST API demo: dev server, tests, linting — all via molt run"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.136.1",
+    "httpx>=0.28.1",
+    "uvicorn>=0.46.0",
+]
+
+[tool.molt.tasks]
+dev    = "uvicorn taskapi.app:app --host 127.0.0.1 --port 8000 --reload"
+test   = "pytest tests/ -v --tb=short"
+lint   = "ruff check src/ tests/"
+format = "ruff format src/ tests/"
+check  = "ruff check src/ tests/ && pytest tests/ -v --tb=short"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=9.0.3",
+    "pytest-anyio>=0.0.0",
+    "ruff>=0.15.12",
+]
+
+[tool.pytest.ini_options]
+anyio_mode = "asyncio"

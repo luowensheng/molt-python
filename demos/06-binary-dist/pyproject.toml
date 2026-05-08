@@ -1,0 +1,19 @@
+[project]
+name = "sysinfo"
+version = "0.1.0"
+description = "Binary distribution demo: molt build packages app + deps into a hermetic binary"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.3.3",
+    "rich>=15.0.0",
+]
+
+[project.scripts]
+sysinfo = "sysinfo:cli"
+
+[tool.molt.tasks]
+info    = "python sysinfo.py info"
+bench   = "python sysinfo.py bench"
+version = "python sysinfo.py version"
+build   = "molt build"

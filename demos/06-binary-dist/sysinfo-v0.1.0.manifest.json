@@ -1,0 +1,41 @@
+{
+  "schema": "molt-integrity/v1",
+  "app": {
+    "name": "sysinfo",
+    "version": "0.1.0"
+  },
+  "built_at": "2026-05-08T05:47:54Z",
+  "build_host": {
+    "os": "darwin",
+    "arch": "arm64"
+  },
+  "algorithm": "sha256",
+  "root_hash": "c72b9c5e8858473ae9739cddd760f061e1cd5d274537b29224e48e7d966246f6",
+  "payload": {
+    "total_files": 3,
+    "total_bytes": 4217,
+    "files": [
+      {
+        "path": ".molt/config.json",
+        "size": 1244,
+        "sha256": "08c813e251ce79142352028d2febb9334ceb7b41b5b8d013944a5d875760c459",
+        "source": "include"
+      },
+      {
+        "path": ".molt/manifest.json",
+        "size": 711,
+        "sha256": "70c16d4de716bcb9de0f7f4ce25e4531d1957be5d64dea9432ece075775e51b7",
+        "source": "include"
+      },
+      {
+        "path": "sysinfo.py",
+        "size": 2262,
+        "sha256": "d13d460144a34d251ff68d9e13eae1dccf865ad6f008d7a8c24d98d52bcc45ea",
+        "source": "include"
+      }
+    ]
+  },
+  "deps": {
+    "strategy": "pyproject"
+  }
+}

@@ -1,0 +1,12 @@
+[project]
+name = "01-hello-app"
+version = "0.1.0"
+description = "Simplest molt demo: init, run, tasks — no setup, no venv"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.molt.tasks]
+run   = { script = "main.py" }
+greet = "python main.py Claude"
+info  = "python main.py"

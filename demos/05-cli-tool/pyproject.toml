@@ -1,0 +1,19 @@
+[project]
+name = "05-cli-tool"
+version = "0.1.0"
+description = "Click CLI demo: molt tool install registers it as a global shim in ~/.molt/bin"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.3.3",
+    "rich>=15.0.0",
+]
+
+[project.scripts]
+filetool = "filetool.cli:cli"
+
+[tool.molt.tasks]
+run    = "python -m filetool"
+ls     = "python -m filetool ls ."
+stats  = "python -m filetool stats ."
+help   = "python -m filetool --help"

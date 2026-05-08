@@ -1,0 +1,24 @@
+version: 1
+
+project:
+  name: sysinfo
+  version: 0.1.0
+  python: "3.11"
+
+deps:
+  strategy: pyproject
+
+include:
+  - "sysinfo.py"
+
+commands:
+  default: info
+  info:
+    exec: [python, sysinfo.py, info]
+  bench:
+    exec: [python, sysinfo.py, bench]
+  version:
+    exec: [python, sysinfo.py, version]
+
+integrity:
+  verify_on_install: true

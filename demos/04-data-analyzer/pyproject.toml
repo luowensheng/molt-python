@@ -1,0 +1,18 @@
+[project]
+name = "04-data-analyzer"
+version = "0.1.0"
+description = "Pandas data analysis demo — packages (pandas, rich) shared from global store"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=3.0.2",
+    "rich>=15.0.0",
+]
+
+[tool.molt.tasks]
+generate = "python generate_data.py"
+summary  = "python analyze.py summary"
+top      = "python analyze.py top"
+region   = "python analyze.py region"
+trend    = "python analyze.py trend"
+all      = "python analyze.py summary && python analyze.py top && python analyze.py region && python analyze.py trend"
