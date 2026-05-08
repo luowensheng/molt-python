@@ -26,6 +26,7 @@ for runnable example projects see [`demos/`](demos/).
 - [Pre-built `.so` binding](#pre-built-so-binding)
 - [`[[tool.molt.native]]` — external module recipes](#tool-moltnative--external-module-recipes)
 - [Runtime environment: `extra_paths`](#runtime-environment-extra_paths)
+- [Environment variables](#environment-variables)
 - [Build & distribution: single-binary release](#build--distribution-single-binary-release)
 - [Integrity & verification](#integrity--verification)
 - [Editor integration](#editor-integration)
@@ -792,6 +793,101 @@ This is genuinely useful even outside the kernel-module system — any
 project that vendors a `.so` for ctypes use, or ships helper binaries,
 can drop them in and have them discoverable on any developer's
 machine without per-shell `LD_LIBRARY_PATH` exports.
+
+---
+
+## Environment variables
+
+Two complementary layers, both opt-in, both injected into every
+process molt spawns (`molt run`, tasks, builds, the project's Python).
+
+### Global — `~/.molt/env.yaml`
+
+Variables you want in every project on the machine: corporate proxy,
+internal package mirrors, machine-wide secrets, debug flags.
+
+```sh
+$ molt env set HTTPS_PROXY http://proxy.corp.com:8080
+✓ set HTTPS_PROXY in /Users/me/.molt/env.yaml
+
+$ molt env set PIP_INDEX_URL https://pypi.corp.com/simple
+$ molt env set GITHUB_TOKEN ghp_xxx
+
+$ molt env list
+GITHUB_TOKEN                    ghp_xxx
+HTTPS_PROXY                     http://proxy.corp.com:8080
+PIP_INDEX_URL                   https://pypi.corp.com/simple
+
+$ molt env get HTTPS_PROXY
+http://proxy.corp.com:8080
+
+$ molt env unset GITHUB_TOKEN
+$ molt env edit                 # opens ~/.molt/env.yaml in $EDITOR
+$ molt env path                 # /Users/me/.molt/env.yaml
+```
+
+The file is `0600` since it can hold credentials. Saves are atomic
+(write-temp + rename). Sorted YAML output for clean diffs.
+
+### Per-project — `[tool.molt.runtime.env]`
+
+Variables bound to a specific project: `DATABASE_URL`, `LOG_LEVEL`,
+`PYTHONUNBUFFERED`, anything project-specific.
+
+```toml
+# pyproject.toml
+[tool.molt.runtime.env]
+DATABASE_URL     = "postgresql://localhost/dev"
+LOG_LEVEL        = "DEBUG"
+PYTHONUNBUFFERED = "1"
+```
+
+…or via CLI with `--local`:
+
+```sh
+$ molt env set DATABASE_URL postgresql://localhost/dev --local
+✓ set DATABASE_URL in pyproject.toml [tool.molt.runtime.env]
+
+$ molt env unset DATABASE_URL --local
+```
+
+### Resolution priority
+
+```
+1. project [tool.molt.runtime.env]    ← always wins (explicit project intent)
+2. parent shell env (export FOO=…)     ← shell-level explicit beats global default
+3. global ~/.molt/env.yaml              ← only sets vars not already in shell
+```
+
+So `export FOO=bar` in your shell still wins over a global default —
+explicit shell intent isn't silently overridden — but a project that
+declares `FOO = "..."` always wins, since project intent is even more
+explicit.
+
+### What's reserved
+
+Three names are molt-managed and **can't be set** through env config:
+
+| Name | Why molt manages it |
+|---|---|
+| `PYTHONPATH` | Computed from the project's syspath; manual override breaks store isolation |
+| `VIRTUAL_ENV` | Stripped on every spawn so a stale venv doesn't leak in |
+| `PYTHONHOME` | Same — molt always points at the project's pinned interpreter |
+
+`molt env set PYTHONPATH ...` errors loudly. The same names in
+`[tool.molt.runtime.env]` are silently dropped at parse time.
+
+### Use cases
+
+| Scenario | Where to put it |
+|---|---|
+| Corporate proxy | global — applies everywhere |
+| Internal PyPI mirror | global — `PIP_INDEX_URL`, `UV_INDEX_URL` |
+| Per-developer credentials | global — never in committed files |
+| `RUSTFLAGS=-C target-cpu=native` | global if you want it on every build |
+| `DATABASE_URL`, `LOG_LEVEL` | project — bound to the project |
+| `PYTHONUNBUFFERED=1` | global if you always want it; project for one app |
+| Test-only flags | project, scoped to the tests task |
 
 ---
 

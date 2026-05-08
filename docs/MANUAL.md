@@ -1404,6 +1404,44 @@ next section, which adds *Python source* dirs to `PYTHONPATH`. The
 `runtime` variant is for native binaries and shared libraries; the
 top-level one is for Python code.
 
+##### Environment variables
+
+Two layers, both injected into every process molt spawns:
+
+```sh
+$ molt env list                               # global ~/.molt/env.yaml
+$ molt env get HTTPS_PROXY
+$ molt env set HTTPS_PROXY http://proxy:8080  # global
+$ molt env set DATABASE_URL postgresql://localhost/dev --local
+                                              # writes to project pyproject.toml
+$ molt env unset HTTPS_PROXY
+$ molt env unset DATABASE_URL --local
+$ molt env edit                                # opens ~/.molt/env.yaml in $EDITOR
+$ molt env path                                # prints global YAML path
+```
+
+Project layer in pyproject.toml:
+
+```toml
+[tool.molt.runtime.env]
+DATABASE_URL     = "postgresql://localhost/dev"
+LOG_LEVEL        = "DEBUG"
+PYTHONUNBUFFERED = "1"
+```
+
+Resolution priority (highest first): project `[tool.molt.runtime.env]`
+> parent shell env (so `export FOO=…` always wins over a global
+default) > global `~/.molt/env.yaml`. Reserved names (`PYTHONPATH`,
+`VIRTUAL_ENV`, `PYTHONHOME`) are molt-managed and rejected.
+
+The global file is `0600` since it can hold credentials. Saves are
+atomic. Env injection happens in `syspath.Spec.BuildEnv`, the same hook
+that sets `PYTHONPATH` and `extra_paths`, so it flows through every
+`molt run` / `molt task` / `molt python run` / `molt build` invocation.
+
+For full reference and use cases see
+[`handbook.md` → Environment variables](handbook.md#environment-variables).
+
 ### 7.8 Eliminating `sys.path.insert` boilerplate
 
 Common Python pain — shared code outside the package's installed location:
