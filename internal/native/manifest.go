@@ -42,6 +42,7 @@ import (
 type Manifest struct {
 	Module    string
 	Source    string // optional override; relative to manifest dir
+	Library   string // optional pre-built shared library (.so/.dylib/.dll)
 	Functions []ManifestFn
 }
 
@@ -117,6 +118,8 @@ func ParseManifest(path string) (*Manifest, error) {
 				m.Module = strings.Trim(val, `"'`)
 			case "source":
 				m.Source = strings.Trim(val, `"'`)
+			case "library":
+				m.Library = strings.Trim(val, `"'`)
 			}
 			continue
 		}
@@ -319,17 +322,33 @@ func splitTopLevel(s string, sep byte) []string {
 	return parts
 }
 
-// ResolveSource finds the source file paired with a manifest. Returns
-// (absolute path, language-tag, ok). The language tag is derived from
-// the source file's extension and consumed by the build pipeline to
-// pick the right compiler.
+// ResolveSource finds the source-or-library file paired with a manifest.
+// Returns (absolute path, language-tag, ok). The language tag is either
+// a source language ("zig", "c", "cpp", "rust", "odin", ...) which
+// triggers the compile-from-source path, or "prebuilt" which triggers
+// the dlopen-wrapper path.
 //
 // Resolution order:
-//   1. If manifest.Source is set, that path (relative to manifest dir).
-//   2. Sibling file <basename>.<ext> for each ext in SourceExtensions.
+//   1. manifest.Library (explicit pre-built lib, takes priority).
+//   2. manifest.Source  (explicit source override, source-compile path).
+//   3. Sibling file <basename>.<ext> for each ext in SourceExtensions
+//      AND for the platform's shared-library extensions (.so/.dylib/.dll).
+//
+// In other words: drop a `<name>.so` next to a `<name>.molt.toml` and
+// molt builds a wrapper for it automatically.
 func ResolveSource(manifestPath string, m *Manifest, exts []string) (string, string, bool) {
 	dir := filepath.Dir(manifestPath)
 	base := manifestBasename(manifestPath)
+
+	if m != nil && m.Library != "" {
+		p := m.Library
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(dir, p)
+		}
+		if _, err := os.Stat(p); err == nil {
+			return p, "prebuilt", true
+		}
+	}
 
 	if m != nil && m.Source != "" {
 		p := m.Source
@@ -341,10 +360,27 @@ func ResolveSource(manifestPath string, m *Manifest, exts []string) (string, str
 		}
 	}
 
+	// Try sibling source files first (compile-from-source path).
 	for _, ext := range exts {
 		candidate := filepath.Join(dir, base+ext)
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, langFromExt(ext), true
+		}
+	}
+
+	// Then fall back to sibling pre-built libraries. We hard-code the
+	// platform's shared-lib extensions here rather than asking the user
+	// to list them in source_extensions — they're always meaningful for
+	// kernel modules and never have a "compile from source" semantics.
+	for _, ext := range []string{".so", ".dylib", ".dll"} {
+		// Try both <basename>.so and lib<basename>.so for unix.
+		for _, candidate := range []string{
+			filepath.Join(dir, base+ext),
+			filepath.Join(dir, "lib"+base+ext),
+		} {
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, "prebuilt", true
+			}
 		}
 	}
 	return "", "", false

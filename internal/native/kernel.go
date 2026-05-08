@@ -32,7 +32,7 @@ import (
 
 // kernelRecipeVersion is mixed into the cache hash; bump on any change
 // to how the build pipeline drives the compilers / generators.
-const kernelRecipeVersion = "v2"
+const kernelRecipeVersion = "v3"
 
 // DiscoverKernels walks projectDir + cfg.Paths (and cfg.ManifestDir if
 // set) for files ending in any of cfg.ManifestSuffixes. Each manifest
@@ -184,18 +184,25 @@ func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose 
 		manifest.Module = s.Basename
 	}
 
-	// Resolve the sibling source file using whatever extensions are
-	// watched (defaults + any extension with a configured builder).
+	// Resolve the sibling source-or-library file. Returns lang="prebuilt"
+	// when the match is a .so/.dylib/.dll (or manifest.Library is set).
 	exts := kernCfg.SourceExtensions
 	srcPath, lang, ok := ResolveSource(s.Path, manifest, exts)
 	if !ok {
 		return Artifact{}, fmt.Errorf(
-			"%s: no source file found (tried extensions: %s)",
+			"%s: no source or library file found (tried %s and .so/.dylib/.dll)",
 			s.Path, strings.Join(exts, " "))
 	}
 	srcData, err := os.ReadFile(srcPath)
 	if err != nil {
-		return Artifact{}, fmt.Errorf("read source %s: %w", srcPath, err)
+		return Artifact{}, fmt.Errorf("read %s: %w", srcPath, err)
+	}
+
+	soName := s.Basename + extSuffix
+
+	if lang == "prebuilt" {
+		return buildPrebuiltKernel(s, manifestData, srcPath, srcData,
+			manifest, soName, abiTag, plat, pyInclude, verbose)
 	}
 
 	// Resolve the build-command template *before* hashing so the cache
@@ -210,7 +217,6 @@ func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose 
 	}
 
 	hash := hashKernel(manifestData, srcData, abiTag, plat, pyInclude, buildTemplate)
-	soName := s.Basename + extSuffix
 
 	if hit, cachedPath, err := hasCacheEntry(hash, soName); err != nil {
 		return Artifact{}, err
@@ -288,6 +294,123 @@ func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose 
 		Source: s, Hash: hash, Path: cachedSo, SoName: soName,
 		AbiTag: abiTag, Plat: plat, Siblings: []string{cachedPyi},
 	}, nil
+}
+
+// buildPrebuiltKernel handles the dlopen-wrapper path: the user has a
+// pre-built .so/.dylib/.dll and wants Python to import it via molt.
+// We generate a tiny wrapper that dlopens the lib and forwards calls
+// through function pointers, then compile and link the wrapper as a
+// CPython extension.
+//
+// Cache hash mixes manifest content + library content (so vendor
+// updates trigger rebuild) + library path + ABI/platform.
+func buildPrebuiltKernel(
+	s Source,
+	manifestData []byte,
+	libPath string,
+	libData []byte,
+	manifest *Manifest,
+	soName, abiTag, plat, pyInclude string,
+	verbose bool,
+) (Artifact, error) {
+	hash := hashKernel(manifestData, libData, abiTag, plat, pyInclude,
+		"prebuilt:"+libPath)
+
+	if hit, cachedPath, err := hasCacheEntry(hash, soName); err != nil {
+		return Artifact{}, err
+	} else if hit {
+		if verbose {
+			fmt.Printf("  ✓ kernel  %s  (cached, prebuilt)\n", s.Module)
+		}
+		return cachedKernelArtifact(s, hash, cachedPath, soName, abiTag, plat), nil
+	}
+
+	if verbose {
+		fmt.Printf("  ↻ kernel  %s  [prebuilt]\n", s.Module)
+	}
+
+	root, err := CacheRoot()
+	if err != nil {
+		return Artifact{}, err
+	}
+	buildDir := filepath.Join(root, "kernel-build", s.Module+"-"+hash)
+	_ = os.RemoveAll(buildDir)
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		return Artifact{}, err
+	}
+
+	// Generate dlopen-wrapper glue.c.
+	gluePath := filepath.Join(buildDir, "glue.c")
+	if err := os.WriteFile(gluePath, []byte(emitGlueDlopenC(manifest, libPath)), 0o644); err != nil {
+		return Artifact{}, err
+	}
+
+	// Link via zig cc — same as the source path, just no user object
+	// to link in. The wrapper depends only on libdl + Python; the impl
+	// is loaded at import time, not link time.
+	soStaging := filepath.Join(buildDir, soName)
+	if err := linkPrebuiltSO(gluePath, soStaging, pyInclude); err != nil {
+		return Artifact{}, err
+	}
+
+	// .pyi stub.
+	pyiContent := emitPyiStub(manifest, libPath)
+	pyiStaging := filepath.Join(buildDir, s.Basename+".pyi")
+	if err := os.WriteFile(pyiStaging, []byte(pyiContent), 0o644); err != nil {
+		return Artifact{}, err
+	}
+
+	cdir, err := cacheDir(hash)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		return Artifact{}, err
+	}
+	cachedSo := filepath.Join(cdir, soName)
+	cachedPyi := filepath.Join(cdir, s.Basename+".pyi")
+	if err := copyFile(soStaging, cachedSo); err != nil {
+		return Artifact{}, fmt.Errorf("cache .so: %w", err)
+	}
+	if err := copyFile(pyiStaging, cachedPyi); err != nil {
+		return Artifact{}, fmt.Errorf("cache .pyi: %w", err)
+	}
+	if err := writeCacheMeta(hash, CacheEntry{
+		Lang: "kernel-prebuilt", SoName: soName, Source: s.Path,
+		AbiTag: abiTag, Platform: plat, CompiledAt: time.Now().UTC(),
+	}); err != nil {
+		return Artifact{}, err
+	}
+
+	return Artifact{
+		Source: s, Hash: hash, Path: cachedSo, SoName: soName,
+		AbiTag: abiTag, Plat: plat, Siblings: []string{cachedPyi},
+	}, nil
+}
+
+// linkPrebuiltSO compiles glue.c into a shared library. No user object
+// to link in — the impl is loaded at runtime via dlopen.
+func linkPrebuiltSO(gluePath, soOut, pyInclude string) error {
+	zigBin, err := EnsureZig("")
+	if err != nil {
+		return fmt.Errorf("locate zig (used for linking): %w", err)
+	}
+	args := []string{"cc",
+		"-shared", "-fPIC", "-O2",
+		"-I", pyInclude,
+		"-o", soOut,
+		gluePath,
+	}
+	if runtime.GOOS == "darwin" {
+		args = append(args, "-undefined", "dynamic_lookup")
+	} else if runtime.GOOS == "linux" {
+		args = append(args, "-ldl")
+	}
+	cmd := exec.Command(zigBin, args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("link prebuilt-wrapper .so:\n%s", string(out))
+	}
+	return nil
 }
 
 func cachedKernelArtifact(s Source, hash, soPath, soName, abiTag, plat string) Artifact {

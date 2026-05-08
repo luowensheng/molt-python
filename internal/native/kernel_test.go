@@ -198,6 +198,95 @@ func TestResolveSource(t *testing.T) {
 	}
 }
 
+func TestResolveSource_PrebuiltViaSibling(t *testing.T) {
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "foo.molt.toml")
+	soFile := filepath.Join(dir, "foo.so")
+	if err := os.WriteFile(manifest, []byte("[[fn]]\nname='do'\nargs=['i32']\nreturns='i32'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(soFile, []byte("\x7fELF stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := ParseManifest(manifest)
+	srcPath, lang, ok := ResolveSource(manifest, m, []string{".zig", ".c"})
+	if !ok {
+		t.Fatal("ResolveSource failed to find sibling .so")
+	}
+	if lang != "prebuilt" {
+		t.Errorf("lang = %q, want prebuilt", lang)
+	}
+	if srcPath != soFile {
+		t.Errorf("srcPath = %q, want %q", srcPath, soFile)
+	}
+}
+
+func TestResolveSource_PrebuiltViaLibField(t *testing.T) {
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "bar.molt.toml")
+	libPath := filepath.Join(dir, "vendor", "libfoo.so")
+	if err := os.MkdirAll(filepath.Dir(libPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(libPath, []byte("\x7fELF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte(
+		"library = \"vendor/libfoo.so\"\n[[fn]]\nname='go'\nargs=['i32']\nreturns='i32'\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := ParseManifest(manifest)
+	if m.Library != "vendor/libfoo.so" {
+		t.Errorf("Library = %q", m.Library)
+	}
+	srcPath, lang, ok := ResolveSource(manifest, m, []string{".zig", ".c"})
+	if !ok || lang != "prebuilt" || srcPath != libPath {
+		t.Errorf("got (%q,%q,%v) want (%q,prebuilt,true)", srcPath, lang, ok, libPath)
+	}
+}
+
+func TestResolveSource_LibPrefixedSibling(t *testing.T) {
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "crypto.molt.toml")
+	libPath := filepath.Join(dir, "libcrypto.so")
+	if err := os.WriteFile(manifest, []byte("[[fn]]\nname='enc'\nargs=['u32']\nreturns='u32'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(libPath, []byte("\x7fELF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := ParseManifest(manifest)
+	srcPath, lang, ok := ResolveSource(manifest, m, []string{".zig", ".c"})
+	if !ok || lang != "prebuilt" || srcPath != libPath {
+		t.Errorf("got (%q,%q,%v) want (%q,prebuilt,true)", srcPath, lang, ok, libPath)
+	}
+}
+
+func TestEmitGlueDlopenC_HasPyInitAndDlsym(t *testing.T) {
+	m := &Manifest{
+		Module: "crypto",
+		Functions: []ManifestFn{
+			{Name: "encrypt", Args: []ManifestArg{{Type: "u32"}}, Returns: ManifestReturn{Type: "u32"}},
+			{Name: "decrypt", Args: []ManifestArg{{Type: "u32"}}, Returns: ManifestReturn{Type: "u32"}},
+		},
+	}
+	out := emitGlueDlopenC(m, "/abs/libcrypto.so")
+	for _, want := range []string{
+		"PyInit_crypto",
+		"#include <dlfcn.h>",
+		`dlopen("/abs/libcrypto.so"`,
+		"_impl_encrypt",
+		"_impl_decrypt",
+		"dlsym(h, \"encrypt\")",
+		"dlsym(h, \"decrypt\")",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dlopen glue missing %q\n%s", want, out)
+		}
+	}
+}
+
 func TestDiscoverKernels(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
