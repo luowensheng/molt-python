@@ -120,6 +120,9 @@ func (s *Spec) PythonCommand(args ...string) *exec.Cmd {
 	return cmd
 }
 
+// StateDir returns the per-project state directory (e.g. ~/.molt/projects/myapp-abc123/).
+func (s *Spec) StateDir() string { return projectMoltDir(s.ProjectDir) }
+
 // ResolveCommand searches .molt/bin first for a project-local shim, falling
 // back to PATH. Returns absolute path or "" if not found.
 func (s *Spec) ResolveCommand(name string) string {
