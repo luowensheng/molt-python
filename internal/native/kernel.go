@@ -222,13 +222,13 @@ func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose 
 		return Artifact{}, err
 	} else if hit {
 		if verbose {
-			fmt.Printf("  ✓ kernel  %s  (cached)\n", s.Module)
+			progressLine("  ✓ kernel  %s  (cached)\n", s.Module)
 		}
 		return cachedKernelArtifact(s, hash, cachedPath, soName, abiTag, plat), nil
 	}
 
 	if verbose {
-		fmt.Printf("  ↻ kernel  %s  [%s]\n", s.Module, lang)
+		progressLine("  ↻ kernel  %s  [%s]\n", s.Module, lang)
 	}
 
 	// Build directory under the cache root.
@@ -320,13 +320,13 @@ func buildPrebuiltKernel(
 		return Artifact{}, err
 	} else if hit {
 		if verbose {
-			fmt.Printf("  ✓ kernel  %s  (cached, prebuilt)\n", s.Module)
+			progressLine("  ✓ kernel  %s  (cached, prebuilt)\n", s.Module)
 		}
 		return cachedKernelArtifact(s, hash, cachedPath, soName, abiTag, plat), nil
 	}
 
 	if verbose {
-		fmt.Printf("  ↻ kernel  %s  [prebuilt]\n", s.Module)
+		progressLine("  ↻ kernel  %s  [prebuilt]\n", s.Module)
 	}
 
 	root, err := CacheRoot()

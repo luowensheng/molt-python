@@ -14,89 +14,95 @@ import (
 // Compile runs the appropriate compiler for each source not already in cache.
 // Dispatches on s.Lang: "cython" → Cython+cc pipeline, "rust" → cargo.
 // Returns one Artifact per input source (cache hits inclusive).
+// Compile builds every source in `sources` in parallel, bounded by the
+// number of workers returned by jobsCount(). Build outputs (cargo,
+// cython, zig, ...) are captured per-build by exec.CombinedOutput so
+// their stdout/stderr never interleaves; the only thing we serialise
+// is the one-line progress markers via a stdout mutex.
+//
+// Result order matches the input source order so callers see a stable
+// []Artifact even though builds finish in arbitrary order.
+//
+// Failure semantics: every queued build runs to completion (whether
+// the previous one failed or not), then the first error encountered
+// is returned. This keeps the cache populated for any sources that
+// did succeed and avoids leaving half-finished work behind.
 func Compile(sources []Source, projectDir string, abi pyabi.Info, pyExe, cc, includeDir, extSuffix string, syspathDirs []string, verbose bool, cfg CythonConfig, rust RustConfig, zigCfg ZigConfig, kernCfg KernelConfig) ([]Artifact, error) {
 	plat := platTag(abi)
 	abiTag := abi.AbiTag
-	out := make([]Artifact, 0, len(sources))
-	for _, s := range sources {
-		if s.Lang == "rust" {
-			art, err := BuildRustFile(s, pyExe, abiTag, plat, extSuffix, verbose, rust)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, art)
-			continue
-		}
-		if s.Lang == "kernel" {
-			art, err := BuildKernelModule(s, pyExe, abiTag, plat, extSuffix, verbose, zigCfg, kernCfg, includeDir)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, art)
-			continue
-		}
 
-		content, err := os.ReadFile(s.Path)
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", s.Path, err)
+	// One closure per source — shared logic for the three language paths.
+	buildOne := func(s Source) (Artifact, error) {
+		switch s.Lang {
+		case "rust":
+			return BuildRustFile(s, pyExe, abiTag, plat, extSuffix, verbose, rust)
+		case "kernel":
+			return BuildKernelModule(s, pyExe, abiTag, plat, extSuffix, verbose, zigCfg, kernCfg, includeDir)
 		}
-		// Resolve include_c / pkg_config / libraries / sources / etc.
-		// once per source so the result feeds both the hash and the
-		// compile.
-		extraFlags, extraSources, cxx, err := resolveCythonFlags(projectDir, s.Path, cfg)
-		if err != nil {
-			return nil, fmt.Errorf("resolve cython flags %s: %w", s.Path, err)
-		}
-		hash := hashSource(content, abiTag, plat, cfg, extraFlags, extraSources)
-		soName := s.Basename + extSuffix
-
-		hit, cachedPath, err := hasCacheEntry(hash, soName)
-		if err != nil {
-			return nil, err
-		}
-		if hit {
-			if verbose {
-				fmt.Printf("  ✓ cython  %s  (cached)\n", s.Module)
-			}
-			out = append(out, Artifact{
-				Source: s, Hash: hash, Path: cachedPath, SoName: soName,
-				AbiTag: abiTag, Plat: plat,
-			})
-			continue
-		}
-
-		if verbose {
-			fmt.Printf("  ↻ cython  %s\n", s.Module)
-		}
-		// Pre-create the cache dir and compile straight into it. Avoids
-		// the cross-defer dance of "move to cache after temp cleanup".
-		cdir, err := cacheDir(hash)
-		if err != nil {
-			return nil, err
-		}
-		if err := os.MkdirAll(cdir, 0o755); err != nil {
-			return nil, err
-		}
-		dest := filepath.Join(cdir, soName)
-		if err := compileOneInto(s, dest, pyExe, cc, includeDir, syspathDirs, cfg, zigCfg, extraFlags, extraSources, cxx); err != nil {
-			return nil, err
-		}
-		if err := writeCacheMeta(hash, CacheEntry{
-			Lang:       "cython",
-			SoName:     soName,
-			Source:     s.Path,
-			AbiTag:     abiTag,
-			Platform:   plat,
-			CompiledAt: time.Now().UTC(),
-		}); err != nil {
-			return nil, err
-		}
-		out = append(out, Artifact{
-			Source: s, Hash: hash, Path: dest, SoName: soName,
-			AbiTag: abiTag, Plat: plat,
-		})
+		return buildCythonOne(s, projectDir, abiTag, plat, pyExe, cc,
+			includeDir, syspathDirs, extSuffix, verbose, cfg, zigCfg)
 	}
-	return out, nil
+
+	return runInParallel(sources, jobsCount(), buildOne)
+}
+
+// buildCythonOne is the per-source body for Lang == "cython"; factored
+// out so Compile's worker can call it without an inline 60-line block.
+func buildCythonOne(s Source, projectDir, abiTag, plat, pyExe, cc, includeDir string, syspathDirs []string, extSuffix string, verbose bool, cfg CythonConfig, zigCfg ZigConfig) (Artifact, error) {
+	content, err := os.ReadFile(s.Path)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("read %s: %w", s.Path, err)
+	}
+	extraFlags, extraSources, cxx, err := resolveCythonFlags(projectDir, s.Path, cfg)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("resolve cython flags %s: %w", s.Path, err)
+	}
+	hash := hashSource(content, abiTag, plat, cfg, extraFlags, extraSources)
+	soName := s.Basename + extSuffix
+
+	hit, cachedPath, err := hasCacheEntry(hash, soName)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if hit {
+		if verbose {
+			progressLine("  ✓ cython  %s  (cached)\n", s.Module)
+		}
+		return Artifact{
+			Source: s, Hash: hash, Path: cachedPath, SoName: soName,
+			AbiTag: abiTag, Plat: plat,
+		}, nil
+	}
+
+	if verbose {
+		progressLine("  ↻ cython  %s\n", s.Module)
+	}
+	cdir, err := cacheDir(hash)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if err := os.MkdirAll(cdir, 0o755); err != nil {
+		return Artifact{}, err
+	}
+	dest := filepath.Join(cdir, soName)
+	if err := compileOneInto(s, dest, pyExe, cc, includeDir, syspathDirs,
+		cfg, zigCfg, extraFlags, extraSources, cxx); err != nil {
+		return Artifact{}, err
+	}
+	if err := writeCacheMeta(hash, CacheEntry{
+		Lang:       "cython",
+		SoName:     soName,
+		Source:     s.Path,
+		AbiTag:     abiTag,
+		Platform:   plat,
+		CompiledAt: time.Now().UTC(),
+	}); err != nil {
+		return Artifact{}, err
+	}
+	return Artifact{
+		Source: s, Hash: hash, Path: dest, SoName: soName,
+		AbiTag: abiTag, Plat: plat,
+	}, nil
 }
 
 // compileOneInto runs the two-step Cython pipeline for a single source

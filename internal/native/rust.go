@@ -207,7 +207,7 @@ func BuildRustFile(s Source, pyExe, abiTag, plat, extSuffix string, verbose bool
 		return Artifact{}, err
 	} else if hit {
 		if verbose {
-			fmt.Printf("  ✓ rust    %s  (cached)\n", s.Module)
+			progressLine("  ✓ rust    %s  (cached)\n", s.Module)
 		}
 		return Artifact{
 			Source: s, Hash: hash, Path: cachedPath, SoName: soName,
@@ -216,7 +216,7 @@ func BuildRustFile(s Source, pyExe, abiTag, plat, extSuffix string, verbose bool
 	}
 
 	if verbose {
-		fmt.Printf("  ↻ rust    %s\n", s.Module)
+		progressLine("  ↻ rust    %s\n", s.Module)
 	}
 
 	buildDir, err := rustBuildRoot(s.Module, hash)
@@ -295,7 +295,7 @@ func BuildRustProject(module, srcDir, abiTag, plat, extSuffix string, verbose bo
 		return Artifact{}, err
 	} else if hit {
 		if verbose {
-			fmt.Printf("  ✓ rust    %s  (cached)\n", module)
+			progressLine("  ✓ rust    %s  (cached)\n", module)
 		}
 		return Artifact{
 			Source: src, Hash: hash, Path: cachedPath, SoName: soName,
@@ -304,7 +304,7 @@ func BuildRustProject(module, srcDir, abiTag, plat, extSuffix string, verbose bo
 	}
 
 	if verbose {
-		fmt.Printf("  ↻ rust    %s\n", module)
+		progressLine("  ↻ rust    %s\n", module)
 	}
 
 	crateName, err := readCrateName(srcDir)

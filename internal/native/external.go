@@ -224,78 +224,99 @@ func CheckAndRebuild(modules []ExternalModule, projectDir, abiTag, plat, extSuff
 		return nil, false, err
 	}
 
-	var arts []Artifact
-	anyRebuilt := false
+	// Per-module build closure. Returns (artifact, optional hash-update, error).
+	// hash-update is non-nil only when a rebuild actually happened — the
+	// outer loop merges these into `hashes` after all builds finish so we
+	// don't fight over a shared map across goroutines.
+	type result struct {
+		art    Artifact
+		update *extHashEntry
+		module string
+	}
 
-	for _, m := range modules {
+	build := func(m ExternalModule) (result, error) {
 		// Rust projects use their own internal cache keyed by source hash.
 		if m.IsRust {
 			art, err := BuildRustProject(m.Module, m.SrcDir, abiTag, plat, extSuffix, verbose)
 			if err != nil {
-				return nil, false, fmt.Errorf("rust project %s: %w", m.Module, err)
+				return result{}, fmt.Errorf("rust project %s: %w", m.Module, err)
 			}
 			art.Source.Lang = "external"
-			arts = append(arts, art)
-			continue
+			return result{art: art, module: m.Module}, nil
 		}
 
 		srcHash, err := hashExternalSrc(m.SrcDir, m.Src, m.Build)
 		if err != nil {
-			return nil, false, fmt.Errorf("hash %s: %w", m.Module, err)
+			return result{}, fmt.Errorf("hash %s: %w", m.Module, err)
 		}
 
 		soName := m.Module + extSuffix
-		cached := hashes[m.Module]
+		cached := hashes[m.Module] // read-only access; safe for parallel reads
 
 		// Cache hit: same hash + build command + .so still in cache.
 		if cached.SrcHash == srcHash && cached.Build == m.Build {
 			if hit, cachedPath, herr := hasCacheEntry(srcHash, soName); herr == nil && hit {
 				if verbose {
-					fmt.Printf("  ✓ native  %s  (cached)\n", m.Module)
+					progressLine("  ✓ native  %s  (cached)\n", m.Module)
 				}
 				src := Source{Lang: "external", Module: m.Module, Basename: m.Module, Path: m.SrcDir}
-				arts = append(arts, Artifact{
-					Source: src, Hash: srcHash, Path: cachedPath, SoName: soName,
-					AbiTag: abiTag, Plat: plat,
-				})
-				continue
+				return result{
+					art: Artifact{
+						Source: src, Hash: srcHash, Path: cachedPath, SoName: soName,
+						AbiTag: abiTag, Plat: plat,
+					},
+					module: m.Module,
+				}, nil
 			}
 		}
 
 		if verbose {
-			fmt.Printf("  ↻ native  %s\n", m.Module)
+			progressLine("  ↻ native  %s\n", m.Module)
 		}
 
 		cmd := exec.Command("sh", "-c", m.Build)
 		cmd.Dir = m.SrcDir
 		if cmdOut, err := cmd.CombinedOutput(); err != nil {
-			return nil, false, fmt.Errorf("build %s:\n%s", m.Module, string(cmdOut))
+			return result{}, fmt.Errorf("build %s:\n%s", m.Module, string(cmdOut))
 		}
 
 		if _, err := os.Stat(m.Output); err != nil {
-			return nil, false, fmt.Errorf("build %s: output not found at %s", m.Module, m.Output)
+			return result{}, fmt.Errorf("build %s: output not found at %s", m.Module, m.Output)
 		}
 
 		cdir, err := cacheDir(srcHash)
 		if err != nil {
-			return nil, false, err
+			return result{}, err
 		}
 		if err := os.MkdirAll(cdir, 0o755); err != nil {
-			return nil, false, err
+			return result{}, err
 		}
 		dest := filepath.Join(cdir, soName)
 		if err := copyFile(m.Output, dest); err != nil {
-			return nil, false, fmt.Errorf("cache %s: %w", m.Module, err)
+			return result{}, fmt.Errorf("cache %s: %w", m.Module, err)
 		}
 
-		hashes[m.Module] = extHashEntry{SrcHash: srcHash, Build: m.Build}
-		anyRebuilt = true
-
 		src := Source{Lang: "external", Module: m.Module, Basename: m.Module, Path: m.SrcDir}
-		arts = append(arts, Artifact{
-			Source: src, Hash: srcHash, Path: dest, SoName: soName,
-			AbiTag: abiTag, Plat: plat,
-		})
+		return result{
+			art:    Artifact{Source: src, Hash: srcHash, Path: dest, SoName: soName, AbiTag: abiTag, Plat: plat},
+			update: &extHashEntry{SrcHash: srcHash, Build: m.Build},
+			module: m.Module,
+		}, nil
+	}
+
+	results, err := runInParallel(modules, jobsCount(), build)
+	if err != nil {
+		return nil, false, err
+	}
+
+	arts := make([]Artifact, 0, len(results))
+	anyRebuilt := false
+	for _, r := range results {
+		arts = append(arts, r.art)
+		if r.update != nil {
+			hashes[r.module] = *r.update
+			anyRebuilt = true
+		}
 	}
 
 	if anyRebuilt {
