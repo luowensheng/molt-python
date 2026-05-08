@@ -20,6 +20,7 @@ import (
 	"molt/internal/adopt"
 	"molt/internal/builder"
 	"molt/internal/editor"
+	"molt/internal/globalenv"
 	"molt/internal/integrity"
 	"molt/internal/kernelbuilder"
 	"molt/internal/projstate"
@@ -142,6 +143,8 @@ func main() {
 		err = cmdNativePreset(os.Args[2:])
 	case "kernel-builder":
 		err = cmdKernelBuilder(os.Args[2:])
+	case "env":
+		err = cmdEnv(os.Args[2:])
 
 	// ── Global package store ──────────────────────────────────────────────
 	case "gc":
@@ -243,6 +246,15 @@ Kernel builders (~/.molt/kernel-builders.yaml — per-extension recipes):
   kernel-builder edit                       $EDITOR ~/.molt/kernel-builders.yaml
   kernel-builder reset                      Restore the seeded defaults
   kernel-builder path                       Print the global YAML path
+
+Environment variables (~/.molt/env.yaml — applied to every molt-spawned process):
+  env list                                  List global env vars
+  env get <NAME>                            Print one var's value
+  env set <NAME> <VALUE>                    Set a global var
+                                  --local   write to project [tool.molt.runtime.env]
+  env unset <NAME> [--local]                Remove a var
+  env edit                                  $EDITOR ~/.molt/env.yaml
+  env path                                  Print the global YAML path
 
 Global flags:
   --project / -p <q>               Operate on a registered project from anywhere
@@ -2446,6 +2458,228 @@ func removeKernelBuilderFromPyproject(ext string) error {
 	}
 	if !removed {
 		return fmt.Errorf("[tool.molt.native_kernel.build.%s] not found in pyproject.toml", ext)
+	}
+	return os.WriteFile("pyproject.toml", []byte(strings.Join(out, "\n")), 0o644)
+}
+
+// ── env: per-project + global env-var registry ──────────────────────────────
+
+func cmdEnv(args []string) error {
+	if len(args) == 0 {
+		fmt.Println("usage: molt env <list|get|set|unset|edit|path> [args]")
+		fmt.Println("       --local on set/unset writes to project pyproject.toml instead")
+		return nil
+	}
+	switch args[0] {
+	case "list":
+		return cmdEnvList()
+	case "get":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt env get <NAME>")
+		}
+		return cmdEnvGet(args[1])
+	case "set":
+		return cmdEnvSet(args[1:])
+	case "unset":
+		return cmdEnvUnset(args[1:])
+	case "edit":
+		return cmdEnvEdit()
+	case "path":
+		p, err := globalenv.GlobalPath()
+		if err != nil {
+			return err
+		}
+		fmt.Println(p)
+		return nil
+	}
+	return fmt.Errorf("unknown env command %q", args[0])
+}
+
+func cmdEnvList() error {
+	vars, err := globalenv.Load()
+	if err != nil {
+		return err
+	}
+	if len(vars) == 0 {
+		fmt.Println("no global env vars set (~/.molt/env.yaml)")
+		return nil
+	}
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("%-30s  %s\n", k, vars[k])
+	}
+	return nil
+}
+
+func cmdEnvGet(name string) error {
+	v, ok, err := globalenv.Get(name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%s not set", name)
+	}
+	fmt.Println(v)
+	return nil
+}
+
+func cmdEnvSet(args []string) error {
+	flags, rest := extractFlags(args, map[string]bool{"local": true})
+	local := flags["local"]
+	if len(rest) < 2 {
+		return fmt.Errorf("usage: molt env set [--local] <NAME> <VALUE>")
+	}
+	name, value := rest[0], rest[1]
+	if globalenv.IsReserved(name) {
+		return fmt.Errorf("%s is molt-managed and can't be set in env config", name)
+	}
+	if local {
+		if err := writeEnvVarToPyproject(name, value); err != nil {
+			return err
+		}
+		fmt.Printf("✓ set %s in pyproject.toml [tool.molt.runtime.env]\n", name)
+		return nil
+	}
+	if err := globalenv.Set(name, value); err != nil {
+		return err
+	}
+	path, _ := globalenv.GlobalPath()
+	fmt.Printf("✓ set %s in %s\n", name, path)
+	return nil
+}
+
+func cmdEnvUnset(args []string) error {
+	flags, rest := extractFlags(args, map[string]bool{"local": true})
+	local := flags["local"]
+	if len(rest) < 1 {
+		return fmt.Errorf("usage: molt env unset [--local] <NAME>")
+	}
+	name := rest[0]
+	if local {
+		if err := removeEnvVarFromPyproject(name); err != nil {
+			return err
+		}
+		fmt.Printf("✓ removed %s from pyproject.toml\n", name)
+		return nil
+	}
+	if err := globalenv.Unset(name); err != nil {
+		return err
+	}
+	fmt.Printf("✓ removed %s from global env\n", name)
+	return nil
+}
+
+func cmdEnvEdit() error {
+	path, err := globalenv.GlobalPath()
+	if err != nil {
+		return err
+	}
+	// Make sure file exists (Load returns empty if missing; we want a
+	// real file for $EDITOR to open).
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		if err := globalenv.Save(map[string]string{}); err != nil {
+			return err
+		}
+	}
+	editorBin := os.Getenv("EDITOR")
+	if editorBin == "" {
+		editorBin = "vi"
+	}
+	cmd := exec.Command(editorBin, path)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// writeEnvVarToPyproject inserts or updates KEY = "VALUE" inside the
+// [tool.molt.runtime.env] block of the current dir's pyproject.toml.
+// Conservative line editor — preserves comments and other formatting.
+func writeEnvVarToPyproject(name, value string) error {
+	pp, err := os.ReadFile("pyproject.toml")
+	if err != nil {
+		return fmt.Errorf("read pyproject.toml: %w", err)
+	}
+	const header = "[tool.molt.runtime.env]"
+	keyLine := fmt.Sprintf("%s = %q", name, value)
+
+	lines := strings.Split(string(pp), "\n")
+	headerIdx := -1
+	keyIdx := -1
+	sectionEnd := len(lines)
+
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == header {
+			headerIdx = i
+			continue
+		}
+		if headerIdx >= 0 && i > headerIdx {
+			if strings.HasPrefix(t, "[") {
+				sectionEnd = i
+				break
+			}
+			if strings.HasPrefix(t, name+" ") || strings.HasPrefix(t, name+"=") {
+				keyIdx = i
+			}
+		}
+	}
+
+	// Trim trailing blank lines inside the section so we don't insert
+	// after them (which would leave a stray blank line mid-section).
+	for sectionEnd > headerIdx+1 && strings.TrimSpace(lines[sectionEnd-1]) == "" {
+		sectionEnd--
+	}
+	switch {
+	case keyIdx >= 0:
+		lines[keyIdx] = keyLine
+	case headerIdx >= 0:
+		// Insert key after the last existing key in the section.
+		lines = append(lines[:sectionEnd],
+			append([]string{keyLine}, lines[sectionEnd:]...)...)
+	default:
+		// New section.
+		out := strings.TrimRight(string(pp), "\n") + "\n\n" + header + "\n" + keyLine + "\n"
+		return os.WriteFile("pyproject.toml", []byte(out), 0o644)
+	}
+	return os.WriteFile("pyproject.toml", []byte(strings.Join(lines, "\n")), 0o644)
+}
+
+// removeEnvVarFromPyproject deletes one KEY=VALUE line under
+// [tool.molt.runtime.env]. If the section becomes empty, leaves the
+// header in place — pruning is the user's call.
+func removeEnvVarFromPyproject(name string) error {
+	pp, err := os.ReadFile("pyproject.toml")
+	if err != nil {
+		return fmt.Errorf("read pyproject.toml: %w", err)
+	}
+	const header = "[tool.molt.runtime.env]"
+	lines := strings.Split(string(pp), "\n")
+	inSection := false
+	removed := false
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == header {
+			inSection = true
+			out = append(out, line)
+			continue
+		}
+		if inSection && strings.HasPrefix(t, "[") {
+			inSection = false
+		}
+		if inSection && (strings.HasPrefix(t, name+" ") || strings.HasPrefix(t, name+"=")) {
+			removed = true
+			continue
+		}
+		out = append(out, line)
+	}
+	if !removed {
+		return fmt.Errorf("%s not set in pyproject.toml [tool.molt.runtime.env]", name)
 	}
 	return os.WriteFile("pyproject.toml", []byte(strings.Join(out, "\n")), 0o644)
 }
