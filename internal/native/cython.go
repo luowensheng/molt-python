@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"time"
 
+	"molt/internal/progress"
 	"molt/internal/pyabi"
 )
 
@@ -140,7 +141,8 @@ func compileOneInto(s Source, soDest, pyExe, cc, includeDir string, syspathDirs 
 	cyArgs = append(cyArgs, "-o", cFile, s.Path)
 	cy := exec.Command(pyExe, cyArgs...)
 	cy.Env = append(envWithPYTHONPATH(syspathDirs), filterPythonEnv(os.Environ())...)
-	if out, err := cy.CombinedOutput(); err != nil {
+	prefix := fmt.Sprintf("    [%s] ", s.Module)
+	if out, err := progress.Stream(cy, prefix, streamingEnabled()); err != nil {
 		return fmt.Errorf("cython %s:\n%s", s.Path, string(out))
 	}
 
@@ -170,7 +172,7 @@ func compileOneInto(s Source, soDest, pyExe, cc, includeDir string, syspathDirs 
 	full := append([]string{}, cmdVec...)
 	full = append(full, args...)
 	build := exec.Command(full[0], full[1:]...)
-	if out, err := build.CombinedOutput(); err != nil {
+	if out, err := progress.Stream(build, prefix, streamingEnabled()); err != nil {
 		return fmt.Errorf("%s %s:\n%s", filepath.Base(full[0]), s.Path, string(out))
 	}
 

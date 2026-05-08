@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"molt/internal/progress"
 )
 
 // RustMode describes how a .rs file exposes itself to Python.
@@ -248,7 +250,8 @@ func BuildRustFile(s Source, pyExe, abiTag, plat, extSuffix string, verbose bool
 		"PYO3_PYTHON="+pyExe,
 		"PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1",
 	)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	prefix := fmt.Sprintf("    [%s] ", s.Module)
+	if out, err := progress.Stream(cmd, prefix, streamingEnabled()); err != nil {
 		return Artifact{}, fmt.Errorf("cargo build %s:\n%s", s.Path, string(out))
 	}
 
@@ -314,7 +317,8 @@ func BuildRustProject(module, srcDir, abiTag, plat, extSuffix string, verbose bo
 
 	cmd := exec.Command("cargo", "build", "--release")
 	cmd.Dir = srcDir
-	if out, err := cmd.CombinedOutput(); err != nil {
+	prefix := fmt.Sprintf("    [%s] ", module)
+	if out, err := progress.Stream(cmd, prefix, streamingEnabled()); err != nil {
 		return Artifact{}, fmt.Errorf("cargo build %s:\n%s", srcDir, string(out))
 	}
 

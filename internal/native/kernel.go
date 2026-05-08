@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"molt/internal/kernelbuilder"
+	"molt/internal/progress"
 )
 
 // kernelRecipeVersion is mixed into the cache hash; bump on any change
@@ -407,7 +408,7 @@ func linkPrebuiltSO(gluePath, soOut, pyInclude string) error {
 		args = append(args, "-ldl")
 	}
 	cmd := exec.Command(zigBin, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := progress.Stream(cmd, "    [link] ", streamingEnabled()); err != nil {
 		return fmt.Errorf("link prebuilt-wrapper .so:\n%s", string(out))
 	}
 	return nil
@@ -470,11 +471,32 @@ func compileKernelSource(lang, srcPath, objPath string, zigCfg ZigConfig, kernCf
 		return "", fmt.Errorf("empty build command for .%s", lang)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	prefix := streamPrefix(srcPath)
+	if out, err := progress.Stream(cmd, prefix, streamingEnabled()); err != nil {
 		return "", fmt.Errorf("%s build (.%s) failed:\n  %s\n%s",
 			argv[0], lang, resolved, string(out))
 	}
 	return resolved, nil
+}
+
+// streamPrefix returns the per-line prefix for streamed build output.
+// The basename (without extension) attributes lines from parallel
+// builds: "  [crypto] " for /abs/.../crypto.zig.
+func streamPrefix(srcPath string) string {
+	base := filepath.Base(srcPath)
+	if i := strings.LastIndexByte(base, '.'); i > 0 {
+		base = base[:i]
+	}
+	return fmt.Sprintf("    [%s] ", base)
+}
+
+// streamingEnabled gates real-time output of build subprocess stdout/
+// stderr. Off by default; opt in via MOLT_STREAM_BUILDS=1 because for
+// small/cached projects the silent CombinedOutput path is cleaner.
+// Errors always include the captured output regardless of this flag.
+func streamingEnabled() bool {
+	v := os.Getenv("MOLT_STREAM_BUILDS")
+	return v == "1" || v == "true" || v == "yes"
 }
 
 // unresolvedTokens returns any "{name}" placeholders left in s after
@@ -583,7 +605,7 @@ func linkKernelSO(gluePath, objPath, soOut, pyInclude string, zigCfg ZigConfig) 
 		args = append(args, "-undefined", "dynamic_lookup")
 	}
 	cmd := exec.Command(zigBin, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := progress.Stream(cmd, "    [link] ", streamingEnabled()); err != nil {
 		return fmt.Errorf("link kernel .so:\n%s", string(out))
 	}
 	return nil

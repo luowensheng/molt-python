@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"molt/internal/progress"
 )
 
 // ZigDefaultVersion is the version molt installs when no `[tool.molt.zig]
@@ -186,7 +188,8 @@ func installZig(version, targetDir string) error {
 	var url string
 	for _, stem := range candidates {
 		url = fmt.Sprintf("https://ziglang.org/download/%s/%s.%s", version, stem, ext)
-		if err := httpDownload(url, tmpPath); err == nil {
+		label := fmt.Sprintf("downloading %s.%s", stem, ext)
+		if err := httpDownloadWithProgress(url, tmpPath, label); err == nil {
 			lastErr = nil
 			break
 		} else {
@@ -213,6 +216,12 @@ func installZig(version, targetDir string) error {
 }
 
 func httpDownload(url, dst string) error {
+	return httpDownloadWithProgress(url, dst, "")
+}
+
+// httpDownloadWithProgress downloads url to dst, rendering a progress
+// bar on stderr when label != "". An empty label runs silently.
+func httpDownloadWithProgress(url, dst, label string) error {
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -227,10 +236,15 @@ func httpDownload(url, dst string) error {
 		return err
 	}
 	defer out.Close()
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		return err
+
+	src := io.Reader(resp.Body)
+	if label != "" {
+		dl := progress.NewDownload(label, resp.ContentLength)
+		defer dl.Finish()
+		src = dl.Wrap(src)
 	}
-	return nil
+	_, err = io.Copy(out, src)
+	return err
 }
 
 // extractZigTarXZ shells out to `tar -xJ` because the Go stdlib doesn't
