@@ -228,8 +228,10 @@ func InstalledPackages(syspathDirs []string, storeRoot string) map[string]bool {
 	return out
 }
 
-// normalize applies PEP 503 relaxed normalisation: lower-case and collapse
-// runs of [-_.] to a single hyphen. Consistent with store.NormalizeName.
+// NormalizeName applies PEP 503 relaxed normalisation: lower-case and
+// collapse runs of [-_.] to a single hyphen. Consistent with store.NormalizeName.
+func NormalizeName(name string) string { return normalize(name) }
+
 func normalize(name string) string {
 	name = strings.ToLower(name)
 	var b strings.Builder

@@ -1612,7 +1612,16 @@ func cmdProjectList() error {
 		}
 		return entries[i].Meta.LastSync.After(entries[j].Meta.LastSync)
 	})
-	fmt.Printf("%-22s %-18s %-20s %-15s %s\n", "NAME", "HASH", "LAST SYNC", "STATE", "PATH")
+
+	st, _ := store.Default()
+	storeRoot := ""
+	if st != nil {
+		storeRoot = st.Root
+	}
+
+	fmt.Printf("%-22s  %-10s  %-20s  %-16s  %-7s  %s\n",
+		"NAME", "PKGS", "LAST SYNC", "STATE", "SIZE", "PATH")
+	fmt.Println(strings.Repeat("─", 110))
 	for _, e := range entries {
 		name := filepath.Base(e.ProjectDir)
 		if name == "" {
@@ -1620,13 +1629,33 @@ func cmdProjectList() error {
 		}
 		state := "✓ alive"
 		if !e.ProjectAlive {
-			state = "✗ source missing"
+			state = "✗ missing"
 		}
 		last := "(never)"
 		if !e.Meta.LastSync.IsZero() {
-			last = e.Meta.LastSync.Local().Format("2006-01-02 15:04:05")
+			last = e.Meta.LastSync.Local().Format("2006-01-02 15:04")
 		}
-		fmt.Printf("%-22s %-18s %-20s %-15s %s\n", name, e.Hash, last, state, e.ProjectDir)
+		// Disk: state dir + sum of this project's wheel store entries.
+		stateSz, _ := libcache.DirSize(e.Dir)
+		var wheelSz int64
+		pkgCount := 0
+		if spec, err := syspath.Load(e.ProjectDir); err == nil {
+			installed := libcache.InstalledPackages(spec.Syspath, storeRoot)
+			pkgCount = len(installed)
+			for _, dir := range spec.Syspath {
+				if storeRoot != "" && strings.HasPrefix(filepath.Clean(dir), filepath.Clean(storeRoot)) {
+					sz, _ := libcache.DirSize(dir)
+					wheelSz += sz
+				}
+			}
+		}
+		total := stateSz + wheelSz
+		fmt.Printf("%-22s  %-10s  %-20s  %-16s  %-7s  %s\n",
+			name,
+			fmt.Sprintf("%d pkgs", pkgCount),
+			last, state,
+			libcache.FormatBytes(total),
+			e.ProjectDir)
 	}
 	fmt.Printf("\n%d project(s); state at %s\n", len(entries), projstate.Root())
 	return nil
@@ -1652,10 +1681,99 @@ func cmdProjectInfo(query string) error {
 	} else {
 		fmt.Println("Source:      ✗ missing — pyproject.toml not found at original path")
 	}
+
+	st, _ := store.Default()
+	storeRoot := ""
+	if st != nil {
+		storeRoot = st.Root
+	}
+
 	if spec, err := syspath.Load(entry.ProjectDir); err == nil {
 		fmt.Printf("Python bin:  %s\n", spec.Python)
-		fmt.Printf("Env:         %d store path(s)\n", len(spec.Syspath))
+
+		// ── Disk usage ────────────────────────────────────────────────────
+		stateSz, _ := libcache.DirSize(entry.Dir)
+		var wheelSz int64
+		var wheelDirs []string
+		for _, dir := range spec.Syspath {
+			if storeRoot != "" && strings.HasPrefix(filepath.Clean(dir), filepath.Clean(storeRoot)) {
+				sz, _ := libcache.DirSize(dir)
+				wheelSz += sz
+				wheelDirs = append(wheelDirs, dir)
+			}
+		}
+		fmt.Printf("\nDisk usage:\n")
+		fmt.Printf("  State dir   %s  (%s)\n", libcache.FormatBytes(stateSz), entry.Dir)
+		fmt.Printf("  Packages    %s  (%d entries in store)\n", libcache.FormatBytes(wheelSz), len(wheelDirs))
+		fmt.Printf("  Total       %s\n", libcache.FormatBytes(stateSz+wheelSz))
+
+		// ── Installed packages ────────────────────────────────────────────
+		installed := libcache.InstalledPackages(spec.Syspath, storeRoot)
+		if len(installed) > 0 {
+			pkgs := make([]string, 0, len(installed))
+			for p := range installed {
+				pkgs = append(pkgs, p)
+			}
+			sort.Strings(pkgs)
+			fmt.Printf("\nPackages (%d):\n", len(pkgs))
+			for _, p := range pkgs {
+				// Find version from the store path.
+				ver := ""
+				for _, dir := range wheelDirs {
+					rel, _ := filepath.Rel(storeRoot, dir)
+					parts := strings.SplitN(rel, string(os.PathSeparator), 3)
+					if len(parts) >= 2 && libcache.NormalizeName(parts[0]) == p {
+						ver = parts[1]
+						break
+					}
+				}
+				if ver != "" {
+					fmt.Printf("  %-30s  %s\n", p, ver)
+				} else {
+					fmt.Printf("  %s\n", p)
+				}
+			}
+		}
 	}
+
+	// ── Produced files: shims ────────────────────────────────────────────
+	binDir := projstate.Bin(entry.ProjectDir)
+	if shims, err := os.ReadDir(binDir); err == nil && len(shims) > 0 {
+		fmt.Printf("\nShims (in %s):\n", binDir)
+		for _, s := range shims {
+			fmt.Printf("  %s\n", s.Name())
+		}
+	}
+
+	// ── Produced files: native modules ───────────────────────────────────
+	nativeData, err := os.ReadFile(projstate.Native(entry.ProjectDir))
+	if err == nil {
+		var nativeDoc struct {
+			Cython   map[string]struct{ So string `json:"so"` } `json:"cython"`
+			Rust     map[string]struct{ So string `json:"so"` } `json:"rust"`
+			External map[string]struct{ So string `json:"so"` } `json:"external"`
+		}
+		if json.Unmarshal(nativeData, &nativeDoc) == nil {
+			var modules []string
+			for mod, e := range nativeDoc.Cython {
+				modules = append(modules, fmt.Sprintf("  %-30s  %s", mod, e.So))
+			}
+			for mod, e := range nativeDoc.Rust {
+				modules = append(modules, fmt.Sprintf("  %-30s  %s", mod, e.So))
+			}
+			for mod, e := range nativeDoc.External {
+				modules = append(modules, fmt.Sprintf("  %-30s  %s", mod, e.So))
+			}
+			if len(modules) > 0 {
+				sort.Strings(modules)
+				fmt.Printf("\nNative modules:\n")
+				for _, m := range modules {
+					fmt.Println(m)
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
