@@ -26,6 +26,64 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// GlobalKernelSettings holds project-independent kernel build settings stored
+// in ~/.molt/kernel.yaml. Currently carries only the target_flags table; more
+// fields may be added without breaking the YAML format.
+type GlobalKernelSettings struct {
+	// TargetFlags maps compiler extension to a table of os_arch → flag string.
+	// Outer key: extension without dot ("zig", "c", "odin", …).
+	// Inner key: Go-style os_arch ("linux_amd64", "darwin_arm64", …).
+	// Example: TargetFlags["zig"]["linux_amd64"] = "-target x86_64-linux-gnu"
+	TargetFlags map[string]map[string]string `yaml:"target_flags,omitempty"`
+}
+
+// GlobalSettingsPath returns the path to ~/.molt/kernel.yaml.
+func GlobalSettingsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".molt", "kernel.yaml"), nil
+}
+
+// LoadGlobalSettings reads ~/.molt/kernel.yaml. Missing file returns empty
+// settings without error — the caller uses project-level or built-in defaults.
+func LoadGlobalSettings() (GlobalKernelSettings, error) {
+	path, err := GlobalSettingsPath()
+	if err != nil {
+		return GlobalKernelSettings{}, err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return GlobalKernelSettings{}, nil
+	}
+	if err != nil {
+		return GlobalKernelSettings{}, err
+	}
+	var gs GlobalKernelSettings
+	if err := yaml.Unmarshal(data, &gs); err != nil {
+		return GlobalKernelSettings{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return gs, nil
+}
+
+// SaveGlobalSettings writes gs to ~/.molt/kernel.yaml, creating parent
+// directories as needed.
+func SaveGlobalSettings(gs GlobalKernelSettings) error {
+	path, err := GlobalSettingsPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(gs)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
 // Builder is one per-extension build recipe.
 type Builder struct {
 	// Ext is the source file extension *without* the leading dot.
@@ -35,11 +93,15 @@ type Builder struct {
 	// Command is a shell command template. Tokens get substituted at
 	// build time. Recognised tokens:
 	//
-	//   {source}      absolute path to the user's source file
-	//   {output}      absolute path molt expects the .o at
-	//   {zig}         absolute path to the auto-installed zig binary
-	//   {cc}, {cxx}   resolved system C / C++ compilers
-	//   {include_dir} Python include directory
+	//   {source}       absolute path to the user's source file
+	//   {output}       absolute path molt expects the .o at
+	//   {zig}          absolute path to the auto-installed zig binary
+	//   {cc}, {cxx}    resolved system C / C++ compilers
+	//   {include_dir}  Python include directory
+	//   {target_flags} compiler flags for the active cross-compile target,
+	//                  resolved from [tool.molt.native_kernel.target_flags.<ext>]
+	//                  in pyproject.toml (or ~/.molt/kernel.yaml). Empty string
+	//                  when no cross-compile target is active.
 	//
 	// Unknown tokens are left untouched (the shell will see them and
 	// usually fail loudly, which is the right error message).
@@ -61,15 +123,25 @@ func GlobalPath() (string, error) {
 var defaultBuilders = []Builder{
 	{
 		Ext:     "zig",
-		Command: "{zig} build-obj {source} -O ReleaseFast -fPIC -femit-bin={output}",
+		Command: "{zig} build-obj {source} -O ReleaseFast -fPIC {target_flags} -femit-bin={output}",
 	},
 	{
 		Ext:     "c",
-		Command: "{cc} -c -O2 -fPIC -o {output} {source}",
+		Command: "{zig} cc -c -O2 -fPIC {target_flags} -o {output} {source}",
 	},
 	{
 		Ext:     "cpp",
-		Command: "{cxx} -c -O2 -fPIC -o {output} {source}",
+		Command: "{zig} c++ -c -O2 -fPIC {target_flags} -o {output} {source}",
+	},
+	// GAS-format assembly. zig cc handles both .s (plain) and .S (with C
+	// preprocessor directives like #include/#define) the same way as .c.
+	{
+		Ext:     "s",
+		Command: "{zig} cc -c -fPIC {target_flags} -o {output} {source}",
+	},
+	{
+		Ext:     "S",
+		Command: "{zig} cc -c -fPIC {target_flags} -o {output} {source}",
 	},
 }
 
@@ -78,10 +150,13 @@ var defaultBuilders = []Builder{
 // point so users don't have to look them up. Layered above the defaults
 // (which are also exposed here) for completeness.
 var SuggestedTemplates = map[string]string{
-	"zig":  "{zig} build-obj {source} -O ReleaseFast -fPIC -femit-bin={output}",
-	"c":    "{cc} -c -O2 -fPIC -o {output} {source}",
-	"cpp":  "{cxx} -c -O2 -fPIC -o {output} {source}",
-	"odin": "odin build {source} -file -build-mode:obj -reloc-mode:pic -o:speed -out:{output}",
+	"zig":  "{zig} build-obj {source} -O ReleaseFast -fPIC {target_flags} -femit-bin={output}",
+	"c":    "{zig} cc -c -O2 -fPIC {target_flags} -o {output} {source}",
+	"cpp":  "{zig} c++ -c -O2 -fPIC {target_flags} -o {output} {source}",
+	"s":    "{zig} cc -c -fPIC {target_flags} -o {output} {source}",
+	"S":    "{zig} cc -c -fPIC {target_flags} -o {output} {source}",
+	"asm":  "nasm -f elf64 -o {output} {source}", // NASM/Intel syntax; requires nasm on PATH
+	"odin": "odin build {source} -file -build-mode:obj -reloc-mode:pic -o:speed {target_flags} -out:{output}",
 	"nim":  "nim c --app:staticlib --noMain --noLinking --out:{output} {source}",
 	"rs":   "rustc --crate-type=staticlib --edition=2021 -O --emit=obj -o {output} {source}",
 	"f90":  "gfortran -c -fPIC -O2 -o {output} {source}",

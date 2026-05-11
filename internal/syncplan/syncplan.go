@@ -558,6 +558,74 @@ func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDi
 	return filepath.Join(projstate.Dir(projectDir), "cython"), nil
 }
 
+// CompileKernels discovers and compiles all kernel modules in projectDir using
+// the given cross-compile target. target is a Go-style os_arch string
+// ("linux_amd64", "darwin_arm64", …); "" means host build.
+//
+// Unlike a full Sync, this only touches kernel modules — it does not install
+// packages, regenerate uv.lock, or update syspath.json. Intended for use by
+// `molt build --target` to compile kernels for a non-host platform before
+// packaging the application binary.
+func CompileKernels(projectDir, target string, verbose bool) error {
+	absProj, err := filepath.Abs(projectDir)
+	if err != nil {
+		return err
+	}
+	pm, err := python.New(absProj)
+	if err != nil {
+		return err
+	}
+	pyExe, err := pm.Which()
+	if err != nil || pyExe == "" {
+		return fmt.Errorf("no python interpreter — run molt sync first")
+	}
+	abi, err := pyabi.Detect(pyExe)
+	if err != nil {
+		return fmt.Errorf("detect interpreter ABI: %w", err)
+	}
+	extSuffix, err := native.PythonExtSuffix(pyExe)
+	if err != nil {
+		return err
+	}
+	includeDir, err := native.PythonIncludeDir(pyExe)
+	if err != nil {
+		return err
+	}
+	kernCfg := native.LoadKernelConfig(absProj)
+	kernCfg.Target = target
+	kernels, err := native.DiscoverKernels(absProj, kernCfg)
+	if err != nil {
+		return fmt.Errorf("kernel discover: %w", err)
+	}
+	if len(kernels) == 0 {
+		return nil
+	}
+	if verbose {
+		tLabel := target
+		if tLabel == "" {
+			tLabel = "host"
+		}
+		fmt.Printf("→ kernel: %d module(s) [target: %s]\n", len(kernels), tLabel)
+	}
+	cfg := native.LoadCythonConfig(absProj)
+	rustCfg := native.LoadRustConfig(absProj)
+	zigCfg := native.LoadZigConfig(absProj)
+	arts, err := native.Compile(kernels, absProj, *abi, pyExe, "", includeDir, extSuffix, nil, verbose, cfg, rustCfg, zigCfg, kernCfg)
+	if err != nil {
+		return err
+	}
+	if len(arts) == 0 {
+		return nil
+	}
+	if err := native.PlaceProjectView(absProj, arts); err != nil {
+		return err
+	}
+	if err := writeNativeManifest(absProj, arts); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: write native.json: %v\n", err)
+	}
+	return nil
+}
+
 // writeNativeManifest emits projstate.Dir(p)/native.json — read by the
 // builder's injectCythonArtifacts and by `molt gc`'s reachability scan.
 func writeNativeManifest(projectDir string, arts []native.Artifact) error {

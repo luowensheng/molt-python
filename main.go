@@ -23,6 +23,7 @@ import (
 	"molt/internal/globalenv"
 	"molt/internal/integrity"
 	"molt/internal/kernelbuilder"
+	"molt/internal/libcache"
 	"molt/internal/projstate"
 	"molt/internal/python"
 	"molt/internal/store"
@@ -149,6 +150,8 @@ func main() {
 	// ── Global package store ──────────────────────────────────────────────
 	case "gc":
 		err = cmdGC(os.Args[2:])
+	case "cache":
+		err = cmdCache(os.Args[2:])
 
 	case "uv":
 		err = cmdUV(os.Args[2:])
@@ -246,6 +249,10 @@ Kernel builders (~/.molt/kernel-builders.yaml — per-extension recipes):
   kernel-builder edit                       $EDITOR ~/.molt/kernel-builders.yaml
   kernel-builder reset                      Restore the seeded defaults
   kernel-builder path                       Print the global YAML path
+  kernel-builder settings                   Show ~/.molt/kernel.yaml (cross-compile flags)
+  kernel-builder settings set target-flags <ext> <os_arch> <flags>
+  kernel-builder settings unset target-flags <ext> <os_arch>
+  kernel-builder settings clear             Remove all global kernel settings
 
 Environment variables (~/.molt/env.yaml — applied to every molt-spawned process):
   env list                                  List global env vars
@@ -266,6 +273,9 @@ Dependencies & sync:
   sync     [--frozen] [--refresh]  Install lockfile into ~/.molt/pkg + write per-project state
   lock                             Regenerate uv.lock
   gc       [--dry-run]             Remove ~/.molt/pkg entries no project references
+  cache    info [project]          Show disk usage of all molt-managed caches
+           libs [project]          Scan library caches (torch, HuggingFace, etc.) vs installed packages
+           clear libs <name>       Delete a library cache dir (with confirmation)
   uv       <args...>               Raw passthrough to uv
 
 Python versions:
@@ -291,7 +301,8 @@ Task runner:
 Build:
   build    [flags] [project-path]  Build self-contained binary
                                      --output <path>  output path (default: <name>)
-                                     --os/--arch      cross-build target
+                                     --os/--arch      cross-build target for Go launcher
+                                     --target <os_arch>  kernel cross-compile target (e.g. linux_amd64)
   package  [flags]                 Build Python wheel + sdist (PyPI artifacts)
                                      --output <dir>   output dir (default: dist)
                                      --sdist | --wheel  limit to one artifact
@@ -329,6 +340,7 @@ func cmdBuild(args []string) error {
 	output := fs.String("output", "", "Output path")
 	targetOS := fs.String("os", runtime.GOOS, "Target OS")
 	targetArch := fs.String("arch", runtime.GOARCH, "Target arch")
+	kernelTarget := fs.String("target", "", "Kernel cross-compile target (os_arch, e.g. linux_amd64)")
 	bestEffort := fs.Bool("best-effort", false, "Allow cross-build")
 	embedStrict := fs.Bool("embed-strict", true, "Fail build on sensitive files (.env, keys, etc.)")
 	embedIgnore := fs.String("embed-ignore", ".moltignore", "Path to .moltignore file")
@@ -349,6 +361,18 @@ func cmdBuild(args []string) error {
 		// version-stamp the filename. No implicit `dist/` either; users
 		// can pass `--output dist/foo` if they want one.
 		*output = *name
+	}
+
+	// Derive kernel target from --os/--arch when --target is not explicit.
+	// Cross-builds always need kernels compiled for the target platform.
+	kt := *kernelTarget
+	if kt == "" && (*targetOS != runtime.GOOS || *targetArch != runtime.GOARCH) {
+		kt = *targetOS + "_" + *targetArch
+	}
+	if kt != "" {
+		if err := syncplan.CompileKernels(absProject, kt, true); err != nil {
+			return fmt.Errorf("kernel build for %s: %w", kt, err)
+		}
 	}
 
 	crossMode := types.CrossBuildDeny
@@ -778,6 +802,276 @@ func cmdTree(args []string) error {
 func cmdGC(args []string) error {
 	dryRun := hasFlag(args, "--dry-run") || hasFlag(args, "-n")
 	return syncplan.GC(dryRun)
+}
+
+// ── cache: molt-managed and library cache visibility ─────────────────────────
+
+func cmdCache(args []string) error {
+	if len(args) == 0 {
+		fmt.Println("usage: molt cache <info|libs|clear> [args]")
+		fmt.Println("  info  [project]          disk usage of molt-managed caches")
+		fmt.Println("  libs  [project]          scan library caches vs installed packages")
+		fmt.Println("  clear libs <name> [--yes]  delete a library cache dir")
+		return nil
+	}
+	switch args[0] {
+	case "info":
+		return cmdCacheInfo(args[1:])
+	case "libs":
+		return cmdCacheLibs(args[1:])
+	case "clear":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt cache clear libs <name> [--yes]")
+		}
+		if args[1] == "libs" {
+			return cmdCacheClearLibs(args[2:])
+		}
+		return fmt.Errorf("usage: molt cache clear libs <name> [--yes]")
+	}
+	return fmt.Errorf("unknown cache command %q — use info, libs, or clear", args[0])
+}
+
+// cmdCacheInfo prints disk usage of all molt-managed cache directories.
+func cmdCacheInfo(args []string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	moltDir := filepath.Join(home, ".molt")
+
+	type entry struct {
+		label string
+		dir   string
+		note  string
+	}
+	entries := []entry{
+		{"~/.molt/pkg/", filepath.Join(moltDir, "pkg"), "wheels"},
+		{"~/.molt/native/", filepath.Join(moltDir, "native"), "compiled .so"},
+		{"~/.molt/projects/", filepath.Join(moltDir, "projects"), "project state"},
+		{"~/.molt/toolchains/", filepath.Join(moltDir, "toolchains"), "build toolchains"},
+		{"~/.molt/python/", filepath.Join(moltDir, "python"), "managed Python"},
+	}
+
+	var totalBytes int64
+	type row struct {
+		label string
+		bytes int64
+		note  string
+	}
+	var rows []row
+	for _, e := range entries {
+		sz, _ := libcache.DirSize(e.dir)
+		rows = append(rows, row{e.label, sz, e.note})
+		totalBytes += sz
+	}
+
+	fmt.Println()
+	labelW := 28
+	sizeW := 10
+	for _, r := range rows {
+		fmt.Printf("  %-*s  %*s   (%s)\n",
+			labelW, r.label,
+			sizeW, libcache.FormatBytes(r.bytes),
+			r.note)
+	}
+	fmt.Printf("  %s\n", strings.Repeat("─", labelW+sizeW+6))
+	fmt.Printf("  %-*s  %*s\n\n", labelW, "Total", sizeW, libcache.FormatBytes(totalBytes))
+	fmt.Println("Run `molt gc` to remove unused wheels and native objects.")
+	fmt.Println()
+	return nil
+}
+
+// cmdCacheLibs scans well-known library cache locations and cross-references
+// them against the packages installed in the given project (or all live
+// projects when no project path is supplied).
+func cmdCacheLibs(args []string) error {
+	projectPath := "."
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		projectPath = args[0]
+	}
+	absProject, err := filepath.Abs(projectPath)
+	if err != nil {
+		return err
+	}
+
+	installed := installedPackagesForCache(absProject)
+
+	results, err := libcache.Scan(installed)
+	if err != nil {
+		return err
+	}
+
+	// Get store root for the relative path label.
+	st, _ := store.Default()
+	storeRoot := ""
+	if st != nil {
+		storeRoot = st.Root
+	}
+
+	fmt.Println()
+	if len(results) == 0 {
+		fmt.Println("  No known library caches found.")
+		fmt.Println()
+		return nil
+	}
+
+	// Print context line.
+	spec, specErr := syspath.Load(absProject)
+	if specErr == nil && spec.ProjectDir != "" {
+		fmt.Printf("Library caches  (cross-referenced with project: %s)\n\n", spec.ProjectDir)
+	} else {
+		fmt.Println("Library caches  (cross-referenced with all registered projects)\n")
+	}
+
+	nameW, dirW, sizeW := 20, 40, 8
+	fmt.Printf("  %-*s  %-*s  %*s  %s\n", nameW, "NAME", dirW, "DIR", sizeW, "SIZE", "STATUS")
+	fmt.Printf("  %s\n", strings.Repeat("─", nameW+dirW+sizeW+12))
+
+	var totalBytes int64
+	for _, r := range results {
+		if !r.Exists {
+			continue
+		}
+		status := "installed"
+		if !r.Installed {
+			status = "not installed (orphan)"
+		}
+		// Shorten dir for display.
+		displayDir := r.Dir
+		if home, err := os.UserHomeDir(); err == nil {
+			if rel, err := filepath.Rel(home, r.Dir); err == nil && !strings.HasPrefix(rel, "..") {
+				displayDir = "~/" + rel
+			}
+		}
+		fmt.Printf("  %-*s  %-*s  %*s  %s\n",
+			nameW, r.Name,
+			dirW, displayDir,
+			sizeW, libcache.FormatBytes(r.Bytes),
+			status)
+		totalBytes += r.Bytes
+	}
+	fmt.Printf("\n  Total library cache: %s\n\n", libcache.FormatBytes(totalBytes))
+	_ = storeRoot
+
+	// Show installed-but-absent entries as hints.
+	var hints []libcache.ScanResult
+	for _, r := range results {
+		if !r.Exists && r.Installed {
+			hints = append(hints, r)
+		}
+	}
+	if len(hints) > 0 {
+		fmt.Println("  Installed but no cache yet:")
+		for _, h := range hints {
+			displayDir := h.Dir
+			if home, err := os.UserHomeDir(); err == nil {
+				if rel, err := filepath.Rel(home, h.Dir); err == nil && !strings.HasPrefix(rel, "..") {
+					displayDir = "~/" + rel
+				}
+			}
+			fmt.Printf("    %-*s  %s\n", nameW, h.Name, displayDir)
+		}
+		fmt.Println()
+	}
+
+	fmt.Println("  To redirect a cache: set the env var in [tool.molt.runtime.env] or `molt env set <VAR> <path>`")
+	fmt.Println("  To clear:            molt cache clear libs <name>")
+	fmt.Println()
+	return nil
+}
+
+// cmdCacheClearLibs deletes a named library cache directory.
+func cmdCacheClearLibs(args []string) error {
+	yes := hasFlag(args, "--yes") || hasFlag(args, "-y")
+	// Filter flags out to get positional args.
+	var pos []string
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			pos = append(pos, a)
+		}
+	}
+	if len(pos) == 0 {
+		return fmt.Errorf("usage: molt cache clear libs <name> [--yes]")
+	}
+	name := pos[0]
+
+	// Find the matching entry.
+	var found *libcache.KnownCache
+	for _, kc := range libcache.AllKnownCaches() {
+		if strings.EqualFold(kc.Name, name) {
+			c := kc
+			found = &c
+			break
+		}
+	}
+	if found == nil {
+		return fmt.Errorf("unknown library cache %q — run `molt cache libs` to see available names", name)
+	}
+
+	dir := found.ResolvedDir()
+	if dir == "" {
+		return fmt.Errorf("cannot resolve cache directory for %q", name)
+	}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		fmt.Printf("  %s cache directory does not exist (%s)\n", name, dir)
+		return nil
+	}
+
+	sz, _ := libcache.DirSize(dir)
+	displayDir := dir
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, dir); err == nil && !strings.HasPrefix(rel, "..") {
+			displayDir = "~/" + rel
+		}
+	}
+
+	if !yes {
+		fmt.Printf("\n  This will delete %s (%s). Continue? [y/N] ", displayDir, libcache.FormatBytes(sz))
+		var resp string
+		fmt.Fscan(os.Stdin, &resp)
+		if !strings.EqualFold(strings.TrimSpace(resp), "y") {
+			fmt.Println("  Aborted.")
+			return nil
+		}
+	}
+
+	if err := libcache.Clear(dir); err != nil {
+		return fmt.Errorf("clear %s: %w", dir, err)
+	}
+	fmt.Printf("  ✓ cleared %s\n\n", displayDir)
+	return nil
+}
+
+// installedPackagesForCache returns the set of normalised package names
+// installed in the project at absProject. Falls back to a union across all
+// registered live projects when the project's syspath.json is unavailable.
+func installedPackagesForCache(absProject string) map[string]bool {
+	st, err := store.Default()
+	if err != nil {
+		return map[string]bool{}
+	}
+	spec, err := syspath.Load(absProject)
+	if err == nil && len(spec.Syspath) > 0 {
+		return libcache.InstalledPackages(spec.Syspath, st.Root)
+	}
+	// Fall back: union across all live projects.
+	all := map[string]bool{}
+	entries, _ := projstate.ListAll()
+	for _, e := range entries {
+		if !e.ProjectAlive {
+			continue
+		}
+		s, err := syspath.Load(e.ProjectDir)
+		if err != nil {
+			continue
+		}
+		for k, v := range libcache.InstalledPackages(s.Syspath, st.Root) {
+			if v {
+				all[k] = true
+			}
+		}
+	}
+	return all
 }
 
 // ── Python version management ─────────────────────────────────────────────────
@@ -2186,7 +2480,7 @@ func cmdNativePreset(args []string) error {
 
 func cmdKernelBuilder(args []string) error {
 	if len(args) == 0 {
-		fmt.Println("usage: molt kernel-builder <list|show|add|remove|edit|reset|path> [args]")
+		fmt.Println("usage: molt kernel-builder <list|show|add|remove|edit|reset|path|settings> [args]")
 		fmt.Println("       --local on add/remove writes the project's pyproject.toml instead")
 		return nil
 	}
@@ -2217,8 +2511,126 @@ func cmdKernelBuilder(args []string) error {
 		}
 		fmt.Println(p)
 		return nil
+	case "settings":
+		return cmdKernelBuilderSettings(args[1:])
 	}
 	return fmt.Errorf("unknown kernel-builder command %q", args[0])
+}
+
+// cmdKernelBuilderSettings manages ~/.molt/kernel.yaml — the global table of
+// per-compiler cross-compile flags.
+//
+//	molt kernel-builder settings                                  print settings
+//	molt kernel-builder settings set target-flags <ext> <os_arch> <flags>
+//	molt kernel-builder settings unset target-flags <ext> <os_arch>
+//	molt kernel-builder settings clear
+func cmdKernelBuilderSettings(args []string) error {
+	if len(args) == 0 {
+		return cmdKernelBuilderSettingsShow()
+	}
+	switch args[0] {
+	case "set":
+		return cmdKernelBuilderSettingsSet(args[1:])
+	case "unset":
+		return cmdKernelBuilderSettingsUnset(args[1:])
+	case "clear":
+		if err := kernelbuilder.SaveGlobalSettings(kernelbuilder.GlobalKernelSettings{}); err != nil {
+			return err
+		}
+		fmt.Println("✓ ~/.molt/kernel.yaml cleared")
+		return nil
+	}
+	return fmt.Errorf("usage: molt kernel-builder settings [set|unset|clear]")
+}
+
+func cmdKernelBuilderSettingsShow() error {
+	gs, err := kernelbuilder.LoadGlobalSettings()
+	if err != nil {
+		return err
+	}
+	p, _ := kernelbuilder.GlobalSettingsPath()
+	fmt.Printf("# %s\n", p)
+	if len(gs.TargetFlags) == 0 {
+		fmt.Println("(no target flags configured)")
+		return nil
+	}
+	// Print sorted for stability.
+	exts := make([]string, 0, len(gs.TargetFlags))
+	for ext := range gs.TargetFlags {
+		exts = append(exts, ext)
+	}
+	sort.Strings(exts)
+	for _, ext := range exts {
+		osMap := gs.TargetFlags[ext]
+		keys := make([]string, 0, len(osMap))
+		for k := range osMap {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("target_flags.%s.%s = %q\n", ext, k, osMap[k])
+		}
+	}
+	return nil
+}
+
+func cmdKernelBuilderSettingsSet(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: molt kernel-builder settings set target-flags <ext> <os_arch> <flags>")
+	}
+	switch args[0] {
+	case "target-flags":
+		if len(args) < 4 {
+			return fmt.Errorf("usage: molt kernel-builder settings set target-flags <ext> <os_arch> <flags>")
+		}
+		ext, osArch, flags := args[1], args[2], strings.Join(args[3:], " ")
+		gs, err := kernelbuilder.LoadGlobalSettings()
+		if err != nil {
+			return err
+		}
+		if gs.TargetFlags == nil {
+			gs.TargetFlags = map[string]map[string]string{}
+		}
+		if gs.TargetFlags[ext] == nil {
+			gs.TargetFlags[ext] = map[string]string{}
+		}
+		gs.TargetFlags[ext][osArch] = flags
+		if err := kernelbuilder.SaveGlobalSettings(gs); err != nil {
+			return err
+		}
+		fmt.Printf("✓ target_flags.%s.%s = %q\n", ext, osArch, flags)
+		return nil
+	}
+	return fmt.Errorf("unknown settings key %q — supported: target-flags", args[0])
+}
+
+func cmdKernelBuilderSettingsUnset(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: molt kernel-builder settings unset target-flags <ext> <os_arch>")
+	}
+	switch args[0] {
+	case "target-flags":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: molt kernel-builder settings unset target-flags <ext> <os_arch>")
+		}
+		ext, osArch := args[1], args[2]
+		gs, err := kernelbuilder.LoadGlobalSettings()
+		if err != nil {
+			return err
+		}
+		if gs.TargetFlags != nil && gs.TargetFlags[ext] != nil {
+			delete(gs.TargetFlags[ext], osArch)
+			if len(gs.TargetFlags[ext]) == 0 {
+				delete(gs.TargetFlags, ext)
+			}
+		}
+		if err := kernelbuilder.SaveGlobalSettings(gs); err != nil {
+			return err
+		}
+		fmt.Printf("✓ target_flags.%s.%s removed\n", ext, osArch)
+		return nil
+	}
+	return fmt.Errorf("unknown settings key %q — supported: target-flags", args[0])
 }
 
 func cmdKernelBuilderList() error {

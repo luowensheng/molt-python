@@ -1,0 +1,11 @@
+[[fn]]
+name        = "add"
+description = "Sum two 32-bit integers."
+args        = [{ name = "a", type = "i32" }, { name = "b", type = "i32" }]
+returns     = "i32"
+
+[[fn]]
+name        = "mul"
+description = "Multiply two 32-bit integers."
+args        = [{ name = "a", type = "i32" }, { name = "b", type = "i32" }]
+returns     = "i32"

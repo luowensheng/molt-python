@@ -393,6 +393,19 @@ type KernelConfig struct {
 	// ~/.molt/kernel-builders.yaml. Project-level overrides beat the
 	// global YAML which beats the built-in defaults.
 	Builders map[string]string
+
+	// TargetFlags maps compiler extension → os_arch → compiler flag string.
+	// Read from [tool.molt.native_kernel.target_flags.<ext>] in
+	// pyproject.toml, merged with ~/.molt/kernel.yaml (project wins on
+	// conflict). Used to resolve the {target_flags} token in build templates.
+	//
+	// Example entry: TargetFlags["zig"]["linux_amd64"] = "-target x86_64-linux-gnu"
+	TargetFlags map[string]map[string]string
+
+	// Target is the active cross-compile target in Go-style os_arch notation
+	// ("linux_amd64", "darwin_arm64", …). Empty means host build — no
+	// {target_flags} substitution occurs. Set from the CLI --target flag.
+	Target string
 }
 
 // LoadKernelConfig parses [tool.molt.native_kernel] and the per-extension
@@ -406,21 +419,27 @@ type KernelConfig struct {
 func LoadKernelConfig(projectDir string) KernelConfig {
 	cfg := KernelConfig{
 		Paths:            []string{".", "src"},
-		SourceExtensions: []string{".zig", ".c", ".cpp", ".cc", ".cxx"},
+		SourceExtensions: []string{".zig", ".c", ".cpp", ".cc", ".cxx", ".s", ".S"},
 		ManifestSuffixes: []string{".molt.toml"},
 		Builders:         map[string]string{},
+		TargetFlags:      map[string]map[string]string{},
 	}
 	// Read pyproject.toml if present, otherwise fall through to the
 	// auto-extension block (so global builders still extend the
 	// watched-extensions list even when no pyproject exists).
 	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
 	if err != nil {
+		mergeGlobalTargetFlags(&cfg)
 		return augmentKernelExtensions(cfg)
 	}
 
 	// Section state: "" = not in our section, "main" = [tool.molt.native_kernel],
-	// "build:<ext>" = [tool.molt.native_kernel.build.<ext>].
-	const buildPrefix = "[tool.molt.native_kernel.build."
+	// "build:<ext>" = [tool.molt.native_kernel.build.<ext>],
+	// "flags:<ext>" = [tool.molt.native_kernel.target_flags.<ext>].
+	const (
+		buildPrefix = "[tool.molt.native_kernel.build."
+		flagsPrefix = "[tool.molt.native_kernel.target_flags."
+	)
 	section := ""
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
@@ -435,6 +454,9 @@ func LoadKernelConfig(projectDir string) KernelConfig {
 			case strings.HasPrefix(line, buildPrefix) && strings.HasSuffix(line, "]"):
 				ext := strings.TrimSuffix(strings.TrimPrefix(line, buildPrefix), "]")
 				section = "build:" + ext
+			case strings.HasPrefix(line, flagsPrefix) && strings.HasSuffix(line, "]"):
+				ext := strings.TrimSuffix(strings.TrimPrefix(line, flagsPrefix), "]")
+				section = "flags:" + ext
 			default:
 				section = ""
 			}
@@ -473,10 +495,38 @@ func LoadKernelConfig(projectDir string) KernelConfig {
 				ext := strings.TrimPrefix(section, "build:")
 				cfg.Builders[ext] = strings.Trim(val, `"'`)
 			}
+		case strings.HasPrefix(section, "flags:"):
+			ext := strings.TrimPrefix(section, "flags:")
+			if cfg.TargetFlags[ext] == nil {
+				cfg.TargetFlags[ext] = map[string]string{}
+			}
+			cfg.TargetFlags[ext][key] = strings.Trim(val, `"'`)
 		}
 	}
 
+	// Merge global ~/.molt/kernel.yaml — project entries win on conflict.
+	mergeGlobalTargetFlags(&cfg)
 	return augmentKernelExtensions(cfg)
+}
+
+// mergeGlobalTargetFlags loads ~/.molt/kernel.yaml and merges its target_flags
+// into cfg. Project-level entries take precedence: if both define the same
+// ext + os_arch key, the project value is kept unchanged.
+func mergeGlobalTargetFlags(cfg *KernelConfig) {
+	gs, err := kernelbuilder.LoadGlobalSettings()
+	if err != nil {
+		return
+	}
+	for ext, osMap := range gs.TargetFlags {
+		if cfg.TargetFlags[ext] == nil {
+			cfg.TargetFlags[ext] = map[string]string{}
+		}
+		for osArch, flags := range osMap {
+			if _, exists := cfg.TargetFlags[ext][osArch]; !exists {
+				cfg.TargetFlags[ext][osArch] = flags
+			}
+		}
+	}
 }
 
 // augmentKernelExtensions extends cfg.SourceExtensions with any extension

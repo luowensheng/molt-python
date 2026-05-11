@@ -1,0 +1,9 @@
+[project]
+name = "07-asm-kernel"
+version = "0.1.0"
+description = "Assembly kernel module: x86-64 GAS .S file compiled to a Python .so"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.molt.tasks]
+run = { script = "main.py" }

@@ -410,6 +410,10 @@ func langFromExt(ext string) string {
 		return "rust"
 	case ".odin":
 		return "odin"
+	case ".s":
+		return "s"
+	case ".asm":
+		return "asm"
 	}
 	return "unknown"
 }

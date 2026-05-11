@@ -33,7 +33,7 @@ import (
 
 // kernelRecipeVersion is mixed into the cache hash; bump on any change
 // to how the build pipeline drives the compilers / generators.
-const kernelRecipeVersion = "v3"
+const kernelRecipeVersion = "v4"
 
 // DiscoverKernels walks projectDir + cfg.Paths (and cfg.ManifestDir if
 // set) for files ending in any of cfg.ManifestSuffixes. Each manifest
@@ -142,11 +142,12 @@ func hasAnySuffix(name string, suffixes []string) bool {
 //   - manifest content
 //   - source content (if a source file exists)
 //   - ABI tag, platform
+//   - effective build target (host platform when no cross-compile target set)
 //   - python include dir (encodes Python version via headers)
 //   - resolved build command (so editing global YAML or project override
 //     forces a rebuild)
 //   - recipe version
-func hashKernel(manifestData, sourceData []byte, abiTag, plat, pyInclude, buildCmd string) string {
+func hashKernel(manifestData, sourceData []byte, abiTag, plat, effectiveTarget, pyInclude, buildCmd string) string {
 	h := sha256.New()
 	h.Write(manifestData)
 	h.Write([]byte{0})
@@ -155,6 +156,8 @@ func hashKernel(manifestData, sourceData []byte, abiTag, plat, pyInclude, buildC
 	h.Write([]byte(abiTag))
 	h.Write([]byte{0})
 	h.Write([]byte(plat))
+	h.Write([]byte{0})
+	h.Write([]byte(effectiveTarget))
 	h.Write([]byte{0})
 	h.Write([]byte(pyInclude))
 	h.Write([]byte{0})
@@ -217,7 +220,16 @@ func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose 
 		return Artifact{}, err
 	}
 
-	hash := hashKernel(manifestData, srcData, abiTag, plat, pyInclude, buildTemplate)
+	// effectiveTarget is the os_arch string used both as the {target_flags}
+	// lookup key and as a cache-key component. When no cross-compile target
+	// is set, fall back to the host platform so host rebuilds are still
+	// separated from cross-compile artifacts in the cache.
+	effectiveTarget := kernCfg.Target
+	if effectiveTarget == "" {
+		effectiveTarget = runtime.GOOS + "_" + runtime.GOARCH
+	}
+
+	hash := hashKernel(manifestData, srcData, abiTag, plat, effectiveTarget, pyInclude, buildTemplate)
 
 	if hit, cachedPath, err := hasCacheEntry(hash, soName); err != nil {
 		return Artifact{}, err
@@ -251,13 +263,13 @@ func BuildKernelModule(s Source, pyExe, abiTag, plat, extSuffix string, verbose 
 
 	// Compile the user's source to a position-independent object.
 	objPath := filepath.Join(buildDir, s.Basename+".o")
-	if _, err := compileKernelSource(lang, srcPath, objPath, zigCfg, kernCfg, pyInclude); err != nil {
+	if _, err := compileKernelSource(lang, srcPath, objPath, zigCfg, kernCfg, pyInclude, kernCfg.Target); err != nil {
 		return Artifact{}, err
 	}
 
 	// Link glue + object into a shared library.
 	soStaging := filepath.Join(buildDir, soName)
-	if err := linkKernelSO(gluePath, objPath, soStaging, pyInclude, zigCfg); err != nil {
+	if err := linkKernelSO(gluePath, objPath, soStaging, pyInclude, zigCfg, kernCfg.Target, kernCfg.TargetFlags); err != nil {
 		return Artifact{}, err
 	}
 
@@ -314,8 +326,8 @@ func buildPrebuiltKernel(
 	soName, abiTag, plat, pyInclude string,
 	verbose bool,
 ) (Artifact, error) {
-	hash := hashKernel(manifestData, libData, abiTag, plat, pyInclude,
-		"prebuilt:"+libPath)
+	hash := hashKernel(manifestData, libData, abiTag, plat,
+		runtime.GOOS+"_"+runtime.GOARCH, pyInclude, "prebuilt:"+libPath)
 
 	if hit, cachedPath, err := hasCacheEntry(hash, soName); err != nil {
 		return Artifact{}, err
@@ -350,7 +362,7 @@ func buildPrebuiltKernel(
 	// to link in. The wrapper depends only on libdl + Python; the impl
 	// is loaded at import time, not link time.
 	soStaging := filepath.Join(buildDir, soName)
-	if err := linkPrebuiltSO(gluePath, soStaging, pyInclude); err != nil {
+	if err := linkPrebuiltSO(gluePath, soStaging, pyInclude, "", nil); err != nil {
 		return Artifact{}, err
 	}
 
@@ -391,17 +403,24 @@ func buildPrebuiltKernel(
 
 // linkPrebuiltSO compiles glue.c into a shared library. No user object
 // to link in — the impl is loaded at runtime via dlopen.
-func linkPrebuiltSO(gluePath, soOut, pyInclude string) error {
+// target and targetFlags are optional cross-compile parameters: when target
+// is non-empty, the zig linker flags for "zig"[target] are prepended.
+func linkPrebuiltSO(gluePath, soOut, pyInclude, target string, targetFlags map[string]map[string]string) error {
 	zigBin, err := EnsureZig("")
 	if err != nil {
 		return fmt.Errorf("locate zig (used for linking): %w", err)
 	}
 	args := []string{"cc",
 		"-shared", "-fPIC", "-O2",
+	}
+	if flags := resolveTargetFlags("zig", target, targetFlags); flags != "" {
+		args = append(args, strings.Fields(flags)...)
+	}
+	args = append(args,
 		"-I", pyInclude,
 		"-o", soOut,
 		gluePath,
-	}
+	)
 	if runtime.GOOS == "darwin" {
 		args = append(args, "-undefined", "dynamic_lookup")
 	} else if runtime.GOOS == "linux" {
@@ -440,13 +459,13 @@ func cachedKernelArtifact(s Source, hash, soPath, soName, abiTag, plat string) A
 // Returns the resolved command string (after token substitution) so the
 // caller can mix it into the cache hash — that way changing the project
 // override or the global YAML invalidates the cache automatically.
-func compileKernelSource(lang, srcPath, objPath string, zigCfg ZigConfig, kernCfg KernelConfig, pyInclude string) (string, error) {
+func compileKernelSource(lang, srcPath, objPath string, zigCfg ZigConfig, kernCfg KernelConfig, pyInclude, target string) (string, error) {
 	template, err := lookupBuilder(lang, kernCfg)
 	if err != nil {
 		return "", err
 	}
 
-	tokens, err := buildTokens(template, srcPath, objPath, zigCfg, pyInclude)
+	tokens, err := buildTokens(template, srcPath, objPath, zigCfg, pyInclude, lang, target, kernCfg.TargetFlags)
 	if err != nil {
 		return "", err
 	}
@@ -556,11 +575,15 @@ func lookupBuilder(ext string, kernCfg KernelConfig) (string, error) {
 // them (no point installing zig if the template only uses {cc}), and
 // propagates resolution errors so the user sees the real cause instead
 // of a confusing "unresolved {zig}" downstream.
-func buildTokens(template, srcPath, objPath string, zigCfg ZigConfig, pyInclude string) (map[string]string, error) {
+//
+// ext is the file extension without dot ("zig", "c", …); target is the
+// active cross-compile target ("linux_amd64") or "" for host builds.
+func buildTokens(template, srcPath, objPath string, zigCfg ZigConfig, pyInclude, ext, target string, targetFlags map[string]map[string]string) (map[string]string, error) {
 	t := map[string]string{
-		"source":      srcPath,
-		"output":      objPath,
-		"include_dir": pyInclude,
+		"source":       srcPath,
+		"output":       objPath,
+		"include_dir":  pyInclude,
+		"target_flags": resolveTargetFlags(ext, target, targetFlags),
 	}
 	if strings.Contains(template, "{zig}") {
 		zigBin, err := EnsureZig(zigCfg.Version)
@@ -586,21 +609,41 @@ func buildTokens(template, srcPath, objPath string, zigCfg ZigConfig, pyInclude 
 	return t, nil
 }
 
+// resolveTargetFlags looks up the compiler flag string for ext + target in the
+// target_flags map. Returns "" when target is empty or no entry exists — callers
+// substitute the empty string into the template so host builds are unaffected.
+func resolveTargetFlags(ext, target string, targetFlags map[string]map[string]string) string {
+	if target == "" || targetFlags == nil {
+		return ""
+	}
+	if osMap, ok := targetFlags[ext]; ok {
+		return osMap[target]
+	}
+	return ""
+}
+
 // linkKernelSO compiles glue.c (with Python.h) and links it together
 // with the user's pre-compiled object file into the final .so. We use
 // `zig cc` because (a) it auto-installs and (b) it accepts macOS's
 // -undefined dynamic_lookup uniformly across hosts.
-func linkKernelSO(gluePath, objPath, soOut, pyInclude string, zigCfg ZigConfig) error {
+// target and targetFlags enable cross-compilation: when target is non-empty,
+// zig linker flags from targetFlags["zig"][target] are prepended to the args.
+func linkKernelSO(gluePath, objPath, soOut, pyInclude string, zigCfg ZigConfig, target string, targetFlags map[string]map[string]string) error {
 	zigBin, err := EnsureZig(zigCfg.Version)
 	if err != nil {
 		return fmt.Errorf("locate zig (used for linking): %w", err)
 	}
 	args := []string{"cc",
 		"-shared", "-fPIC", "-O2",
+	}
+	if flags := resolveTargetFlags("zig", target, targetFlags); flags != "" {
+		args = append(args, strings.Fields(flags)...)
+	}
+	args = append(args,
 		"-I", pyInclude,
 		"-o", soOut,
 		gluePath, objPath,
-	}
+	)
 	if runtime.GOOS == "darwin" {
 		args = append(args, "-undefined", "dynamic_lookup")
 	}
