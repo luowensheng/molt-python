@@ -24,15 +24,16 @@ import (
 	"molt/internal/integrity"
 	"molt/internal/kernelbuilder"
 	"molt/internal/libcache"
+	"molt/internal/moltenv"
+	"molt/internal/nativepreset"
 	"molt/internal/projstate"
 	"molt/internal/python"
 	"molt/internal/store"
-	"molt/internal/tooldb"
-	"molt/internal/nativepreset"
 	"molt/internal/syncplan"
 	"molt/internal/syspath"
 	"molt/internal/tasks"
 	"molt/internal/templates"
+	"molt/internal/tooldb"
 	internuv "molt/internal/uv"
 	"molt/internal/uvbin"
 	"molt/pkg/types"
@@ -146,6 +147,8 @@ func main() {
 		err = cmdKernelBuilder(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
+	case "envs":
+		err = cmdEnvs(os.Args[2:])
 
 	// ── Global package store ──────────────────────────────────────────────
 	case "gc":
@@ -1186,6 +1189,9 @@ func cmdPython(args []string) error {
 // ── Task runner ───────────────────────────────────────────────────────────────
 
 func cmdRun(args []string) error {
+	// Pull --env <query> out of args before any other processing.
+	envQuery, args := extractFlag(args, "--env")
+
 	// `--` escape: treat everything after `--` as args to the default
 	// entry. `molt run --` → default entry, no args. `molt run -- --version`
 	// → default entry with ["--version"]. Mirrors the launcher's escape.
@@ -1206,6 +1212,16 @@ func cmdRun(args []string) error {
 		return runDefaultEntry()
 	}
 
+	// Resolve --env override once so we can pass it to all run helpers.
+	var envSpec *syspath.Spec
+	if envQuery != "" {
+		var err error
+		envSpec, err = resolveEnvSpec(envQuery)
+		if err != nil {
+			return err
+		}
+	}
+
 	taskName := args[0]
 	watch := hasFlag(args[1:], "--watch")
 
@@ -1221,8 +1237,11 @@ func cmdRun(args []string) error {
 	// .molt/syspath.json, so any task that uses `python` (or any console
 	// shim) would fail with "command not found". Sync once to materialise
 	// the env, then proceed.
-	if err := ensureSynced(projectRoot()); err != nil {
-		return err
+	// Skip when --env is set: the env has its own syspath.
+	if envSpec == nil {
+		if err := ensureSynced(projectRoot()); err != nil {
+			return err
+		}
 	}
 
 	// Single-file script mode: `molt run main.py [args...]` — exec the
@@ -1240,9 +1259,15 @@ func cmdRun(args []string) error {
 		}
 		for _, c := range candidates {
 			if _, err := os.Stat(c); err == nil {
-				return runPythonScript(projectRoot(), c, args[1:])
+				return runPythonScript(projectRoot(), c, args[1:], envSpec)
 			}
 		}
+	}
+
+	// When an env override is active, fall through to direct exec with the
+	// env's Python rather than trying task lookup (tasks belong to projects).
+	if envSpec != nil {
+		return runExec(projectRoot(), append([]string{taskName}, args[1:]...), envSpec)
 	}
 
 	r := tasks.New(projectRoot())
@@ -1252,7 +1277,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 
-	return runExec(projectRoot(), append([]string{taskName}, args[1:]...))
+	return runExec(projectRoot(), append([]string{taskName}, args[1:]...), nil)
 }
 
 // runDefaultEntry is the no-args form. Equivalent to runDefaultEntryWithArgs(nil).
@@ -1269,7 +1294,7 @@ func runDefaultEntryWithArgs(extraArgs []string) error {
 	// Prefer main.py at the root.
 	mainPy := filepath.Join(proj, "main.py")
 	if _, err := os.Stat(mainPy); err == nil {
-		return runPythonScript(proj, mainPy, extraArgs)
+		return runPythonScript(proj, mainPy, extraArgs, nil)
 	}
 	// Try src/<pkg>/__main__.py and <pkg>/__main__.py.
 	pkg := pyPackageName(filepath.Base(proj))
@@ -1291,18 +1316,119 @@ func runDefaultEntryWithArgs(extraArgs []string) error {
 	return fmt.Errorf("no default entry found at %s — expected main.py or src/%s/__main__.py", proj, pkg)
 }
 
-// runPythonScript execs spec.Python on a script path under the project env.
-// Used for the `molt run main.py` single-file flow.
-func runPythonScript(projectDir, script string, scriptArgs []string) error {
-	nativeCheckAndSync(projectDir)
-	spec, err := syspath.Load(projectDir)
-	if err != nil {
-		return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
+// runPythonScript execs Python on a script path.
+// override, when non-nil, supplies the interpreter + syspath instead of
+// loading from the project. When both override and project syspath are absent
+// and there is no pyproject.toml, falls back to the system Python
+// (projectless mode).
+func runPythonScript(projectDir, script string, scriptArgs []string, override *syspath.Spec) error {
+	spec := override
+	if spec == nil {
+		nativeCheckAndSync(projectDir)
+		var err error
+		spec, err = syspath.Load(projectDir)
+		if err != nil {
+			// Projectless fallback: no syspath and no pyproject → bare exec.
+			if _, statErr := os.Stat(filepath.Join(projectDir, "pyproject.toml")); os.IsNotExist(statErr) {
+				return runBareScript(script, scriptArgs)
+			}
+			return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
+		}
 	}
 	abs, _ := filepath.Abs(script)
 	env := spec.BuildEnv(os.Environ())
 	argv := append([]string{spec.Python, abs}, scriptArgs...)
 	return syscall.Exec(spec.Python, argv, env)
+}
+
+// runBareScript runs a Python script with no molt env — just the system (or
+// global molt) Python with a clean environment. Used when there is no
+// pyproject.toml and no --env flag.
+func runBareScript(script string, scriptArgs []string) error {
+	mgr, _ := python.New(os.TempDir())
+	pyExe := ""
+	if mgr != nil {
+		pyExe, _ = mgr.Which()
+	}
+	if pyExe == "" {
+		var err error
+		pyExe, err = exec.LookPath("python3")
+		if err != nil {
+			pyExe, err = exec.LookPath("python")
+		}
+		if err != nil {
+			return fmt.Errorf("no Python interpreter found — install Python or run `molt python install`")
+		}
+	}
+	abs, _ := filepath.Abs(script)
+	env := stripPythonVenvEnv(os.Environ())
+	argv := append([]string{pyExe, abs}, scriptArgs...)
+	return syscall.Exec(pyExe, argv, env)
+}
+
+// stripPythonVenvEnv returns a copy of env with VIRTUAL_ENV, PYTHONHOME, and
+// PYTHONPATH removed so stale venv state can't leak into a bare execution.
+func stripPythonVenvEnv(env []string) []string {
+	out := env[:0:len(env)]
+	for _, e := range env {
+		k := strings.SplitN(e, "=", 2)[0]
+		if k == "VIRTUAL_ENV" || k == "PYTHONHOME" || k == "PYTHONPATH" {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// resolveEnvSpec resolves --env <query> to a *syspath.Spec.
+//
+//  1. Named env in ~/.molt/envs/<query>/
+//  2. Existing registered project by name/path/hash
+func resolveEnvSpec(query string) (*syspath.Spec, error) {
+	// 1. Named env.
+	if moltenv.Exists(query) {
+		spec, err := moltenv.LoadSpec(query)
+		if err != nil {
+			return nil, err
+		}
+		return spec, nil
+	}
+	// 2. Registered project.
+	if entry, err := projstate.Resolve(query); err == nil {
+		spec, err := syspath.Load(entry.ProjectDir)
+		if err != nil {
+			return nil, fmt.Errorf("project %q not synced — run `molt sync --project %s` first", query, query)
+		}
+		return spec, nil
+	}
+	// 3. Maybe it's a plain path to a molt project on disk.
+	if abs, err := filepath.Abs(query); err == nil {
+		if _, statErr := os.Stat(filepath.Join(abs, "pyproject.toml")); statErr == nil {
+			spec, err := syspath.Load(abs)
+			if err != nil {
+				return nil, fmt.Errorf("project at %q not synced — run `molt sync` in that directory first", abs)
+			}
+			return spec, nil
+		}
+	}
+	return nil, fmt.Errorf("env or project %q not found\n  create an env with: molt envs create %s [packages...]", query, query)
+}
+
+// extractFlag removes --flag <value> from args and returns (value, remaining).
+// Returns ("", args) if the flag is not present.
+func extractFlag(args []string, flag string) (string, []string) {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			remaining := append(args[:i:i], args[i+2:]...)
+			return args[i+1], remaining
+		}
+		if strings.HasPrefix(a, flag+"=") {
+			val := strings.TrimPrefix(a, flag+"=")
+			remaining := append(args[:i:i], args[i+1:]...)
+			return val, remaining
+		}
+	}
+	return "", args
 }
 
 // cmdExec runs an arbitrary binary from the molt environment, bypassing task
@@ -1314,7 +1440,7 @@ func cmdExec(args []string) error {
 	if err := ensureSynced(projectRoot()); err != nil {
 		return err
 	}
-	return runExec(projectRoot(), args)
+	return runExec(projectRoot(), args, nil)
 }
 
 // cmdActivate prints shell export commands that wire the molt environment into
@@ -1398,13 +1524,26 @@ func ensureSynced(projectDir string) error {
 // runExec executes argv under the project's store-derived environment.
 // `python`/`python3` resolve directly to spec.Python — molt never depends
 // on a system `python` being on PATH.
-func runExec(projectDir string, argv []string) error {
+// override, when non-nil, supplies the interpreter + syspath instead of
+// loading from the project.
+func runExec(projectDir string, argv []string, override *syspath.Spec) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("nothing to run")
 	}
-	spec, err := syspath.Load(projectDir)
-	if err != nil {
-		return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
+	spec := override
+	if spec == nil {
+		var err error
+		spec, err = syspath.Load(projectDir)
+		if err != nil {
+			// Projectless fallback for `python`/`python3` bare exec.
+			bin := argv[0]
+			if bin == "python" || bin == "python3" {
+				if _, statErr := os.Stat(filepath.Join(projectDir, "pyproject.toml")); os.IsNotExist(statErr) {
+					return runBareScript(argv[1], argv[2:])
+				}
+			}
+			return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
+		}
 	}
 	bin := argv[0]
 	if bin == "python" || bin == "python3" {
@@ -1941,7 +2080,7 @@ func cmdProjectReinit(path string) error {
 
 func cmdTool(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: molt tool <install|list|show|uninstall|path>")
+		return fmt.Errorf("usage: molt tool <install|list|show|uninstall|set-env|unset-env|path>")
 	}
 	switch args[0] {
 	case "install":
@@ -1962,6 +2101,26 @@ func cmdTool(args []string) error {
 		}
 		fmt.Printf("✓ uninstalled tool %q\n", args[1])
 		return nil
+	case "set-env":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: molt tool set-env <tool-name> <env-name>")
+		}
+		t, err := tooldb.SetEnv(args[1], args[2])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("✓ tool %q now uses env %q\n", t.Name, t.Env)
+		return nil
+	case "unset-env":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt tool unset-env <tool-name>")
+		}
+		t, err := tooldb.UnsetEnv(args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("✓ tool %q env binding removed\n", t.Name)
+		return nil
 	case "path":
 		bin, err := tooldb.BinDir()
 		if err != nil {
@@ -1975,33 +2134,72 @@ func cmdTool(args []string) error {
 }
 
 func cmdToolInstall(args []string) error {
-	fs := flag.NewFlagSet("tool install", flag.ExitOnError)
-	name := fs.String("name", "", "Tool name (default: project basename)")
-	task := fs.String("task", "", "Task to dispatch (default: project's default entry)")
-	force := fs.Bool("force", false, "Overwrite an existing tool of the same name")
-	fs.Parse(args)
+	// Use manual flag extraction so flags work regardless of position
+	// relative to the positional src argument. Go's flag package stops
+	// parsing at the first non-flag arg, which breaks `molt tool install
+	// script.py --env myenv`.
+	envName, args := extractFlag(args, "--env")
+	toolName, args := extractFlag(args, "--name")
+	taskName, args := extractFlag(args, "--task")
+	force := hasFlag(args, "--force")
+	// Strip --force from positional args.
+	var positional []string
+	for _, a := range args {
+		if a != "--force" && !strings.HasPrefix(a, "--") {
+			positional = append(positional, a)
+		}
+	}
 
 	src := "."
-	if fs.NArg() > 0 {
-		src = fs.Arg(0)
+	if len(positional) > 0 {
+		src = positional[0]
 	}
 	abs, err := filepath.Abs(src)
 	if err != nil {
 		return err
 	}
-	resolvedName := *name
+
+	// Env-only script tool: positional arg is a .py file + --env is set.
+	if strings.HasSuffix(src, ".py") && envName != "" {
+		resolvedName := toolName
+		if resolvedName == "" {
+			base := filepath.Base(abs)
+			resolvedName = strings.TrimSuffix(base, ".py")
+		}
+		t, err := tooldb.InstallScript(resolvedName, abs, envName, force)
+		if err != nil {
+			return err
+		}
+		printToolInstalled(t)
+		return nil
+	}
+
+	// Project-based tool (existing behaviour + optional --env).
+	resolvedName := toolName
 	if resolvedName == "" {
 		resolvedName = filepath.Base(abs)
 	}
-	t, err := tooldb.Install(resolvedName, abs, *task, *force)
+	t, err := tooldb.Install(resolvedName, abs, taskName, envName, force)
 	if err != nil {
 		return err
 	}
+	printToolInstalled(t)
+	return nil
+}
+
+func printToolInstalled(t *tooldb.Tool) {
 	fmt.Printf("✓ installed tool %q\n", t.Name)
-	fmt.Printf("  shim:    %s\n", t.ShimPath())
-	fmt.Printf("  source:  %s\n", t.ProjectDir)
+	fmt.Printf("  shim:  %s\n", t.ShimPath())
+	if t.Script != "" {
+		fmt.Printf("  script: %s\n", t.Script)
+	} else {
+		fmt.Printf("  source: %s\n", t.ProjectDir)
+	}
 	if t.Task != "" {
-		fmt.Printf("  task:    %s\n", t.Task)
+		fmt.Printf("  task:  %s\n", t.Task)
+	}
+	if t.Env != "" {
+		fmt.Printf("  env:   %s\n", t.Env)
 	}
 
 	// PATH bootstrap hint — print once if BinDir() isn't on PATH.
@@ -2010,7 +2208,6 @@ func cmdToolInstall(args []string) error {
 		fmt.Printf("\n%s is not on your PATH. Add this to your shell profile:\n", bin)
 		fmt.Printf("  export PATH=\"%s:$PATH\"\n", bin)
 	}
-	return nil
 }
 
 // pathContains reports whether the OS PATH env var contains dir as one
@@ -2037,7 +2234,7 @@ func cmdToolList() error {
 		fmt.Println("No tools installed. Try: molt tool install")
 		return nil
 	}
-	fmt.Printf("%-20s %-10s %-20s %-15s %s\n", "NAME", "TASK", "LAST UPDATE", "STATE", "SOURCE")
+	fmt.Printf("%-20s %-12s %-12s %-20s %-14s %s\n", "NAME", "TASK", "ENV", "LAST UPDATE", "STATE", "SOURCE")
 	for _, t := range tools {
 		state := "✓ alive"
 		if !t.ProjectAlive() {
@@ -2045,13 +2242,25 @@ func cmdToolList() error {
 		}
 		task := t.Task
 		if task == "" {
-			task = "(default)"
+			if t.IsEnvTool() {
+				task = "(script)"
+			} else {
+				task = "(default)"
+			}
+		}
+		envCol := t.Env
+		if envCol == "" {
+			envCol = "-"
 		}
 		updated := "(never)"
 		if !t.Updated.IsZero() {
 			updated = t.Updated.Local().Format("2006-01-02 15:04:05")
 		}
-		fmt.Printf("%-20s %-10s %-20s %-15s %s\n", t.Name, task, updated, state, t.ProjectDir)
+		src := t.ProjectDir
+		if t.Script != "" {
+			src = t.Script
+		}
+		fmt.Printf("%-20s %-12s %-12s %-20s %-14s %s\n", t.Name, task, envCol, updated, state, src)
 	}
 	bin, _ := tooldb.BinDir()
 	fmt.Printf("\n%d tool(s); shims at %s\n", len(tools), bin)
@@ -2064,12 +2273,19 @@ func cmdToolShow(name string) error {
 		return fmt.Errorf("tool %q not found", name)
 	}
 	fmt.Printf("Name:        %s\n", t.Name)
-	fmt.Printf("Source:      %s\n", t.ProjectDir)
+	if t.Script != "" {
+		fmt.Printf("Script:      %s\n", t.Script)
+	} else {
+		fmt.Printf("Source:      %s\n", t.ProjectDir)
+	}
 	fmt.Printf("Shim:        %s\n", t.ShimPath())
 	if t.Task != "" {
 		fmt.Printf("Task:        %s\n", t.Task)
-	} else {
+	} else if !t.IsEnvTool() {
 		fmt.Println("Task:        (default entry)")
+	}
+	if t.Env != "" {
+		fmt.Printf("Env:         %s\n", t.Env)
 	}
 	if !t.Created.IsZero() {
 		fmt.Printf("Created:     %s\n", t.Created.Local().Format(time.RFC3339))
@@ -2079,7 +2295,13 @@ func cmdToolShow(name string) error {
 	}
 	if t.ProjectAlive() {
 		fmt.Println("State:       ✓ alive")
-		if spec, err := syspath.Load(t.ProjectDir); err == nil {
+		lookupDir := t.ProjectDir
+		if t.IsEnvTool() {
+			if d, err := moltenv.Dir(t.Env); err == nil {
+				lookupDir = d
+			}
+		}
+		if spec, err := syspath.Load(lookupDir); err == nil {
 			fmt.Printf("Python bin:  %s\n", spec.Python)
 		}
 	} else {
@@ -3233,4 +3455,182 @@ func cleanPythonEnv(parent []string) []string {
 		out = append(out, kv)
 	}
 	return out
+}
+
+// ── Named environments (molt envs) ───────────────────────────────────────────
+
+func cmdEnvs(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: molt envs <create|add|remove|sync|list|info|delete|path>")
+	}
+	switch args[0] {
+	case "create":
+		return cmdEnvsCreate(args[1:])
+	case "add":
+		return cmdEnvsAdd(args[1:])
+	case "remove":
+		return cmdEnvsRemove(args[1:])
+	case "sync":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt envs sync <name> [--allow-fresh]")
+		}
+		allowFresh := hasFlag(args[2:], "--allow-fresh")
+		return moltenv.Sync(args[1], allowFresh)
+	case "list":
+		return cmdEnvsList()
+	case "info":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt envs info <name>")
+		}
+		return cmdEnvsInfo(args[1])
+	case "delete":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt envs delete <name>")
+		}
+		if err := moltenv.Delete(args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("✓ deleted env %q\n", args[1])
+		return nil
+	case "path":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt envs path <name>")
+		}
+		d, err := moltenv.Dir(args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Println(d)
+		return nil
+	default:
+		return fmt.Errorf("unknown envs subcommand %q\n  usage: molt envs <create|add|remove|sync|list|info|delete|path>", args[0])
+	}
+}
+
+func cmdEnvsCreate(args []string) error {
+	// Use extractFlag so --python and --allow-fresh work regardless of position.
+	python, args := extractFlag(args, "--python")
+	allowFresh := hasFlag(args, "--allow-fresh")
+	// Remaining positional args: first is the name, rest are packages.
+	var positional []string
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) < 1 {
+		return fmt.Errorf("usage: molt envs create <name> [--python 3.12] [--allow-fresh] [package...]")
+	}
+	name := positional[0]
+	packages := positional[1:]
+	if err := moltenv.Create(name, python, packages, allowFresh); err != nil {
+		return err
+	}
+	fmt.Printf("✓ env %q ready", name)
+	if len(packages) > 0 {
+		fmt.Printf(" (%s)", strings.Join(packages, ", "))
+	}
+	fmt.Println()
+	fmt.Printf("  run a script in it: molt run --env %s <script.py>\n", name)
+	return nil
+}
+
+func cmdEnvsAdd(args []string) error {
+	allowFresh := hasFlag(args, "--allow-fresh")
+	var positional []string
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) < 2 {
+		return fmt.Errorf("usage: molt envs add <name> <package...> [--allow-fresh]")
+	}
+	name := positional[0]
+	pkgs := positional[1:]
+	return moltenv.AddPackages(name, pkgs, allowFresh)
+}
+
+func cmdEnvsRemove(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: molt envs remove <name> <package...>")
+	}
+	name := args[0]
+	pkgs := args[1:]
+	return moltenv.RemovePackages(name, pkgs)
+}
+
+func cmdEnvsList() error {
+	envs, err := moltenv.List()
+	if err != nil {
+		return err
+	}
+	if len(envs) == 0 {
+		fmt.Println("No named envs. Create one with: molt envs create <name> [packages...]")
+		return nil
+	}
+	fmt.Printf("%-20s %-8s %-6s %s\n", "NAME", "PYTHON", "PKGS", "PACKAGES")
+	for _, def := range envs {
+		python := def.Python
+		if python == "" {
+			python = "(global)"
+		}
+		pkgList := strings.Join(def.Packages, ", ")
+		if len(pkgList) > 50 {
+			pkgList = pkgList[:47] + "..."
+		}
+		fmt.Printf("%-20s %-8s %-6d %s\n", def.Name, python, len(def.Packages), pkgList)
+	}
+	root, _ := moltenv.Root()
+	fmt.Printf("\n%d env(s) at %s\n", len(envs), root)
+	return nil
+}
+
+func cmdEnvsInfo(name string) error {
+	info, err := moltenv.Info(name)
+	if err != nil {
+		return err
+	}
+	d, _ := moltenv.Dir(name)
+	fmt.Printf("Name:     %s\n", info.Def.Name)
+	fmt.Printf("Dir:      %s\n", d)
+	if info.Def.Python != "" {
+		fmt.Printf("Python:   %s (requested)\n", info.Def.Python)
+	}
+	if info.Synced {
+		fmt.Printf("Python:   %s (resolved)\n", info.Python)
+		fmt.Println("Synced:   ✓ yes")
+	} else {
+		fmt.Println("Synced:   ✗ no — run `molt envs sync " + name + "`")
+	}
+	if len(info.Def.Packages) == 0 {
+		fmt.Println("Packages: (none)")
+	} else {
+		fmt.Println("Packages:")
+		for _, p := range info.Def.Packages {
+			fmt.Printf("  %s\n", p)
+		}
+	}
+	if len(info.Def.Env) > 0 {
+		fmt.Println("Env vars:")
+		for k := range info.Def.Env {
+			fmt.Printf("  %s\n", k)
+		}
+	}
+	usage, _ := moltenv.DiskUsage(name)
+	fmt.Printf("Disk:     %s\n", formatBytes(usage))
+	return nil
+}
+
+func formatBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
