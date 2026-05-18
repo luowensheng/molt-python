@@ -21,6 +21,7 @@ type ResolvedPkg struct {
 	EditablePath string // for editable installs (absolute, resolved against lockDir)
 	Dependencies []string
 	Wheels       []Wheel
+	SdistURL     string // non-empty when only an sdist is available (no wheels on PyPI)
 }
 
 type Wheel struct {
@@ -31,11 +32,15 @@ type Wheel struct {
 	PyTag, AbiTag, PlatformTag string
 }
 
-type pyABI interface {
+// PyABI is the interpreter ABI information needed to select a compatible wheel.
+type PyABI interface {
 	GetPyTag() string
 	GetAbiTag() string
 	GetPlatforms() []string
 }
+
+// pyABI is kept as an alias so existing internal callers compile unchanged.
+type pyABI = PyABI
 
 // Parse reads a uv.lock and returns the [[package]] entries.
 func Parse(lockPath string) ([]ResolvedPkg, error) {
@@ -102,6 +107,13 @@ func Parse(lockPath string) ([]ResolvedPkg, error) {
 				wh := Wheel{URL: url, Hash: hash, Filename: filepath.Base(url)}
 				wh.PyTag, wh.AbiTag, wh.PlatformTag = parseWheelTags(wh.Filename)
 				p.Wheels = append(p.Wheels, wh)
+			}
+		}
+		// Capture sdist URL so syncplan can build a wheel when no pre-built
+		// wheel is available (sdist-only packages like docopt 0.6.2).
+		if sd, ok := t.fields["sdist"].(map[string]any); ok {
+			if u, ok := sd["url"].(string); ok {
+				p.SdistURL = u
 			}
 		}
 		out = append(out, p)
@@ -559,6 +571,12 @@ func absPath(base, p string) string {
 // parseWheelTags returns (py, abi, plat) parsed from a wheel filename per PEP 427.
 // Compressed tags ("py2.py3", "cp311.cp312") are returned verbatim; SelectWheel
 // uses tagContains to test membership.
+// ParseWheelTags exports parseWheelTags for callers (e.g. syncplan) that
+// build wheels from sdist and need to derive tags from the output filename.
+func ParseWheelTags(filename string) (string, string, string) {
+	return parseWheelTags(filename)
+}
+
 func parseWheelTags(filename string) (string, string, string) {
 	base := strings.TrimSuffix(filename, ".whl")
 	parts := strings.Split(base, "-")

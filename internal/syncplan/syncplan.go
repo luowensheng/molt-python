@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -165,7 +166,28 @@ func Sync(projectDir string, opts Options) error {
 		}
 		w, err := lockparse.SelectWheel(p, abi)
 		if err != nil {
-			return err
+			if len(p.Wheels) > 0 {
+				// Wheels exist but none match this platform — the package is
+				// guarded by a platform marker (e.g. nvidia-* Linux-only libs).
+				// Skip it silently; it is not needed on the current OS.
+				if opts.Verbose {
+					fmt.Printf("  ↷ skip    %s %s (no compatible wheel for this platform)\n", p.Name, p.Version)
+				}
+				continue
+			}
+			// No wheels at all (sdist-only). If the lock has a sdist URL, try
+			// building a wheel from source (e.g. abandoned docopt 0.6.2).
+			if p.SdistURL == "" {
+				// No wheels, no sdist — platform-excluded or incomplete lock entry.
+				if opts.Verbose {
+					fmt.Printf("  ↷ skip    %s %s (no wheel and no sdist for this platform)\n", p.Name, p.Version)
+				}
+				continue
+			}
+			w, err = buildWheelFromSdist(p, abi, opts.Verbose)
+			if err != nil {
+				return err
+			}
 		}
 		key, err := store.ParseWheelFilename(w.Filename)
 		if err != nil {
@@ -310,6 +332,97 @@ func Sync(projectDir string, opts Options) error {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// buildWheelFromSdist builds a wheel for pkg from its sdist URL using the
+// uv binary already on disk. This handles sdist-only packages (e.g. the
+// abandoned docopt 0.6.2) that have no pre-built wheels on PyPI.
+// The resulting wheel is stored in the global molt store.
+func buildWheelFromSdist(pkg lockparse.ResolvedPkg, abi lockparse.PyABI, verbose bool) (lockparse.Wheel, error) { //nolint:unparam
+	if pkg.SdistURL == "" {
+		return lockparse.Wheel{}, fmt.Errorf("%s %s: no wheels and no sdist URL in lockfile", pkg.Name, pkg.Version)
+	}
+	uv, err := uvbin.Ensure()
+	if err != nil {
+		return lockparse.Wheel{}, err
+	}
+	tmp, err := os.MkdirTemp("", "molt-build-*")
+	if err != nil {
+		return lockparse.Wheel{}, err
+	}
+	defer os.RemoveAll(tmp)
+
+	if verbose {
+		fmt.Printf("  ⚙ build   %s %s (sdist-only, building wheel…)\n", pkg.Name, pkg.Version)
+	}
+
+	// uv build requires a local path — download the sdist first.
+	sdistPath := filepath.Join(tmp, filepath.Base(pkg.SdistURL))
+	if err := downloadFile(pkg.SdistURL, sdistPath); err != nil {
+		return lockparse.Wheel{}, fmt.Errorf("download sdist for %s %s: %w", pkg.Name, pkg.Version, err)
+	}
+
+	cmd := exec.Command(uv, "build", "--wheel", sdistPath, "--out-dir", tmp)
+	cmd.Stdout = os.Stderr // build noise to stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return lockparse.Wheel{}, fmt.Errorf("build wheel for %s %s: %w", pkg.Name, pkg.Version, err)
+	}
+
+	// Find the wheel uv produced.
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return lockparse.Wheel{}, err
+	}
+	var whlPath string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".whl") {
+			whlPath = filepath.Join(tmp, e.Name())
+			break
+		}
+	}
+	if whlPath == "" {
+		return lockparse.Wheel{}, fmt.Errorf("uv build produced no wheel for %s %s", pkg.Name, pkg.Version)
+	}
+
+	// Install directly into the store.
+	st, err := store.Default()
+	if err != nil {
+		return lockparse.Wheel{}, err
+	}
+	key, err := store.ParseWheelFilename(filepath.Base(whlPath))
+	if err != nil {
+		return lockparse.Wheel{}, fmt.Errorf("parse built wheel filename %s: %w", filepath.Base(whlPath), err)
+	}
+	if err := st.Install(key, whlPath, ""); err != nil {
+		return lockparse.Wheel{}, fmt.Errorf("install built wheel %s: %w", filepath.Base(whlPath), err)
+	}
+
+	w := lockparse.Wheel{
+		URL:         "file://" + whlPath,
+		Filename:    filepath.Base(whlPath),
+	}
+	w.PyTag, w.AbiTag, w.PlatformTag = lockparse.ParseWheelTags(w.Filename)
+	return w, nil
+}
+
+// downloadFile fetches a URL to a local path.
+func downloadFile(url, dest string) error {
+	resp, err := http.Get(url) //nolint:gosec
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP %d fetching %s", resp.StatusCode, url)
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, resp.Body)
+	return err
+}
 
 func runUV(dir string, args ...string) error {
 	uv, err := uvbin.Ensure()
