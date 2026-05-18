@@ -218,6 +218,28 @@ func linuxArch(s string) string {
 	return ""
 }
 
+// cmpCPTag compares two CPython interpreter tags (e.g. "cp38", "cp311")
+// numerically by their version number. Returns -1, 0, or +1.
+// String comparison is wrong here: "cp311" < "cp38" lexicographically but
+// Python 3.11 > 3.8, which would cause abi3 wheels to be incorrectly rejected.
+func cmpCPTag(a, b string) int {
+	parse := func(tag string) int {
+		if !strings.HasPrefix(tag, "cp") {
+			return 0
+		}
+		n, _ := strconv.Atoi(tag[2:])
+		return n
+	}
+	an, bn := parse(a), parse(b)
+	if an < bn {
+		return -1
+	}
+	if an > bn {
+		return 1
+	}
+	return 0
+}
+
 // SelectWheel returns the best wheel for the active interpreter ABI from pkg.Wheels.
 // Order: exact (py_tag, abi_tag, plat) match > abi3 match > pure (py3-none-any).
 // Returns an error if pkg has no wheels at all.
@@ -260,7 +282,7 @@ func SelectWheel(pkg ResolvedPkg, py pyABI) (Wheel, error) {
 					minTag = c
 				}
 			}
-			if minTag == "" || pyTag < minTag {
+			if minTag == "" || cmpCPTag(pyTag, minTag) < 0 {
 				continue
 			}
 			tier = 1
