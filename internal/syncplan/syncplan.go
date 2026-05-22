@@ -1037,19 +1037,24 @@ exec %s "$@"
 
 // writeMojoShimIfPresent detects whether the `mojo` package was installed by
 // checking for its console-script shim in the project's bin/ directory (written
-// by writeConsoleShims at step 9 of Sync — NOT in uv-env/bin/).  When found it
-// derives the libpython path for the active interpreter, records both in spec,
-// and re-saves syspath.json.  No new shim is written: BuildEnv already injects
-// MOJO_PYTHON_LIBRARY into every molt-spawned process, and the console-script
-// shim already puts the correct Python interpreter on PATH.
+// by writeConsoleShims at step 9 of Sync).
+//
+// When mojo is installed, the mojo-compiler wheel stores its SDK assets under a
+// *.data/platlib/modular/ subdirectory rather than directly in site-packages —
+// the layout pip would produce after a normal install.  This means the Python
+// entry-point wrapper (mojo/_package_root.py) cannot locate the SDK root via
+// its usual heuristics, so we bypass the Python wrapper entirely: we locate the
+// real mojo binary and the Mojo standard-library import path ourselves, then
+// overwrite the shim with a direct-exec version that sets all necessary
+// MODULAR_* env vars before invoking the binary.
 func writeMojoShimIfPresent(projDir, pyExe string, spec *syspath.Spec) error {
 	binDir := projstate.Bin(projDir)
-	mojoBin := filepath.Join(binDir, "mojo")
+	shimPath := filepath.Join(binDir, "mojo")
 	if runtime.GOOS == "windows" {
-		mojoBin = filepath.Join(binDir, "mojo.cmd")
+		shimPath = filepath.Join(binDir, "mojo.cmd")
 	}
-	if _, err := os.Stat(mojoBin); err != nil {
-		// mojo not installed — clear any stale fields and return.
+	if _, err := os.Stat(shimPath); err != nil {
+		// console-script shim not present → mojo not installed
 		if spec.MojoBin != "" || spec.MojoPythonLib != "" {
 			spec.MojoBin = ""
 			spec.MojoPythonLib = ""
@@ -1058,6 +1063,16 @@ func writeMojoShimIfPresent(projDir, pyExe string, spec *syspath.Spec) error {
 		return nil
 	}
 
+	// Locate the real mojo binary and the Mojo stdlib import path.
+	sdkRoot, mojoImportPath := findMojoSDKRoots(spec.Syspath)
+	if sdkRoot == "" {
+		fmt.Fprintf(os.Stderr,
+			"warning: mojo console-script shim found but SDK assets not located "+
+				"in .data/platlib/ — `molt run *.mojo` may fail\n")
+		return nil
+	}
+	realMojoBin := filepath.Join(sdkRoot, "bin", "mojo")
+
 	lib, err := deriveMojoPythonLib(pyExe)
 	if err != nil || lib == "" {
 		fmt.Fprintf(os.Stderr,
@@ -1065,12 +1080,69 @@ func writeMojoShimIfPresent(projDir, pyExe string, spec *syspath.Spec) error {
 				"set MOJO_PYTHON_LIBRARY manually if `mojo run` fails\n")
 	}
 
-	spec.MojoBin = mojoBin
+	spec.MojoBin = shimPath
 	spec.MojoPythonLib = lib
 	if err := syspath.Save(spec); err != nil {
 		return fmt.Errorf("re-save syspath.json after mojo detection: %w", err)
 	}
-	return nil
+
+	// Overwrite the generic console-script shim with a direct-exec shim that
+	// sets all MODULAR_* env vars the mojo binary needs and exec's it directly,
+	// bypassing the Python entry-point wrapper that fails in molt's layout.
+	return writeMojoShim(binDir, realMojoBin, sdkRoot, mojoImportPath, lib, spec.BuildPythonPath())
+}
+
+// findMojoSDKRoots searches syspath entries for the mojo-compiler and
+// mojo-compiler-mojo-libs packages and returns:
+//
+//	sdkRoot      — path to the modular/ dir that contains bin/mojo
+//	importPath   — path to the modular/lib/mojo stdlib directory
+//
+// In molt's store, wheel .data/platlib/ content is not merged into the package
+// root, so the modular/ dir lives at <pkgdir>/<wheel>.data/platlib/modular/.
+func findMojoSDKRoots(syspathEntries []string) (sdkRoot, importPath string) {
+	for _, dir := range syspathEntries {
+		base := filepath.Base(dir)
+		// mojo-compiler (platform wheel): has bin/mojo and runtime dylibs
+		if strings.Contains(dir, "mojo-compiler") &&
+			!strings.Contains(dir, "mojo-compiler-mojo-libs") &&
+			!strings.Contains(base, "mojo-compiler-mojo-libs") {
+			if root := findDataPlatlib(dir, "modular"); root != "" {
+				if _, err := os.Stat(filepath.Join(root, "bin", "mojo")); err == nil {
+					sdkRoot = root
+				}
+			}
+		}
+		// mojo-compiler-mojo-libs (pure-Python wheel): has lib/mojo stdlib
+		if strings.Contains(dir, "mojo-compiler-mojo-libs") {
+			if root := findDataPlatlib(dir, "modular"); root != "" {
+				candidate := filepath.Join(root, "lib", "mojo")
+				if _, err := os.Stat(candidate); err == nil {
+					importPath = candidate
+				}
+			}
+		}
+	}
+	return
+}
+
+// findDataPlatlib looks for <pkgDir>/<something>.data/platlib/<subdir> and
+// returns the first match found, or "" if none exist.
+func findDataPlatlib(pkgDir, subdir string) string {
+	entries, err := os.ReadDir(pkgDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasSuffix(e.Name(), ".data") {
+			continue
+		}
+		candidate := filepath.Join(pkgDir, e.Name(), "platlib", subdir)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // deriveMojoPythonLib asks the project's Python interpreter for the absolute
@@ -1096,17 +1168,34 @@ for name in [f'libpython{ldver}{ext}', f'libpython{ldver}.so.1.0']:
 	return strings.TrimSpace(string(out)), nil
 }
 
-// writeMojoShim writes a self-contained shell script to binDir/mojo that sets
-// MOJO_PYTHON_LIBRARY, PYTHONPATH, and the dynamic-linker path vars before
-// exec-ing the real mojo binary. The shim is usable both via `molt run` and
-// directly from any shell that has the project bin/ dir on PATH.
-func writeMojoShim(binDir, mojoBin, pythonLib, pythonPath string) error {
+// writeMojoShim writes a self-contained shim to binDir/mojo that bypasses the
+// mojo Python entry-point wrapper (which cannot find SDK assets in molt's store
+// layout) and instead exec-s the real mojo binary directly with all required
+// MODULAR_* environment variables pre-set.
+//
+// Parameters:
+//
+//	binDir       — project bin/ directory (shim written here)
+//	realMojoBin  — absolute path to the actual mojo native binary
+//	sdkRoot      — modular/ SDK root (parent of bin/ and lib/)
+//	importPath   — path to the Mojo stdlib (modular/lib/mojo)
+//	pythonLib    — absolute path to libpython shared library
+//	pythonPath   — colon-separated PYTHONPATH string
+func writeMojoShim(binDir, realMojoBin, sdkRoot, importPath, pythonLib, pythonPath string) error {
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(binDir, "mojo.cmd")
 		body := fmt.Sprintf(
-			"@echo off\r\nset MOJO_PYTHON_LIBRARY=%s\r\nset PYTHONPATH=%s\r\n"+
-				"set VIRTUAL_ENV=\r\nset PYTHONHOME=\r\n\"%s\" %%*\r\n",
-			pythonLib, pythonPath, mojoBin)
+			"@echo off\r\n"+
+				"set MODULAR_MAX_PACKAGE_ROOT=%s\r\n"+
+				"set MODULAR_MOJO_MAX_PACKAGE_ROOT=%s\r\n"+
+				"set MODULAR_MOJO_MAX_DRIVER_PATH=%s\r\n"+
+				"set MODULAR_MOJO_MAX_IMPORT_PATH=%s\r\n"+
+				"set MOJO_PYTHON_LIBRARY=%s\r\n"+
+				"set PYTHONPATH=%s\r\n"+
+				"set VIRTUAL_ENV=\r\nset PYTHONHOME=\r\n"+
+				"\"%s\" %%*\r\n",
+			sdkRoot, sdkRoot, realMojoBin, importPath,
+			pythonLib, pythonPath, realMojoBin)
 		return os.WriteFile(path, []byte(body), 0o755)
 	}
 	libDir := ""
@@ -1115,15 +1204,30 @@ func writeMojoShim(binDir, mojoBin, pythonLib, pythonPath string) error {
 	}
 	path := filepath.Join(binDir, "mojo")
 	body := fmt.Sprintf(`#!/bin/sh
+# molt-managed Mojo shim — exec real binary, bypass Python entry-point wrapper
+export MODULAR_MAX_PACKAGE_ROOT=%s
+export MODULAR_MOJO_MAX_PACKAGE_ROOT=%s
+export MODULAR_MOJO_MAX_DRIVER_PATH=%s
+export MODULAR_MOJO_MAX_IMPORT_PATH=%s
 export MOJO_PYTHON_LIBRARY=%s
 export PYTHONPATH=%s
 export LD_LIBRARY_PATH=%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export DYLD_FALLBACK_LIBRARY_PATH=%s${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}
-unset VIRTUAL_ENV PYTHONHOME
+# VIRTUAL_ENV is set to sdkRoot so mojo sub-processes (e.g. the crash reporter)
+# that call get_package_root() can find the SDK assets via the VIRTUAL_ENV fallback.
+export VIRTUAL_ENV=%s
+unset PYTHONHOME
 exec %s "$@"
-`, shellQuote(pythonLib), shellQuote(pythonPath),
+`,
+		shellQuote(sdkRoot),
+		shellQuote(sdkRoot),
+		shellQuote(realMojoBin),
+		shellQuote(importPath),
+		shellQuote(pythonLib),
+		shellQuote(pythonPath),
 		shellQuote(libDir)+":", shellQuote(libDir)+":",
-		shellQuote(mojoBin))
+		shellQuote(sdkRoot),
+		shellQuote(realMojoBin))
 	return os.WriteFile(path, []byte(body), 0o755)
 }
 
