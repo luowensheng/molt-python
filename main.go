@@ -1266,14 +1266,14 @@ func cmdRun(args []string) error {
 	}
 
 	taskName := args[0]
-	watch := hasFlag(args[1:], "--watch")
-
-	var extraArgs []string
-	for i, a := range args[1:] {
-		if a == "--" {
-			extraArgs = args[i+2:]
-			break
+	watch := false
+	extraArgs := make([]string, 0, len(args)-1)
+	for _, a := range args[1:] {
+		if a == "--watch" {
+			watch = true
+			continue
 		}
+		extraArgs = append(extraArgs, a)
 	}
 
 	// Auto-sync on first run: a freshly-init'd project has no
