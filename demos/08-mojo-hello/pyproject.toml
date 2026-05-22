@@ -12,6 +12,4 @@ dependencies = [
 prerelease = "allow"
 
 [tool.molt.tasks]
-run     = "molt run main.mojo"
-types   = "molt mojo run types.mojo"
-structs = "molt mojo run structs.mojo"
+run = "molt run main.mojo"

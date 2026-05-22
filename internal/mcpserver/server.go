@@ -174,8 +174,10 @@ func boolProp(desc string) map[string]any {
 
 // RunMCPServer starts the stdio MCP server loop. It reads one JSON-RPC
 // request per line from stdin and writes responses to stdout. It runs
-// until stdin is closed.
-func RunMCPServer() error {
+// until stdin is closed. ver is the molt version string (from -X main.version).
+func RunMCPServer(ver string) error {
+	mcpVersion = ver
+
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024) // 4 MB line buffer
 	enc := json.NewEncoder(os.Stdout)
@@ -195,11 +197,20 @@ func RunMCPServer() error {
 			continue
 		}
 
+		// Notifications (method starts with "notifications/") must not receive
+		// a response per JSON-RPC 2.0 spec.
+		if strings.HasPrefix(req.Method, "notifications/") {
+			continue
+		}
+
 		resp := handle(req)
 		_ = enc.Encode(resp)
 	}
 	return scanner.Err()
 }
+
+// mcpVersion holds the version string passed from main at startup.
+var mcpVersion string
 
 func handle(req request) response {
 	switch req.Method {
@@ -213,10 +224,6 @@ func handle(req request) response {
 				ServerInfo:      serverInfo{Name: "molt", Version: serverVersion()},
 			},
 		}
-
-	case "notifications/initialized":
-		// No response needed for notifications.
-		return response{}
 
 	case "tools/list":
 		return response{
@@ -388,10 +395,11 @@ func errResp(id json.RawMessage, code int, msg string) response {
 	}
 }
 
-// serverVersion returns the molt version string embedded at build time.
-// It reads the binary's build info as a fallback for dev builds.
+// serverVersion returns the molt version string passed at startup via RunMCPServer.
+// Falls back to "dev" if called before the server has been started.
 func serverVersion() string {
-	// The version variable is in package main and not accessible here.
-	// Use the binary's build info as the best available proxy.
-	return "0.1.0"
+	if mcpVersion != "" {
+		return mcpVersion
+	}
+	return "dev"
 }

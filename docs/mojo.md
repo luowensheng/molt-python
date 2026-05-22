@@ -7,14 +7,17 @@
 ## Quick start
 
 ```bash
-# Add Mojo to your project (prerelease allowed)
+# 1. Allow prerelease packages (required — Mojo is still in beta)
+#    Add this to your pyproject.toml before running molt add:
+#
+#    [tool.uv]
+#    prerelease = "allow"
+
+# 2. Add Mojo as a dependency
 molt add mojo
 
-# Add to pyproject.toml manually:
-# [tool.uv]
-# prerelease = "allow"
-
-molt sync   # installs mojo + wires MOJO_PYTHON_LIBRARY automatically
+# 3. Sync — installs the compiler and wires MOJO_PYTHON_LIBRARY automatically
+molt sync
 ```
 
 ```bash

@@ -36,9 +36,9 @@ molt run top10
 
 | Task | Command |
 |---|---|
-| `posts` | `python scraper.py posts 5` |
-| `users` | `python scraper.py users` |
-| `top10` | `python scraper.py posts 10` |
+| `posts` | `molt python run scraper.py posts 5` |
+| `users` | `molt python run scraper.py users` |
+| `top10` | `molt python run scraper.py posts 10` |
 
 ## Global store sharing
 

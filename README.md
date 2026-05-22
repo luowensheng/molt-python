@@ -1228,7 +1228,7 @@ verification, cross-compile builds.
 
 ## Where to go next
 
-- [`demos/`](demos/) — six runnable example projects
+- [`demos/`](demos/) — twelve runnable example projects
 - [`docs/MANUAL.md`](docs/MANUAL.md) — exhaustive command reference
 - [`docs/global-store.md`](docs/global-store.md) — store architecture deep dive
 - [`docs/kernel-modules.md`](docs/kernel-modules.md) — kernel-module reference

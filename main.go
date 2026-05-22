@@ -147,7 +147,7 @@ func main() {
 
 	// ── AI / MCP server ───────────────────────────────────────────────────
 	case "mcp":
-		err = mcpserver.RunMCPServer()
+		err = mcpserver.RunMCPServer(version)
 
 	// ── Native presets ────────────────────────────────────────────────────
 	case "native-preset":

@@ -1,6 +1,6 @@
 # molt demos
 
-Eleven runnable projects, each highlighting a different part of molt.
+Twelve runnable projects, each highlighting a different part of molt.
 
 ```
 demos/
@@ -155,6 +155,22 @@ molt verify-binary 06-binary-dist
 
 ---
 
+## 07 — asm-kernel
+
+**What it shows:** Hand-written GAS assembly callable from Python via molt's kernel
+module system — zero C or Cython boilerplate. A `mymath.molt.toml` manifest
+declares exported functions; `molt sync` compiles `mymath.S` to `mymath.so` via
+`zig cc` and generates a ctypes shim.
+
+```bash
+cd 07-asm-kernel
+molt sync              # compiles mymath.S → mymath.so, generates ctypes shim
+molt run               # python main.py: add(3,4)=7  mul(6,7)=42
+```
+
+**Key point:** The same `.S` source works on both ARM64 (Apple Silicon) and x86-64
+Linux via `#ifdef __aarch64__` / `#ifdef __x86_64__` — one file, two architectures.
+
 ---
 
 ## 08 — mojo-hello
@@ -203,8 +219,8 @@ molt run main.mojo     # Mojo SIMD demos + benchmark
 molt run bench-py      # Python/numpy baselines for comparison
 ```
 
-**Key point:** `simdwidthof[DType.float32]()` queries the actual CPU at compile time.
-`vectorize[fn, width](N)` tiles the loop to match, emitting native SIMD instructions.
+**Key point:** `ptr.load[width=W](i)` reads W floats per instruction. The manual SIMD
+while-loop with a scalar tail achieves ~3.4× speedup vs scalar on Apple Silicon NEON.
 
 ---
 
@@ -248,7 +264,7 @@ CPython extension module.
 
 ## Global store: before vs after
 
-After running all six demos you can see what's been shared:
+After running the demos you can see what's been shared:
 
 ```bash
 molt gc --dry-run       # show what GC could remove
@@ -265,7 +281,7 @@ of how many projects use them.
 
 ```bash
 # From the demos/ directory:
-for d in 0*/; do
+for d in [0-9][0-9]-*/; do
   echo "=== $d ===" && cd "$d" && molt sync --frozen && cd ..
 done
 ```

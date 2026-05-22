@@ -7,12 +7,14 @@ from: SIMD processes N values per CPU instruction without GIL overhead.
 ## What this demo shows
 
 - `SIMD[DType, width]` — construct, index, arithmetic, reduce
-- `simdwidthof[dtype]()` — query how wide your CPU's SIMD registers are at compile time
-- `iota` — fill a SIMD vector with sequential values
-- `vectorize[fn, width](N)` — auto-tile a buffer operation to match hardware width
+- Hardcoded `alias W = 4` for 128-bit NEON (4 × float32); change to 8 on AVX2
 - `shuffle`, `join`, `interleave` — lane permutation operations
-- `benchmark.run` / `keep` — accurate microbenchmarking inside Mojo
-- Side-by-side comparison with pure Python and numpy baselines
+- Manual SIMD while-loop with scalar tail for remainder elements
+- Side-by-side scalar vs SIMD benchmark using `perf_counter_ns()`
+
+> **Mojo 1.0b1 note:** `simdwidthof[T]()`, `vectorize[fn, width](N)`, and
+> `benchmark.run` are not available in 1.0b1. This demo uses a hardcoded
+> width constant and a manual while-loop instead.
 
 ## Project layout
 
@@ -40,25 +42,29 @@ molt run bench-py
 
 ```mojo
 from math import exp
-from memory import UnsafePointer
-from algorithm import vectorize
-from sys.info import simdwidthof
+from collections import List
+from time import perf_counter_ns
 
-alias dtype  = DType.float32
-alias simd_w = simdwidthof[dtype]()   # e.g. 8 on AVX2, 16 on AVX-512
+alias W = 4    # 4 × float32 = 128-bit NEON; use 8 on AVX2
 
-var buf = UnsafePointer[dtype].alloc(N)
+var data = List[Float32](capacity=N)
+# ... fill data ...
+var ptr = data.unsafe_ptr()
 
-@parameter
-fn sigmoid_lane[w: Int](i: Int):
-    var x = buf.load[width=w](i)
-    buf.store(i, 1.0 / (1.0 + exp(-x)))
-
-vectorize[sigmoid_lane, simd_w](N)    # processes simd_w elements per call
+var acc = SIMD[DType.float32, W](0.0)
+var i = 0
+while i + W <= N:
+    var x = ptr.load[width=W](i)
+    acc += 1.0 / (1.0 + exp(-x))   # one SIMD FMA per loop iteration
+    i += W
+# scalar tail for remaining elements
+while i < N:
+    acc[0] += 1.0 / (1.0 + exp(-ptr[i]))
+    i += 1
 ```
 
-The `@parameter` annotation means `w` is a compile-time constant — the compiler
-specialises the function for each possible width and emits native SIMD instructions.
+`ptr.load[width=W](i)` reads W consecutive floats into a SIMD register in one
+instruction. The compiler emits native SIMD FMA instructions for the whole loop.
 
 ## Typical speedup
 
