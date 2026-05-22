@@ -1,0 +1,14 @@
+[project]
+name = "11-mojo-matmul"
+version = "0.1.0"
+description = "Matrix multiply in Mojo: naive → SIMD-vectorized → tiled, benchmarked vs numpy"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mojo>=1.0.0b1",
+    "numpy>=1.26",
+]
+
+[tool.molt.tasks]
+run      = "molt run main.mojo"
+bench-np = "python bench_numpy.py"

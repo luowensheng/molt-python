@@ -1,6 +1,6 @@
 # molt demos
 
-Six runnable projects, each highlighting a different part of molt.
+Eleven runnable projects, each highlighting a different part of molt.
 
 ```
 demos/
@@ -10,6 +10,12 @@ demos/
   04-data-analyzer/  pandas + rich, shared packages across projects
   05-cli-tool/       Click CLI + molt tool install global shim
   06-binary-dist/    molt build → self-installing hermetic binary
+  07-asm-kernel/     assembly kernel module via molt's native build system
+  08-mojo-hello/     Mojo basics: structs, traits, generics, comptime
+  09-mojo-numpy/     Mojo calling numpy/pandas via PythonObject
+  10-mojo-simd/      SIMD vectorization + benchmark vs Python/numpy
+  11-mojo-matmul/    Matrix multiply: naive → SIMD → tiled + parallel
+  12-mojo-extension/ Mojo compiled to Python .so via PythonModuleBuilder
 ```
 
 ---
@@ -146,6 +152,97 @@ molt verify-binary 06-binary-dist
 
 **Key point:** The binary embeds source, dependencies, and an integrity trailer.
 `molt verify-binary` checks the SHA-256 root hash before any execution.
+
+---
+
+---
+
+## 08 — mojo-hello
+
+**What it shows:** Mojo 1.0 language basics run through molt. `molt add mojo` installs
+the compiler as an ordinary Python dependency; `molt run main.mojo` dispatches to
+`mojo run` automatically by file extension.
+
+```bash
+cd 08-mojo-hello
+molt sync              # installs the mojo compiler
+molt run main.mojo     # auto-dispatched by .mojo extension
+```
+
+**Key point:** No `MOJO_PYTHON_LIBRARY` setup, no PATH editing. `molt sync` derives
+the libpython path and writes a self-contained `mojo` shim to the project's `bin/`.
+
+---
+
+## 09 — mojo-numpy
+
+**What it shows:** Calling numpy and pandas from Mojo via `Python.import_module`.
+Because molt sets `PYTHONPATH` to all managed packages, every `molt add`'d package
+is automatically visible to Mojo's embedded CPython — zero extra configuration.
+
+```bash
+cd 09-mojo-numpy
+molt sync              # installs mojo, numpy, pandas
+molt run main.mojo
+```
+
+**Key point:** `PYTHONPATH` set by molt at sync time covers both Python *and* Mojo.
+No `sys.path` manipulation needed in your Mojo code.
+
+---
+
+## 10 — mojo-simd
+
+**What it shows:** Mojo SIMD types, hardware-width auto-detection, vectorized cosine,
+and a sigmoid benchmark against pure Python and numpy.
+
+```bash
+cd 10-mojo-simd
+molt sync
+molt run main.mojo     # Mojo SIMD demos + benchmark
+molt run bench-py      # Python/numpy baselines for comparison
+```
+
+**Key point:** `simdwidthof[DType.float32]()` queries the actual CPU at compile time.
+`vectorize[fn, width](N)` tiles the loop to match, emitting native SIMD instructions.
+
+---
+
+## 11 — mojo-matmul
+
+**What it shows:** Matrix multiply in three levels — naive O(n³), SIMD-vectorized
+inner loop, and cache-friendly tiled + parallelized — benchmarked against numpy.
+
+```bash
+cd 11-mojo-matmul
+molt sync
+molt run main.mojo     # all three implementations + Mojo benchmark
+molt run bench-np      # numpy baseline
+```
+
+**Key point:** The tiled + `parallelize` implementation reaches numpy-level performance
+without calling BLAS, using only Mojo's standard library.
+
+---
+
+## 12 — mojo-extension
+
+**What it shows:** Compile a `.mojo` file to a Python-importable `.so` extension via
+`molt mojo build --emit shared-lib`. Once built, `import fast_math` works from any
+Python file — the same as a Cython or Rust/PyO3 extension.
+
+```bash
+cd 12-mojo-extension
+molt sync
+molt run build         # molt mojo build fast_math.mojo --emit shared-lib -o fast_math.so
+molt run               # python use_extension.py — imports the .so
+molt run hook          # alternative: mojo.importer auto-compile (no build step)
+molt run bench         # sigmoid: Python vs numpy vs Mojo extension
+```
+
+**Key point:** `PythonModuleBuilder` + `@export def PyInit_<name>()` is all it takes
+to make Mojo functions and structs callable from Python. The `.so` is a standard
+CPython extension module.
 
 ---
 

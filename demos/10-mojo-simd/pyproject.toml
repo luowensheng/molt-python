@@ -1,0 +1,14 @@
+[project]
+name = "10-mojo-simd"
+version = "0.1.0"
+description = "Mojo SIMD: vectorized math, hardware-width detection, benchmark vs Python"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mojo>=1.0.0b1",
+    "numpy>=1.26",
+]
+
+[tool.molt.tasks]
+run       = "molt run main.mojo"
+bench-py  = "python bench_python.py"

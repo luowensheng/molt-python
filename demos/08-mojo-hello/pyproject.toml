@@ -1,0 +1,14 @@
+[project]
+name = "08-mojo-hello"
+version = "0.1.0"
+description = "Mojo basics: variables, typed functions, structs, traits, generics — run via molt"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mojo>=1.0.0b1",
+]
+
+[tool.molt.tasks]
+run     = "molt run main.mojo"
+types   = "molt mojo run types.mojo"
+structs = "molt mojo run structs.mojo"

@@ -1,0 +1,19 @@
+[project]
+name = "12-mojo-extension"
+version = "0.1.0"
+description = "Mojo as a Python extension: compile .mojo → .so, import from Python"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mojo>=1.0.0b1",
+    "numpy>=1.26",
+]
+
+[tool.molt.tasks]
+# Build the .so then run the Python caller
+build  = "molt mojo build fast_math.mojo --emit shared-lib -o fast_math.so"
+run    = "python use_extension.py"
+all    = "molt mojo build fast_math.mojo --emit shared-lib -o fast_math.so && python use_extension.py"
+# Alternative: use the mojo.importer hook (no pre-build needed)
+hook   = "python use_hook.py"
+bench  = "python benchmark.py"

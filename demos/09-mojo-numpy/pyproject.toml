@@ -1,0 +1,16 @@
+[project]
+name = "09-mojo-numpy"
+version = "0.1.0"
+description = "Mojo ↔ Python interop: call numpy/pandas from Mojo using PythonObject"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mojo>=1.0.0b1",
+    "numpy>=1.26",
+    "pandas>=2.0",
+]
+
+[tool.molt.tasks]
+run     = "molt run main.mojo"
+numpy   = "molt mojo run numpy_demo.mojo"
+local   = "molt mojo run local_module.mojo"
