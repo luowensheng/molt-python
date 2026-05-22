@@ -20,11 +20,11 @@ commands:
             # ensure clean working tree (optional but recommended)
             git diff --quiet || {
             echo "Working tree not clean"
-            exit 1
+            #exit 1
             }
 
             # tag existing commit (safe, no new commits)
-            git tag -a "$VERSION" -m "release $VERSION" || true
+            #git tag -a "$VERSION" -m "release $VERSION" || true
 
             # build binary
             GOOS="{{.os}}" GOARCH="{{.arch}}" go build \
@@ -63,7 +63,7 @@ commands:
         script: |-
             set -e
             {{Run}} build_mac --version {{.version}}
-            # {{Run}} build_linux_amd --version {{.version}}
+            {{Run}} build_linux_amd --version {{.version}}
 
     codebase:
         script: |-

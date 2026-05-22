@@ -311,6 +311,13 @@ func Sync(projectDir string, opts Options) error {
 		return fmt.Errorf("write shims: %w", err)
 	}
 
+	// 9b. Mojo shim — written when `mojo` is installed as a project dependency.
+	// Updates spec.MojoBin + spec.MojoPythonLib and re-saves syspath.json so
+	// subsequent `molt run` / `molt mojo` invocations find the correct paths.
+	if err := writeMojoShimIfPresent(absProj, pyExe, spec); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: mojo shim: %v\n", err)
+	}
+
 	// 10. Update registry + projstate meta.
 	if err := registryAdd(absProj, spec.LockHash); err != nil {
 		// Non-fatal — log and continue.
@@ -1025,6 +1032,97 @@ export PYTHONPATH=%s
 unset VIRTUAL_ENV PYTHONHOME
 exec %s "$@"
 `, shellQuote(pythonPath), shellQuote(pyExe))
+	return os.WriteFile(path, []byte(body), 0o755)
+}
+
+// writeMojoShimIfPresent checks whether the `mojo` binary was installed into
+// the project's uv-env (i.e. the user added `mojo` as a dependency). When
+// found it derives the libpython path for the active interpreter, records both
+// paths in spec, re-saves syspath.json, and writes a self-contained shim to
+// the project's bin/ dir so `mojo` is on PATH for every molt-spawned process.
+func writeMojoShimIfPresent(projDir, pyExe string, spec *syspath.Spec) error {
+	uvBin := filepath.Join(projstate.UvEnv(projDir), "bin")
+	mojoBin := filepath.Join(uvBin, "mojo")
+	if runtime.GOOS == "windows" {
+		mojoBin = filepath.Join(uvBin, "mojo.exe")
+	}
+	if _, err := os.Stat(mojoBin); err != nil {
+		// mojo not installed — clear any stale fields and return.
+		if spec.MojoBin != "" || spec.MojoPythonLib != "" {
+			spec.MojoBin = ""
+			spec.MojoPythonLib = ""
+			_ = syspath.Save(spec)
+		}
+		return nil
+	}
+
+	lib, err := deriveMojoPythonLib(pyExe)
+	if err != nil || lib == "" {
+		fmt.Fprintf(os.Stderr,
+			"warning: mojo installed but could not locate libpython — "+
+				"set MOJO_PYTHON_LIBRARY manually if `mojo run` fails\n")
+	}
+
+	spec.MojoBin = mojoBin
+	spec.MojoPythonLib = lib
+	if err := syspath.Save(spec); err != nil {
+		return fmt.Errorf("re-save syspath.json after mojo detection: %w", err)
+	}
+
+	return writeMojoShim(projstate.Bin(projDir), mojoBin, lib, spec.BuildPythonPath())
+}
+
+// deriveMojoPythonLib asks the project's Python interpreter for the absolute
+// path to its libpython shared library. Run once at sync time; result stored
+// in syspath.json so subsequent runs need not shell out to Python again.
+func deriveMojoPythonLib(pyExe string) (string, error) {
+	script := `import sysconfig, os, sys, platform
+libdir = sysconfig.get_config_var('LIBDIR') or ''
+ldver = sysconfig.get_config_var('LDVERSION') or ''
+if not ldver:
+    ldver = f'{sys.version_info.major}.{sys.version_info.minor}'
+ext = '.dylib' if platform.system() == 'Darwin' else '.so'
+for name in [f'libpython{ldver}{ext}', f'libpython{ldver}.so.1.0']:
+    path = os.path.join(libdir, name)
+    if os.path.exists(path):
+        print(path)
+        break
+`
+	out, err := exec.Command(pyExe, "-c", script).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// writeMojoShim writes a self-contained shell script to binDir/mojo that sets
+// MOJO_PYTHON_LIBRARY, PYTHONPATH, and the dynamic-linker path vars before
+// exec-ing the real mojo binary. The shim is usable both via `molt run` and
+// directly from any shell that has the project bin/ dir on PATH.
+func writeMojoShim(binDir, mojoBin, pythonLib, pythonPath string) error {
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(binDir, "mojo.cmd")
+		body := fmt.Sprintf(
+			"@echo off\r\nset MOJO_PYTHON_LIBRARY=%s\r\nset PYTHONPATH=%s\r\n"+
+				"set VIRTUAL_ENV=\r\nset PYTHONHOME=\r\n\"%s\" %%*\r\n",
+			pythonLib, pythonPath, mojoBin)
+		return os.WriteFile(path, []byte(body), 0o755)
+	}
+	libDir := ""
+	if pythonLib != "" {
+		libDir = filepath.Dir(pythonLib)
+	}
+	path := filepath.Join(binDir, "mojo")
+	body := fmt.Sprintf(`#!/bin/sh
+export MOJO_PYTHON_LIBRARY=%s
+export PYTHONPATH=%s
+export LD_LIBRARY_PATH=%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export DYLD_FALLBACK_LIBRARY_PATH=%s${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}
+unset VIRTUAL_ENV PYTHONHOME
+exec %s "$@"
+`, shellQuote(pythonLib), shellQuote(pythonPath),
+		shellQuote(libDir)+":", shellQuote(libDir)+":",
+		shellQuote(mojoBin))
 	return os.WriteFile(path, []byte(body), 0o755)
 }
 

@@ -140,6 +140,10 @@ func main() {
 	case "editor":
 		err = cmdEditor(os.Args[2:])
 
+	// ── Mojo ──────────────────────────────────────────────────────────────
+	case "mojo":
+		err = cmdMojo(os.Args[2:])
+
 	// ── Native presets ────────────────────────────────────────────────────
 	case "native-preset":
 		err = cmdNativePreset(os.Args[2:])
@@ -296,10 +300,18 @@ Python versions:
 
 Task runner:
   run <task>   [-- extra-args]     Run a named task from [tool.molt.tasks]
+  run main.py  [args...]           Run a Python script (auto-dispatch by extension)
+  run main.mojo [args...]          Run a Mojo script   (requires: molt add mojo)
   run <binary> [args...]           Exec a binary under the project environment
   task list                        List tasks
   task add <name> <command>        Add a task
   task remove <name>               Remove a task
+
+Mojo:
+  mojo <args...>                   Direct mojo passthrough under the project environment
+                                     (requires: molt add mojo)
+                                     e.g. molt mojo build ops.mojo --emit shared-lib -o ops.so
+                                          molt mojo --help
 
 Build:
   build    [flags] [project-path]  Build self-contained binary
@@ -1079,6 +1091,26 @@ func installedPackagesForCache(absProject string) map[string]bool {
 
 // ── Python version management ─────────────────────────────────────────────────
 
+// cmdMojo passes all arguments directly to the `mojo` binary installed in the
+// project's uv-env, running it under the project's full environment
+// (PYTHONPATH, MOJO_PYTHON_LIBRARY, dynamic-linker paths). Intended for
+// `mojo build`, `mojo package`, `mojo doc`, and other mojo subcommands.
+//
+// For running a .mojo source file, the shorter `molt run main.mojo` form is
+// preferred — it dispatches automatically by extension.
+func cmdMojo(args []string) error {
+	spec, err := syspath.Load(projectRoot())
+	if err != nil {
+		return fmt.Errorf("project not synced — run 'molt sync' first: %w", err)
+	}
+	if spec.MojoBin == "" {
+		return fmt.Errorf("mojo is not installed in this project\n" +
+			"Add it with: molt add mojo")
+	}
+	env := spec.BuildEnv(os.Environ())
+	return syscall.Exec(spec.MojoBin, append([]string{"mojo"}, args...), env)
+}
+
 func cmdPython(args []string) error {
 	// Pull out a `-v <version>` / `--python <version>` flag from anywhere in
 	// args so users can write either:
@@ -1264,6 +1296,22 @@ func cmdRun(args []string) error {
 		}
 	}
 
+	// Single-file Mojo script mode: `molt run main.mojo [args...]`.
+	// Mirrors the .py case above — dispatches by extension, resolves relative
+	// paths against the project root, then exec-s `mojo run <file>` with the
+	// project's full environment (PYTHONPATH, MOJO_PYTHON_LIBRARY, etc.).
+	if strings.HasSuffix(taskName, ".mojo") || strings.HasSuffix(taskName, ".🔥") {
+		candidates := []string{taskName}
+		if !filepath.IsAbs(taskName) {
+			candidates = append(candidates, filepath.Join(projectRoot(), taskName))
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				return runMojoScript(projectRoot(), c, args[1:], envSpec)
+			}
+		}
+	}
+
 	// When an env override is active, fall through to direct exec with the
 	// env's Python rather than trying task lookup (tasks belong to projects).
 	if envSpec != nil {
@@ -1339,6 +1387,28 @@ func runPythonScript(projectDir, script string, scriptArgs []string, override *s
 	env := spec.BuildEnv(os.Environ())
 	argv := append([]string{spec.Python, abs}, scriptArgs...)
 	return syscall.Exec(spec.Python, argv, env)
+}
+
+// runMojoScript exec-s `mojo run <script> [args...]` under the project
+// environment. The project's shim sets MOJO_PYTHON_LIBRARY and PYTHONPATH so
+// all managed Python packages are visible to Mojo's embedded CPython.
+func runMojoScript(projectDir, script string, scriptArgs []string, override *syspath.Spec) error {
+	spec := override
+	if spec == nil {
+		var err error
+		spec, err = syspath.Load(projectDir)
+		if err != nil {
+			return fmt.Errorf("no .molt/syspath.json — run 'molt sync' first (%w)", err)
+		}
+	}
+	if spec.MojoBin == "" {
+		return fmt.Errorf("mojo is not installed in this project\n" +
+			"Add it with: molt add mojo")
+	}
+	abs, _ := filepath.Abs(script)
+	env := spec.BuildEnv(os.Environ())
+	argv := append([]string{"mojo", "run", abs}, scriptArgs...)
+	return syscall.Exec(spec.MojoBin, argv, env)
 }
 
 // runBareScript runs a Python script with no molt env — just the system (or

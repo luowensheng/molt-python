@@ -38,6 +38,11 @@ type Spec struct {
 	LockHash   string   `json:"lock_hash"`   // sha256 of uv.lock at sync time
 	ProjectDir string   `json:"project_dir"` // absolute project root
 	Syspath    []string `json:"syspath"`     // store dirs + project src; order matters
+
+	// Mojo fields — populated at sync time when `mojo` is a project dependency.
+	// Empty when Mojo is not installed; all Mojo-related env injection is a no-op.
+	MojoBin       string `json:"mojo_bin,omitempty"`        // abs path to uv-env/bin/mojo
+	MojoPythonLib string `json:"mojo_python_lib,omitempty"` // abs path to libpython3.xx.{so,dylib}
 }
 
 // projectMoltDir returns the per-project state directory. State lives
@@ -104,6 +109,17 @@ func (s *Spec) BuildEnv(parent []string) []string {
 		}
 	}
 	out = append(out, "PATH="+pathVal)
+
+	// Mojo: inject MOJO_PYTHON_LIBRARY + libpython dir into the dynamic-linker
+	// path so `mojo` can find libpython even when Python lives in a non-standard
+	// location (molt-managed Python, uv standalone Python, etc.).
+	if s.MojoPythonLib != "" {
+		out = append(out, "MOJO_PYTHON_LIBRARY="+s.MojoPythonLib)
+		libDir := filepath.Dir(s.MojoPythonLib)
+		out = mergePathEnv(out, "LD_LIBRARY_PATH", libDir)
+		out = mergePathEnv(out, "DYLD_FALLBACK_LIBRARY_PATH", libDir)
+	}
+
 	// Apply [tool.molt.runtime] extra_paths to PATH + dynamic-linker /
 	// framework vars; merge env-var layers (~/.molt/env.yaml then
 	// project's [tool.molt.runtime.env]). All no-ops when their inputs
@@ -111,6 +127,33 @@ func (s *Spec) BuildEnv(parent []string) []string {
 	globalEnv, _ := globalenv.Load()
 	out = runtimecfg.Load(s.ProjectDir).Apply(out, globalEnv)
 	return out
+}
+
+// BuildPythonPath returns the PYTHONPATH string that would be set by BuildEnv —
+// the project state dir prepended to all syspath dirs, joined by the OS path
+// list separator. Used by shim generators that need the value as a bare string.
+func (s *Spec) BuildPythonPath() string {
+	moltDir := projectMoltDir(s.ProjectDir)
+	pyPath := append([]string{moltDir}, s.Syspath...)
+	return strings.Join(pyPath, pathListSep())
+}
+
+// mergePathEnv prepends dir to the value of key in env. If key already appears
+// in env the entry is updated in-place; otherwise "key=dir" is appended.
+func mergePathEnv(env []string, key, dir string) []string {
+	sep := string(os.PathListSeparator)
+	for i, kv := range env {
+		if envKey(kv) == key {
+			existing := kv[len(key)+1:]
+			if existing == "" {
+				env[i] = key + "=" + dir
+			} else {
+				env[i] = key + "=" + dir + sep + existing
+			}
+			return env
+		}
+	}
+	return append(env, key+"="+dir)
 }
 
 // PythonCommand builds an *exec.Cmd that invokes the project's Python
