@@ -396,10 +396,12 @@ func errResp(id json.RawMessage, code int, msg string) response {
 }
 
 // serverVersion returns the molt version string passed at startup via RunMCPServer.
+// Strips any leading "v" so the value is bare semver (e.g. "0.1.0" not "v0.1.0").
 // Falls back to "dev" if called before the server has been started.
 func serverVersion() string {
-	if mcpVersion != "" {
-		return mcpVersion
+	v := mcpVersion
+	if v == "" {
+		return "dev"
 	}
-	return "dev"
+	return strings.TrimPrefix(v, "v")
 }

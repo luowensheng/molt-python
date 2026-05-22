@@ -22,7 +22,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 type Store struct{ Root string }
@@ -129,27 +128,17 @@ func (s *Store) Install(k Key, wheelPath, sha256Hex string) error {
 	return nil
 }
 
-// Lock acquires a process-level flock on ~/.molt/pkg.lock. Use around batches
-// of Install calls when multiple molt processes may run concurrently. The
-// returned release function unlocks and closes the file.
+// Lock acquires a process-level exclusive lock on ~/.molt/pkg.lock.
+// Use around batches of Install calls when multiple molt processes may run
+// concurrently. The returned release function unlocks and closes the file.
+// The platform-specific implementation lives in lock_unix.go / lock_windows.go.
 func (s *Store) Lock() (release func(), err error) {
 	parent := filepath.Dir(s.Root)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return nil, err
 	}
 	lp := filepath.Join(parent, "pkg.lock")
-	f, err := os.OpenFile(lp, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, err
-	}
-	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-	}, nil
+	return acquireLock(lp)
 }
 
 // NormalizeName applies the relaxed PEP 503 normalization: lowercase, runs of
