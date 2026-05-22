@@ -1,4 +1,11 @@
 builds/
 ignore
 .ignore
-.claude
+molt
+dist/
+
+# Claude Code session data (worktrees, memory) — excluded
+# but project-level MCP config and onboarding guide are tracked
+.claude/
+!.claude/mcp.json
+!.claude/CLAUDE.md

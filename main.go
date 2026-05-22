@@ -20,6 +20,7 @@ import (
 	"molt/internal/adopt"
 	"molt/internal/builder"
 	"molt/internal/editor"
+	"molt/internal/mcpserver"
 	"molt/internal/globalenv"
 	"molt/internal/integrity"
 	"molt/internal/kernelbuilder"
@@ -143,6 +144,10 @@ func main() {
 	// ── Mojo ──────────────────────────────────────────────────────────────
 	case "mojo":
 		err = cmdMojo(os.Args[2:])
+
+	// ── AI / MCP server ───────────────────────────────────────────────────
+	case "mcp":
+		err = mcpserver.RunMCPServer()
 
 	// ── Native presets ────────────────────────────────────────────────────
 	case "native-preset":
@@ -336,6 +341,12 @@ uv:
   uv path                          Print resolved uv binary path
   uv version                       Print uv version
   uv <args...>                     Raw passthrough to uv
+
+AI integration:
+  mcp                              Start stdio MCP server (for Claude Code, Cursor, etc.)
+                                     Exposes: init, sync, add, remove, run, exec, build, info, python
+                                     Claude Code: add .claude/mcp.json to your project
+                                     See: docs/mcp-server.md
 
 Diagnostics:
   doctor                           System/tool diagnostics
@@ -935,7 +946,7 @@ func cmdCacheLibs(args []string) error {
 	if specErr == nil && spec.ProjectDir != "" {
 		fmt.Printf("Library caches  (cross-referenced with project: %s)\n\n", spec.ProjectDir)
 	} else {
-		fmt.Println("Library caches  (cross-referenced with all registered projects)\n")
+		fmt.Print("Library caches  (cross-referenced with all registered projects)\n\n")
 	}
 
 	nameW, dirW, sizeW := 20, 40, 8

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "molt": {
+      "command": "molt",
+      "args": ["mcp"],
+      "description": "molt Python toolchain — add packages, run tasks, build binaries, manage Python versions"
+    }
+  }
+}
