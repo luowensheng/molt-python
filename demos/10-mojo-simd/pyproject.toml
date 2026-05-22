@@ -9,6 +9,9 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+[tool.uv]
+prerelease = "allow"
+
 [tool.molt.tasks]
 run       = "molt run main.mojo"
 bench-py  = "python bench_python.py"

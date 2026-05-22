@@ -1035,16 +1035,18 @@ exec %s "$@"
 	return os.WriteFile(path, []byte(body), 0o755)
 }
 
-// writeMojoShimIfPresent checks whether the `mojo` binary was installed into
-// the project's uv-env (i.e. the user added `mojo` as a dependency). When
-// found it derives the libpython path for the active interpreter, records both
-// paths in spec, re-saves syspath.json, and writes a self-contained shim to
-// the project's bin/ dir so `mojo` is on PATH for every molt-spawned process.
+// writeMojoShimIfPresent detects whether the `mojo` package was installed by
+// checking for its console-script shim in the project's bin/ directory (written
+// by writeConsoleShims at step 9 of Sync — NOT in uv-env/bin/).  When found it
+// derives the libpython path for the active interpreter, records both in spec,
+// and re-saves syspath.json.  No new shim is written: BuildEnv already injects
+// MOJO_PYTHON_LIBRARY into every molt-spawned process, and the console-script
+// shim already puts the correct Python interpreter on PATH.
 func writeMojoShimIfPresent(projDir, pyExe string, spec *syspath.Spec) error {
-	uvBin := filepath.Join(projstate.UvEnv(projDir), "bin")
-	mojoBin := filepath.Join(uvBin, "mojo")
+	binDir := projstate.Bin(projDir)
+	mojoBin := filepath.Join(binDir, "mojo")
 	if runtime.GOOS == "windows" {
-		mojoBin = filepath.Join(uvBin, "mojo.exe")
+		mojoBin = filepath.Join(binDir, "mojo.cmd")
 	}
 	if _, err := os.Stat(mojoBin); err != nil {
 		// mojo not installed — clear any stale fields and return.
@@ -1068,8 +1070,7 @@ func writeMojoShimIfPresent(projDir, pyExe string, spec *syspath.Spec) error {
 	if err := syspath.Save(spec); err != nil {
 		return fmt.Errorf("re-save syspath.json after mojo detection: %w", err)
 	}
-
-	return writeMojoShim(projstate.Bin(projDir), mojoBin, lib, spec.BuildPythonPath())
+	return nil
 }
 
 // deriveMojoPythonLib asks the project's Python interpreter for the absolute

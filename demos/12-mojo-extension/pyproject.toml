@@ -9,6 +9,9 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+[tool.uv]
+prerelease = "allow"
+
 [tool.molt.tasks]
 # Build the .so then run the Python caller
 build  = "molt mojo build fast_math.mojo --emit shared-lib -o fast_math.so"
