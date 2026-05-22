@@ -80,11 +80,11 @@ def python_builtins_demo() raises:
 
     # Python dict
     var scores = Python.dict()
-    scores.__setitem__("alice", 95)
-    scores.__setitem__("bob", 87)
-    scores.__setitem__("carol", 92)
+    scores["alice"] = 95
+    scores["bob"] = 87
+    scores["carol"] = 92
     print("scores:", scores)
-    print("alice's score:", scores.__getitem__("alice"))
+    print("alice's score:", scores["alice"])
 
     # String formatting via Python
     var fmt = builtins.format

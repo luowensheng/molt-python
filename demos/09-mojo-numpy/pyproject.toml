@@ -10,6 +10,9 @@ dependencies = [
     "pandas>=2.0",
 ]
 
+[tool.uv]
+prerelease = "allow"
+
 [tool.molt.tasks]
 run     = "molt run main.mojo"
 numpy   = "molt mojo run numpy_demo.mojo"

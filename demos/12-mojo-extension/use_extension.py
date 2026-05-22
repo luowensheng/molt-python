@@ -41,4 +41,4 @@ for x in data:
 
 print(f"  n        = {stats.count()}")
 print(f"  mean     = {stats.mean():.4f}  (expected 5.0)")
-print(f"  variance = {stats.variance():.4f}  (expected 4.0)")
+print(f"  variance = {stats.variance():.4f}  (sample variance, Bessel-corrected)")

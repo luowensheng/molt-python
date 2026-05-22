@@ -9,15 +9,24 @@
 #
 # Exports three functions and one struct to Python via PythonModuleBuilder.
 # Once compiled, `import fast_math` works like any C extension module.
+#
+# Mojo 1.0b1 notes:
+#   • def_method requires @staticmethod methods that take `py_self: PythonObject`
+#     as the first argument; use py_self.downcast_value_ptr[T]() to access fields.
+#   • Float64(py=obj) converts a PythonObject to Float64.
+#   • UnsafePointer[T].alloc(N) is gone; use List[T] + unsafe_ptr() instead.
+#   • simdwidthof is unavailable; SIMD widths are hardcoded (4×f32, 2×f64 on NEON).
 
-from math import exp, sqrt, log
-from memory import UnsafePointer
-from algorithm import vectorize
-from sys.info import simdwidthof
+from std.math import exp, sqrt
+from std.collections import List
 from std.os import abort
-from std.python import PythonObject
+from std.python import Python, PythonObject
 from std.python.bindings import PythonModuleBuilder
-from time import perf_counter
+
+# SIMD widths for Apple Silicon (128-bit NEON).
+# On x86 with AVX2: float32→8, float64→4.
+comptime SIMD_F32 = 4   # 128-bit / 32-bit
+comptime SIMD_F64 = 2   # 128-bit / 64-bit
 
 
 # ── exported function 1: factorial ───────────────────────────────────────────
@@ -40,33 +49,30 @@ def fast_sigmoid(py_values: PythonObject) raises -> PythonObject:
     Compute sigmoid(x) = 1/(1+exp(-x)) for every element in a Python list.
     Returns a new Python list of floats. Uses Mojo SIMD internally.
     """
-    alias dtype  = DType.float32
-    alias simd_w = simdwidthof[dtype]()
-
     var n = Int(py=py_values.__len__())
-    var buf = UnsafePointer[dtype].alloc(n)
 
-    # Copy Python list into native buffer
+    # Copy Python list into native buffer via List[Float32]
+    var buf = List[Float32](capacity=n)
     for i in range(n):
-        buf[i] = Float32(py_values[i].__float__())
+        buf.append(Float32(Float64(py=py_values[i])))
+
+    var ptr = buf.unsafe_ptr()
 
     # SIMD sigmoid
     var i = 0
-    while i + simd_w <= n:
-        var x = buf.load[width=simd_w](i)
-        buf.store(i, 1.0 / (1.0 + exp(-x)))
-        i += simd_w
+    while i + SIMD_F32 <= n:
+        var x = ptr.load[width=SIMD_F32](i)
+        ptr.store[width=SIMD_F32](i, 1.0 / (1.0 + exp(-x)))
+        i += SIMD_F32
     # scalar tail
     while i < n:
-        buf[i] = 1.0 / (1.0 + exp(-buf[i]))
+        ptr[i] = 1.0 / (1.0 + exp(-ptr[i]))
         i += 1
 
     # Pack results back into a Python list
-    from std.python import Python
     var out = Python.list()
-    for i in range(n):
-        out.append(Float64(buf[i]))
-    buf.free()
+    for j in range(n):
+        out.append(Float64(ptr[j]))
     return out
 
 
@@ -77,38 +83,41 @@ def dot_product(py_a: PythonObject, py_b: PythonObject) raises -> PythonObject:
     Compute the dot product of two Python lists of equal length.
     Returns a float.
     """
-    alias dtype  = DType.float64
-    alias simd_w = simdwidthof[dtype]()
-
     var n = Int(py=py_a.__len__())
     if n != Int(py=py_b.__len__()):
         raise Error("dot_product: lists must have equal length")
 
-    var a = UnsafePointer[dtype].alloc(n)
-    var b = UnsafePointer[dtype].alloc(n)
+    var a = List[Float64](capacity=n)
+    var b = List[Float64](capacity=n)
     for i in range(n):
-        a[i] = Float64(py_a[i].__float__())
-        b[i] = Float64(py_b[i].__float__())
+        a.append(Float64(py=py_a[i]))
+        b.append(Float64(py=py_b[i]))
 
-    var acc = SIMD[dtype, simd_w](0.0)
+    var pa = a.unsafe_ptr()
+    var pb = b.unsafe_ptr()
+
+    var acc = SIMD[DType.float64, SIMD_F64](0.0)
     var i = 0
-    while i + simd_w <= n:
-        acc += a.load[width=simd_w](i) * b.load[width=simd_w](i)
-        i += simd_w
+    while i + SIMD_F64 <= n:
+        acc += pa.load[width=SIMD_F64](i) * pb.load[width=SIMD_F64](i)
+        i += SIMD_F64
     var tail: Float64 = 0.0
     while i < n:
-        tail += a[i] * b[i]
+        tail += pa[i] * pb[i]
         i += 1
 
-    a.free()
-    b.free()
     return PythonObject(acc.reduce_add() + tail)
 
 
 # ── exported struct: RunningStats ─────────────────────────────────────────────
 # Tracks count/mean/M2 (Welford's online algorithm) — useful for streaming data.
+#
+# Mojo 1.0b1: def_method requires @staticmethod methods with the signature:
+#   (py_self: PythonObject, args: PythonObject, kwargs: PythonObject)
+# Use py_self.downcast_value_ptr[T]() to access (and mutate) the struct.
+# The struct must also implement Writable for Python repr() to work.
 
-struct RunningStats(Movable):
+struct RunningStats(Movable, Writable):
     var count: Int
     var mean: Float64
     var m2: Float64   # running sum of squared deviations
@@ -118,35 +127,44 @@ struct RunningStats(Movable):
         self.mean  = 0.0
         self.m2    = 0.0
 
+    def write_to[W: Writer](self, mut writer: W):
+        writer.write("RunningStats(n=", self.count,
+                     ", mean=", self.mean, ")")
+
     @staticmethod
     def py_init(out self: RunningStats,
                 args: PythonObject, kwargs: PythonObject) raises:
-        self = Self()   # zero-init; no constructor args
+        self = Self()
 
-    def py_update(self: Reference[Self, _],
-                  args: PythonObject, kwargs: PythonObject) raises -> PythonObject:
-        var x = Float64(args[0].__float__())
-        self[].count += 1
-        var delta  = x - self[].mean
-        self[].mean += delta / Float64(self[].count)
-        var delta2 = x - self[].mean
-        self[].m2  += delta * delta2
-        from std.python import Python
+    @staticmethod
+    def py_update(py_self: PythonObject, x_obj: PythonObject) raises -> PythonObject:
+        """Welford online update: add one value x."""
+        var x = Float64(py=x_obj)
+        var p = py_self.downcast_value_ptr[RunningStats]()
+        p[].count += 1
+        var delta  = x - p[].mean
+        p[].mean += delta / Float64(p[].count)
+        var delta2 = x - p[].mean
+        p[].m2  += delta * delta2
         return Python.none()
 
-    def py_variance(self: Reference[Self, _],
-                    args: PythonObject, kwargs: PythonObject) raises -> PythonObject:
-        if self[].count < 2:
+    @staticmethod
+    def py_variance(py_self: PythonObject) raises -> PythonObject:
+        """Sample variance (Bessel's correction, n-1)."""
+        var p = py_self.downcast_value_ptr[RunningStats]()
+        if p[].count < 2:
             return PythonObject(0.0)
-        return PythonObject(self[].m2 / Float64(self[].count - 1))
+        return PythonObject(p[].m2 / Float64(p[].count - 1))
 
-    def py_mean(self: Reference[Self, _],
-                args: PythonObject, kwargs: PythonObject) raises -> PythonObject:
-        return PythonObject(self[].mean)
+    @staticmethod
+    def py_mean(py_self: PythonObject) raises -> PythonObject:
+        """Current running mean."""
+        return PythonObject(py_self.downcast_value_ptr[RunningStats]()[].mean)
 
-    def py_count(self: Reference[Self, _],
-                 args: PythonObject, kwargs: PythonObject) raises -> PythonObject:
-        return PythonObject(self[].count)
+    @staticmethod
+    def py_count(py_self: PythonObject) raises -> PythonObject:
+        """Number of values seen so far."""
+        return PythonObject(py_self.downcast_value_ptr[RunningStats]()[].count)
 
 
 # ── module entry point ────────────────────────────────────────────────────────
