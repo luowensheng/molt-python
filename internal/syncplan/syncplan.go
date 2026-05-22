@@ -1089,7 +1089,56 @@ func writeMojoShimIfPresent(projDir, pyExe string, spec *syspath.Spec) error {
 	// Overwrite the generic console-script shim with a direct-exec shim that
 	// sets all MODULAR_* env vars the mojo binary needs and exec's it directly,
 	// bypassing the Python entry-point wrapper that fails in molt's layout.
-	return writeMojoShim(binDir, realMojoBin, sdkRoot, mojoImportPath, lib, spec.BuildPythonPath())
+	if err := writeMojoShim(binDir, realMojoBin, sdkRoot, mojoImportPath, lib, spec.BuildPythonPath()); err != nil {
+		return err
+	}
+
+	// Patch every other mojo-related console-script shim (crash reporter, lld,
+	// mojo-lldb, etc.) that references mojo._entrypoints: replace the
+	// "unset VIRTUAL_ENV" line with "export VIRTUAL_ENV=<sdkRoot>" so that
+	// get_package_root() inside those sub-processes can locate the SDK assets.
+	return patchMojoRelatedShims(binDir, sdkRoot)
+}
+
+// patchMojoRelatedShims fixes up console-script shims written by
+// writeConsoleShims that invoke mojo._entrypoints functions.  Those shims do
+// "unset VIRTUAL_ENV", which causes get_package_root() to fail in molt's store
+// layout.  Replacing it with an export makes the Python wrapper find the SDK
+// root via the VIRTUAL_ENV fallback path in _package_root.py.
+func patchMojoRelatedShims(binDir, sdkRoot string) error {
+	entries, err := os.ReadDir(binDir)
+	if err != nil {
+		return err
+	}
+	replacement := "export VIRTUAL_ENV=" + shellQuote(sdkRoot) + "\nunset PYTHONHOME"
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		// Skip the mojo shim itself — it is already a direct-exec shim that
+		// sets VIRTUAL_ENV correctly and does not use mojo._entrypoints.
+		if name == "mojo" || name == "mojo.cmd" {
+			continue
+		}
+		path := filepath.Join(binDir, name)
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		body := string(content)
+		if !strings.Contains(body, "mojo._entrypoints") {
+			continue
+		}
+		patched := strings.Replace(body, "unset VIRTUAL_ENV PYTHONHOME", replacement, 1)
+		if patched == body {
+			continue // already patched or different format
+		}
+		if err := os.WriteFile(path, []byte(patched), 0o755); err != nil {
+			return fmt.Errorf("patch mojo shim %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // findMojoSDKRoots searches syspath entries for the mojo-compiler and
