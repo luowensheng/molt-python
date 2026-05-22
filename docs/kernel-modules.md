@@ -759,8 +759,8 @@ In rough priority order:
 3. **Keyword-argument support** — emit `METH_VARARGS | METH_KEYWORDS` wrappers when args have explicit names. Makes `inspect.signature` work at runtime.
 4. **`[[type]]` blocks** — user-defined struct types referenced from `[[fn]]` args/returns. Maps to `PyArg_ParseTuple` with `O&` converters and a generated ctypes-shaped Python class in the `.pyi`.
 5. **`.molt.json` / `.molt.yaml`** — plug-in parsers behind `manifest_suffixes`. ~30 lines per format.
-6. **Pre-built `.so` path** — for binding to existing native libraries via dlopen-style glue. Architecture supports it; just an alternative `compileKernelSource` arm.
-7. **Odin and other languages** — one switch arm each in `compileKernelSource`. Trivial once the language has a binary release distribution.
+6. ~~**Pre-built `.so` path**~~ — ✅ shipped. See [Pre-built `.so` binding](#pre-built-so-binding) above.
+7. **Odin and other languages** — add via `molt kernel-builder add <lang> --from-template` or with an explicit build command; no code change needed. Kernel builders cover Odin, Nim, Fortran, and anything else with a C-ABI output.
 8. **`.pyi` for `.pyx` / `.rs`** — same emitter pipeline, fed by source-parsing instead of manifest. Brings IDE support to existing Cython and PyO3 modules.
 9. **Markdown reference output** — optional `<name>.md` next to the `.so` from the same manifest, for docs sites.
 

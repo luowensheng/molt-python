@@ -2,17 +2,17 @@
 
 Matrix multiplication in three increasingly optimised forms — naive triple-loop,
 SIMD-vectorized inner loop, and cache-friendly tiled + parallelized — benchmarked
-against each other and against numpy.
+against each other and numpy.
 
 ## What this demo shows
 
-- A `Matrix` struct backed by `UnsafePointer[Float32]` with SIMD load/store methods
+- A `Matrix` struct backed by `List[Float32]` with SIMD `load` / `store` methods
 - **Naive** O(n³) matmul as a correctness baseline
-- **Vectorized** inner loop with `vectorize[fn, simd_width](cols)` — processes
-  `simd_width` columns in one instruction
-- **Tiled** access pattern with `tile[fn, tile_j, tile_k](cols, rows)` for cache
-  locality, combined with `parallelize[fn](rows)` for multi-core execution
-- `benchmark.run` / `keep` for accurate Mojo microbenchmarks
+- **Vectorized** inner loop using manual SIMD while-loops — processes `NELTS=4`
+  columns per instruction on ARM NEON (double on AVX2)
+- **Tiled** access pattern for L1 cache locality, combined with `parallelize[fn](rows)`
+  for multi-core execution
+- `perf_counter_ns()` for accurate wall-clock benchmarks
 - `bench_numpy.py` gives a numpy baseline for direct comparison
 
 ## Project layout
@@ -42,7 +42,7 @@ molt run bench-np
 ### Level 1 — Naive
 
 ```mojo
-def matmul_naive(C: Matrix, A: Matrix, B: Matrix):
+def matmul_naive(mut C: Matrix, A: Matrix, B: Matrix):
     for m in range(C.rows):
         for k in range(A.cols):
             for n in range(C.cols):
@@ -54,34 +54,47 @@ Straightforward but slow: one scalar multiply per loop iteration.
 ### Level 2 — Vectorized
 
 ```mojo
-alias nelts = simdwidthof[DType.float32]()   # 8 on AVX2
+comptime NELTS = 4   # 4 × float32 per NEON register (128-bit ARM)
 
-def matmul_vectorized(C: Matrix, A: Matrix, B: Matrix):
+def matmul_vectorized(mut C: Matrix, A: Matrix, B: Matrix):
     for m in range(C.rows):
         for k in range(A.cols):
-            @parameter
-            fn dot[nelts: Int](n: Int):
-                C.store[nelts](m, n,
-                    C.load[nelts](m, n) + A[m, k] * B.load[nelts](k, n))
-            vectorize[dot, nelts](C.cols)
+            var a_mk = A[m, k]
+            var n = 0
+            while n + NELTS <= C.cols:
+                C.store[NELTS](m, n,
+                    C.load[NELTS](m, n) + a_mk * B.load[NELTS](k, n))
+                n += NELTS
+            while n < C.cols:           # scalar tail
+                C[m, n] += a_mk * B[k, n]
+                n += 1
 ```
 
-`vectorize` tiles the inner loop in chunks of `nelts`, issuing one SIMD FMA
-instruction per chunk.
+Each inner iteration issues one SIMD FMA, processing `NELTS` columns at once.
+On AVX2 set `NELTS = 8` for another 2× speedup.
 
 ### Level 3 — Tiled + parallelized
 
-Adds `tile[...]` for cache-friendly block access and `parallelize[calc_row]`
-to use all CPU cores.
+Adds a 2-D tile over the `k` dimension (tile size = 4) to keep the B tile in L1
+cache during the innermost SIMD loop, then uses `parallelize[calc_row](C.rows)`
+to spread rows across CPU cores.
 
-## Typical results (N=512, MacBook Pro M3)
+## Typical results (N=128, Apple Silicon M-series)
 
-| Implementation | Time/call |
-|---|---|
-| numpy `@` | ~0.3 ms |
-| Mojo naive | ~90 ms |
-| Mojo vectorized | ~4 ms |
-| Mojo tiled + parallel | ~0.25 ms |
+| Implementation | Time | Speedup vs naive |
+|---|---|---|
+| Mojo naive | ~7.6 ms | 1× |
+| Mojo vectorized | ~0.27 ms | ~29× |
+| Mojo tiled + parallel | ~0.09 ms | ~80× |
+| numpy `@` | ~0.007 ms | (BLAS-optimised) |
 
-Mojo's tiled implementation reaches numpy-level performance on pure compute without
-calling BLAS.
+Run `molt run bench-np` to get the numpy number on your machine.
+The tiled Mojo implementation approaches numpy on pure scalar compute; numpy uses
+BLAS which adds assembly-optimised block algorithms on top.
+
+## Mojo 1.0b1 notes
+
+The pre-1.0 `vectorize[fn, width](size)` and `simdwidthof[T]()` APIs are not
+available in 1.0b1. This demo uses manual SIMD while-loops with a hardcoded
+`NELTS = 4` (128-bit NEON) instead. See [docs/mojo.md](../../docs/mojo.md) for
+the full API migration table.

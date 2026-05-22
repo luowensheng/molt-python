@@ -78,7 +78,7 @@ print(fast_math.dot([1,2,3], [4,5,6]))     # 32.0
 stats = fast_math.RunningStats()
 for x in [2, 4, 4, 4, 5, 5, 7, 9]:
     stats.update(x)
-print(stats.mean(), stats.variance())       # 5.0  4.0
+print(stats.mean(), stats.variance())       # 5.0  4.571...
 ```
 
 ## PythonModuleBuilder API limits (v1.0.0b1)
