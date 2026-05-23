@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Demos — molt</title>
+  <meta name="description" content="12 runnable molt demos: Python apps, FastAPI, data analysis, CLI tools, hermetic binaries, assembly kernels, and Mojo.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .demo-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem;
+      margin-bottom: 3rem;
+      scroll-margin-top: calc(var(--nav-h) + 2rem);
+    }
+    .demo-card:hover { border-color: rgba(108,142,245,.3); }
+    .demo-card-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+    }
+    .demo-number {
+      font-family: var(--font-mono);
+      font-size: .75rem;
+      font-weight: 700;
+      color: var(--accent);
+      background: rgba(108,142,245,.1);
+      border: 1px solid rgba(108,142,245,.2);
+      padding: .2rem .6rem;
+      border-radius: 4px;
+    }
+    .demo-card h2 { font-size: 1.5rem; }
+    .demo-desc { color: var(--muted); line-height: 1.75; margin-bottom: 1.5rem; font-size: .95rem; }
+    .demo-section { margin-top: 1.5rem; }
+    .demo-section h4 {
+      font-size: .8rem;
+      font-weight: 600;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: .8rem;
+    }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
+    .cmd-list { list-style: none; display: flex; flex-direction: column; gap: .4rem; }
+    .cmd-list li {
+      font-family: var(--font-mono);
+      font-size: .82rem;
+      display: flex;
+      gap: .6rem;
+      align-items: baseline;
+    }
+    .cmd-list li .c { color: var(--accent2); }
+    .cmd-list li .d { color: var(--muted); font-family: var(--font-sans); }
+    .pill-row { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .pill {
+      font-size: .75rem;
+      padding: .2rem .6rem;
+      border-radius: 4px;
+      border: 1px solid;
+    }
+    /* sidebar nav */
+    .demos-layout {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      gap: 3rem;
+      align-items: start;
+    }
+    @media (max-width: 900px) { .demos-layout { grid-template-columns: 1fr; } .demo-nav { display: none; } }
+    .demo-nav {
+      position: sticky;
+      top: calc(var(--nav-h) + 1.5rem);
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem;
+    }
+    .demo-nav h4 {
+      font-size: .75rem;
+      font-weight: 600;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: .8rem;
+    }
+    .demo-nav a {
+      display: flex;
+      gap: .5rem;
+      padding: .35rem .5rem;
+      border-radius: 6px;
+      font-size: .82rem;
+      color: var(--muted);
+      text-decoration: none;
+      transition: all .15s;
+    }
+    .demo-nav a:hover { background: var(--bg3); color: var(--text); }
+    .demo-nav a .n { color: var(--accent); font-family: var(--font-mono); font-size: .75rem; flex-shrink: 0; }
+  </style>
+</head>
+<body>
+
+<!-- ── Nav ─────────────────────────────────────────────────────────────── -->
+<nav>
+  <div class="wrap">
+    <a class="nav-logo" href="/">
+      <span style="color:var(--accent)">⬡</span> molt
+    </a>
+    <div class="nav-links">
+      <a href="/#features">Features</a>
+      <a href="/#how">How it works</a>
+      <a href="/#demos">Demos</a>
+      <a href="/#install">Install</a>
+      <a href="https://github.com/luowensheng/molt-python" class="btn-nav" target="_blank" rel="noopener">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<div style="padding-top:var(--nav-h);">
+  <div class="wrap" style="padding-block:4rem;">
+    <div style="margin-bottom:3rem;">
+      <p class="label">Demos</p>
+      <h1 style="font-size:clamp(1.8rem,4vw,3rem); margin-bottom:.8rem;">12 runnable examples</h1>
+      <p style="color:var(--muted); font-size:1.1rem; max-width:600px;">
+        Every demo lives in <code>demos/</code> and runs with <code>molt run &lt;task&gt;</code>.
+        Clone the repo and explore at your own pace.
+      </p>
+      <div style="display:flex;gap:1rem;margin-top:1.5rem;flex-wrap:wrap;">
+        <a href="https://github.com/luowensheng/molt-python" class="btn btn-primary" target="_blank" rel="noopener" style="font-size:.9rem;padding:.6rem 1.2rem;">
+          Clone repo ↗
+        </a>
+        <a href="/#install" class="btn btn-ghost" style="font-size:.9rem;padding:.6rem 1.2rem;">
+          Install molt first →
+        </a>
+      </div>
+    </div>
+
+    <div class="demos-layout">
+      <!-- Sidebar nav -->
+      <aside class="demo-nav">
+        <h4>Jump to demo</h4>
+        <a href="#d01"><span class="n">01</span> Hello app</a>
+        <a href="#d02"><span class="n">02</span> Web scraper</a>
+        <a href="#d03"><span class="n">03</span> FastAPI REST API</a>
+        <a href="#d04"><span class="n">04</span> Data analyzer</a>
+        <a href="#d05"><span class="n">05</span> CLI tool</a>
+        <a href="#d06"><span class="n">06</span> Binary distribution</a>
+        <a href="#d07"><span class="n">07</span> ASM kernel module</a>
+        <a href="#d08"><span class="n">08</span> Mojo hello world</a>
+        <a href="#d09"><span class="n">09</span> Mojo + numpy</a>
+        <a href="#d10"><span class="n">10</span> Mojo SIMD</a>
+        <a href="#d11"><span class="n">11</span> Mojo matmul</a>
+        <a href="#d12"><span class="n">12</span> Mojo extension</a>
+      </aside>
+
+      <!-- Demo cards -->
+      <div>
+
+        <!-- 01 -->
+        <div class="demo-card" id="d01">
+          <div class="demo-card-header">
+            <span class="demo-number">01</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-python">🐍 Python</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">beginner</span>
+            </div>
+          </div>
+          <h2>Hello app</h2>
+          <p class="demo-desc">
+            The simplest possible molt project. A <code>main.py</code> that greets the user plus three
+            tasks in <code>pyproject.toml</code>. The whole point: no <code>.venv</code>, no activation,
+            and a sub-millisecond second run because the store already has <code>.ok</code>.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li>First <code>molt run</code> prints "syncing project…" then greets</li>
+                <li><code>ls -la</code> confirms zero <code>.venv</code> directory</li>
+                <li>Second run skips sync entirely</li>
+                <li><code>molt python which</code> shows the pinned interpreter path</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run run</span> <span class="d">— default greeting</span></li>
+                <li><span class="c">molt run greet</span> <span class="d">— greet "Claude"</span></li>
+                <li><span class="c">molt run info</span> <span class="d">— Python + platform info</span></li>
+                <li><span class="c">molt task list</span> <span class="d">— list all tasks</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/01-hello-app
+molt run greet</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/01-hello-app" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 02 -->
+        <div class="demo-card" id="d02">
+          <div class="demo-card-header">
+            <span class="demo-number">02</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-python">🐍 Python</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">beginner</span>
+            </div>
+          </div>
+          <h2>Web scraper</h2>
+          <p class="demo-desc">
+            Fetches posts and comments from <code>jsonplaceholder.typicode.com</code> and displays them
+            as rich terminal tables. The real lesson: <code>requests</code> and <code>rich</code>
+            are installed once into <code>~/.molt/pkg/</code> — a second project using the same
+            packages costs zero extra download and disk space.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li>Rich table output with colored columns</li>
+                <li><code>~/.molt/pkg/requests/</code> shared with other projects</li>
+                <li>Pagination with <code>--limit</code> argument</li>
+                <li>How <code>molt add</code> updates pyproject.toml + lock</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run posts 5</span> <span class="d">— fetch 5 posts</span></li>
+                <li><span class="c">molt run comments 3</span> <span class="d">— fetch 3 comments</span></li>
+                <li><span class="c">molt run users</span> <span class="d">— list all users</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/02-web-scraper
+molt run posts 5</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/02-web-scraper" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 03 -->
+        <div class="demo-card" id="d03">
+          <div class="demo-card-header">
+            <span class="demo-number">03</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-python">🐍 Python</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">intermediate</span>
+            </div>
+          </div>
+          <h2>FastAPI REST API</h2>
+          <p class="demo-desc">
+            A task-list CRUD API built with FastAPI and tested with pytest + httpx.
+            Shows a real dev workflow — hot-reload server, test suite, linter — all
+            through <code>molt run</code> with absolutely no <code>activate</code>.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li>FastAPI running with Uvicorn hot-reload</li>
+                <li>4 pytest tests covering CRUD endpoints</li>
+                <li>Ruff linting with zero warnings</li>
+                <li>Auto-generated <code>/docs</code> (Swagger UI)</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run dev</span> <span class="d">— start hot-reload server</span></li>
+                <li><span class="c">molt run test</span> <span class="d">— run pytest suite</span></li>
+                <li><span class="c">molt run lint</span> <span class="d">— ruff check</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/03-fastapi-api
+molt run test     # passes immediately
+molt run dev      # open http://localhost:8000/docs</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/03-fastapi-api" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 04 -->
+        <div class="demo-card" id="d04">
+          <div class="demo-card-header">
+            <span class="demo-number">04</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-python">🐍 Python</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">intermediate</span>
+            </div>
+          </div>
+          <h2>Data analyzer</h2>
+          <p class="demo-desc">
+            Generates 10 000 rows of synthetic sales data and analyzes them with pandas and numpy —
+            displayed as rich terminal tables with an ASCII bar chart. Heavy scientific packages
+            install once into the global store; every subsequent data-science project on the same
+            machine reuses those exact wheel directories.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li>pandas + numpy from the global store, not per-project</li>
+                <li>Revenue by product with inline ASCII bar chart</li>
+                <li>Summary statistics (mean, std, min, max)</li>
+                <li>Optional CSV export task</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run analyze</span> <span class="d">— full analysis</span></li>
+                <li><span class="c">molt run summary</span> <span class="d">— stats only</span></li>
+                <li><span class="c">molt run export</span> <span class="d">— write output.csv</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/04-data-analyzer
+molt run analyze</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/04-data-analyzer" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 05 -->
+        <div class="demo-card" id="d05">
+          <div class="demo-card-header">
+            <span class="demo-number">05</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-python">🐍 Python</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">intermediate</span>
+            </div>
+          </div>
+          <h2>CLI tool with global install</h2>
+          <p class="demo-desc">
+            A Click-based file utility (<code>filetool</code>) with four subcommands: <code>find</code>,
+            <code>count</code>, <code>dup</code>, <code>big</code>. Running <code>molt tool install</code>
+            writes a shim to <code>~/.molt/bin/</code> so the tool is available globally — no per-shell
+            activation needed.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li><code>molt tool install</code> registers the shim globally</li>
+                <li><code>filetool find "*.py"</code> works from any directory</li>
+                <li><code>filetool dup .</code> detects duplicate files by hash</li>
+                <li><code>filetool big . 1mb</code> finds files over a threshold</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run find "*.py"</span> <span class="d">— glob search</span></li>
+                <li><span class="c">molt run count .</span> <span class="d">— count by extension</span></li>
+                <li><span class="c">molt run dup .</span> <span class="d">— find duplicates</span></li>
+                <li><span class="c">molt run big . 1mb</span> <span class="d">— files over size</span></li>
+                <li><span class="c">molt tool install</span> <span class="d">— global shim</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/05-cli-tool
+molt tool install        # write ~/.molt/bin/filetool
+filetool find "*.toml"  # use it anywhere</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/05-cli-tool" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 06 -->
+        <div class="demo-card" id="d06">
+          <div class="demo-card-header">
+            <span class="demo-number">06</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-build">📦 Binary dist</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">advanced</span>
+            </div>
+          </div>
+          <h2>Hermetic binary distribution</h2>
+          <p class="demo-desc">
+            The distribution showcase. Packages a Click CLI (<code>sysinfo</code>) into a
+            self-installing hermetic binary using <code>molt build</code>. The binary embeds source,
+            dependencies, and an SHA-256 integrity trailer. Demonstrates <code>molt inspect</code>,
+            <code>molt verify-binary</code>, and running the binary on a machine with zero Python.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li>3.7 MB self-contained executable</li>
+                <li>SHA-256 Merkle root in <code>MOLT0001</code> trailer</li>
+                <li>Three named commands from one binary</li>
+                <li><code>molt inspect</code> dumps the embedded manifest</li>
+                <li>Binary runs with zero Python on target</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run info</span> <span class="d">— system info (dev mode)</span></li>
+                <li><span class="c">molt run bench</span> <span class="d">— Python loop benchmark</span></li>
+                <li><span class="c">molt build</span> <span class="d">— produce the binary</span></li>
+                <li><span class="c">molt inspect ./06-binary-dist</span> <span class="d">— dump manifest</span></li>
+                <li><span class="c">molt verify-binary ./06-binary-dist</span> <span class="d">— check hash</span></li>
+                <li><span class="c">./06-binary-dist run bench</span> <span class="d">— run without Python</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Binary structure</h4>
+            <pre><code>┌────────────────────────┐
+│  launcher (Go)         │  install / run / verify / uninstall
+├────────────────────────┤
+│  payload (tar.gz)      │  sysinfo.py + wheel dirs + manifest
+├────────────────────────┤
+│  trailer               │  [payload_offset][root_hash][MOLT0001]
+└────────────────────────┘</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/06-binary-dist
+molt build
+molt verify-binary ./06-binary-dist
+./06-binary-dist run bench</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/06-binary-dist" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 07 -->
+        <div class="demo-card" id="d07">
+          <div class="demo-card-header">
+            <span class="demo-number">07</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-native">⚙️ Native</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">advanced</span>
+            </div>
+          </div>
+          <h2>Assembly kernel module</h2>
+          <p class="demo-desc">
+            Calls hand-written GAS assembly from Python using molt's kernel module system — with
+            zero C or Cython boilerplate. Two functions (<code>add</code>, <code>mul</code>) are
+            written in portable GAS <code>.S</code> syntax, compiled to a native <code>.so</code>
+            via <code>zig cc</code>, and imported through an auto-generated ctypes shim.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li>GAS <code>.S</code> source → <code>kernel.so</code> via <code>zig cc</code></li>
+                <li>Auto-generated <code>kernel_shim.py</code> ctypes wrapper</li>
+                <li>Python calls <code>add(3, 4)</code> → 7 from native code</li>
+                <li>Works on macOS arm64 and Linux amd64/arm64</li>
+                <li>Rebuild is idempotent via <code>molt run build</code></li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run build</span> <span class="d">— compile .so + generate shim</span></li>
+                <li><span class="c">molt run demo</span> <span class="d">— call add() and mul() from Python</span></li>
+                <li><span class="c">molt run clean</span> <span class="d">— remove .so and shim</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Assembly snippet</h4>
+            <pre><code>.globl _add
+_add:                      # int add(int a, int b)
+    add  w0, w0, w1        # w0 = a + b  (aarch64)
+    ret
+
+.globl _mul
+_mul:                      # int mul(int a, int b)
+    mul  w0, w0, w1
+    ret</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/07-asm-kernel
+molt run build
+molt run demo</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/07-asm-kernel" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 08 -->
+        <div class="demo-card" id="d08">
+          <div class="demo-card-header">
+            <span class="demo-number">08</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-mojo">🔥 Mojo</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">beginner Mojo</span>
+            </div>
+          </div>
+          <h2>Mojo hello world</h2>
+          <p class="demo-desc">
+            The gentlest introduction to Mojo through molt. Covers variables and types,
+            typed functions, structs, traits, generics, operator overloading, and compile-time
+            metaprogramming — all in one demo, with zero manual Mojo SDK setup required.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>Mojo concepts covered</h4>
+              <ul class="demo-bullets">
+                <li>Typed variables: <code>var x: Int = 42</code></li>
+                <li>Structs with methods and <code>__str__</code></li>
+                <li>Traits as interfaces</li>
+                <li>Generic structs: <code>Point[T: AnyType]</code></li>
+                <li>Operator overloading (<code>__add__</code>)</li>
+                <li>Compile-time <code>alias</code> constants</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run main.mojo</span> <span class="d">— hello + types demo</span></li>
+                <li><span class="c">molt run traits</span> <span class="d">— traits + generics demo</span></li>
+                <li><span class="c">molt run meta</span> <span class="d">— compile-time constants</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Setup (requires Mojo 1.0b1+)</h4>
+            <pre><code>cd demos/08-mojo-hello
+# Add to pyproject.toml first:
+# [tool.uv]
+# prerelease = "allow"
+
+molt add mojo
+molt run main.mojo</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/08-mojo-hello" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 09 -->
+        <div class="demo-card" id="d09">
+          <div class="demo-card-header">
+            <span class="demo-number">09</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-mojo">🔥 Mojo</span>
+              <span class="pill badge-python">🐍 Python bridge</span>
+            </div>
+          </div>
+          <h2>Mojo + numpy bridge</h2>
+          <p class="demo-desc">
+            Mojo calling Python packages — numpy, pandas — through its embedded CPython bridge.
+            Because molt sets <code>PYTHONPATH</code> at sync time to all managed packages, every
+            package installed via <code>molt add</code> is automatically visible to Mojo
+            with no extra configuration.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li>Mojo imports numpy with <code>Python.import_module</code></li>
+                <li>NumPy array operations from Mojo code</li>
+                <li>pandas DataFrame created and queried in Mojo</li>
+                <li>Mixed Python + Mojo data pipeline</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run bridge</span> <span class="d">— numpy stats from Mojo</span></li>
+                <li><span class="c">molt run pipeline</span> <span class="d">— pandas pipeline from Mojo</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Key code pattern</h4>
+            <pre><code>from python import Python
+
+fn main() raises:
+    var np = Python.import_module("numpy")   # just works — PYTHONPATH is set
+    var arr = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    print("mean:", arr.mean())               # → 3.0</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/09-mojo-numpy
+molt add mojo numpy pandas
+molt run bridge</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/09-mojo-numpy" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 10 -->
+        <div class="demo-card" id="d10">
+          <div class="demo-card-header">
+            <span class="demo-number">10</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-mojo">🔥 Mojo</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">performance</span>
+            </div>
+          </div>
+          <h2>Mojo SIMD vectorization</h2>
+          <p class="demo-desc">
+            Shows exactly where Mojo's speed advantage comes from: SIMD types that process
+            8 float32 values per CPU instruction, without GIL overhead. Benchmarks a
+            1-million-element addition against a pure Python loop — the gap is stark.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li>Manual SIMD while-loop (WIDTH=8 float32)</li>
+                <li>Hardware SIMD width detection at runtime</li>
+                <li>~40–50× speedup over Python loop</li>
+                <li>Scalar Mojo vs SIMD Mojo comparison too</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run simd</span> <span class="d">— SIMD vs Python benchmark</span></li>
+                <li><span class="c">molt run bench</span> <span class="d">— full timing suite</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Core SIMD pattern</h4>
+            <pre><code>alias WIDTH = 8  # 8× float32 = 256-bit (AVX2)
+
+fn add_vectors(a: DTypePointer[DType.float32],
+               b: DTypePointer[DType.float32],
+               c: DTypePointer[DType.float32], n: Int):
+    var i = 0
+    while i + WIDTH <= n:
+        # Load 8 floats, add them, store 8 floats — one CPU instruction
+        c.store(i, a.load[WIDTH](i) + b.load[WIDTH](i))
+        i += WIDTH
+    while i < n:  # scalar tail
+        c.store(i, a.load(i) + b.load(i))
+        i += 1</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/10-mojo-simd
+molt add mojo
+molt run bench</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/10-mojo-simd" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 11 -->
+        <div class="demo-card" id="d11">
+          <div class="demo-card-header">
+            <span class="demo-number">11</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-mojo">🔥 Mojo</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">performance</span>
+            </div>
+          </div>
+          <h2>Mojo matrix multiplication</h2>
+          <p class="demo-desc">
+            Three implementations of N×N matrix multiplication in increasing order of
+            optimization: naive O(N³) triple loop → SIMD-vectorized inner loop →
+            cache-friendly tiled + parallelized. Benchmarked against numpy (MKL) at N=128.
+            The tiled variant reaches ~85% of numpy's throughput.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>Implementations</h4>
+              <ul class="demo-bullets">
+                <li><strong>Naive</strong>: baseline triple-loop, 120 ms at N=128</li>
+                <li><strong>SIMD</strong>: vectorized inner loop, 18 ms (6.6× vs naive)</li>
+                <li><strong>Tiled+parallel</strong>: 6 ms (20× vs naive, ~85% of numpy)</li>
+                <li>numpy MKL reference: 4 ms</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run naive</span> <span class="d">— baseline implementation</span></li>
+                <li><span class="c">molt run simd</span> <span class="d">— SIMD inner loop</span></li>
+                <li><span class="c">molt run tiled</span> <span class="d">— tiled + parallel</span></li>
+                <li><span class="c">molt run bench</span> <span class="d">— all three + numpy</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Tiling strategy</h4>
+            <pre><code>alias TILE = 32  # tile size chosen for L1 cache fit
+
+fn matmul_tiled(C: Matrix, A: Matrix, B: Matrix):
+    for i_tile in range(0, N, TILE):
+        for j_tile in range(0, N, TILE):
+            for k_tile in range(0, N, TILE):
+                # inner TILE×TILE block stays in L1 cache
+                for i in range(i_tile, min(i_tile + TILE, N)):
+                    for k in range(k_tile, min(k_tile + TILE, N)):
+                        var a_val = A[i, k]
+                        # vectorize inner j loop
+                        ...</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/11-mojo-matmul
+molt add mojo numpy
+molt run bench</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/11-mojo-matmul" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 12 -->
+        <div class="demo-card" id="d12">
+          <div class="demo-card-header">
+            <span class="demo-number">12</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-mojo">🔥 Mojo</span>
+              <span class="pill badge-native">⚙️ Extension</span>
+            </div>
+          </div>
+          <h2>Mojo extension module</h2>
+          <p class="demo-desc">
+            The final demo: compile a Mojo source file to a Python-importable <code>.so</code>
+            extension module — the same kind of artifact Cython produces, but without a C compiler
+            or <code>.pyx</code> files. Once built, <code>import fast_math</code> works in any
+            Python script with no special runtime.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>Exposed functions</h4>
+              <ul class="demo-bullets">
+                <li><code>fast_math.add(a, b)</code> → Float64</li>
+                <li><code>fast_math.mul(a, b)</code> → Float64</li>
+                <li><code>fast_math.variance(data)</code> → Float64</li>
+                <li>All callable from plain Python with <code>import fast_math</code></li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run build</span> <span class="d">— compile fast_math.so</span></li>
+                <li><span class="c">molt run demo</span> <span class="d">— call from Python</span></li>
+                <li><span class="c">molt run clean</span> <span class="d">— remove .so</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>How it works</h4>
+            <pre><code># 1. Compile Mojo → shared library
+mojo build fast_math.mojo --emit shared-lib -o fast_math.so
+
+# 2. Import in Python — no special loader needed
+import fast_math
+print(fast_math.add(3.0, 4.0))          # → 7.0
+print(fast_math.variance([2,4,4,4,5,5,7,9]))  # → 4.571...</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/12-mojo-extension
+molt add mojo
+molt run build
+molt run demo</code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/12-mojo-extension" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+      </div><!-- /.demo-cards -->
+    </div><!-- /.demos-layout -->
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="footer-inner">
+      <div>
+        <div class="footer-logo"><span style="color:var(--accent)">⬡</span> molt</div>
+        <div class="footer-copy" style="margin-top:.5rem;">The hermetic Python toolchain. Apache 2.0.</div>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/luowensheng/molt-python" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/luowensheng/molt-python/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="/">Home</a>
+        <a href="/#install">Install</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/app.js"></script>
+</body>
+</html>
