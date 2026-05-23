@@ -14,7 +14,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ### Transport Glue — call Go/Rust functions from Python over IPC
 
-The biggest new feature: declare `[[tool.molt.glue]]` blocks in your project config and
+The biggest new feature: drop a `<name>.molt.toml` file in your project and
 `molt sync` auto-generates a typed Python module that calls your Go or Rust code through
 a zero-configuration IPC server. No `.so`, no cgo, no ABI constraints — any type that
 survives JSON round-trip works.

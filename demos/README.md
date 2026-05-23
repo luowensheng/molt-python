@@ -668,23 +668,37 @@ no cgo, and no ABI compatibility issues. The Go package is `package stats` (not
   gocode/
     go.mod      ← module user/stats
     stats.go    ← package stats: Mean, Stddev, Histogram, Compress
+  stats.molt.toml
   moltproject.toml
   main.py
 ```
 
-### moltproject.toml
+### stats.molt.toml
 
 ```toml
-[[tool.molt.glue]]
-module    = "stats"
 lang      = "go"
-src       = "./stats"   # Go package directory — NOT package main
+src       = "./gocode"
 transport = "stdio"
 
-  [[tool.molt.glue.fn]]
-  name    = "mean"
-  args    = [{ name = "data", type = "[]f64" }]
-  returns = "f64"
+[[fn]]
+name    = "mean"
+args    = [{ name = "data", type = "[]f64" }]
+returns = "f64"
+
+[[fn]]
+name    = "stddev"
+args    = [{ name = "data", type = "[]f64" }]
+returns = "f64"
+
+[[fn]]
+name    = "histogram"
+args    = [{ name = "data", type = "[]f64" }, { name = "buckets", type = "i32" }]
+returns = "[]i32"
+
+[[fn]]
+name    = "compress"
+args    = [{ name = "payload", type = "bytes" }]
+returns = "bytes"
 ```
 
 ### What molt generates
@@ -714,18 +728,36 @@ molt glue list  # show all glue modules
 `src` is a Go import path, not a local file. molt detects this and generates a server
 that imports the package directly. Third-party paths trigger `go get` automatically.
 
-### moltproject.toml
+### gosha256.molt.toml
 
 ```toml
-[[tool.molt.glue]]
-module    = "gosha256"
-lang      = "go"
-src       = "crypto/sha256"               # stdlib — no go get needed
+lang = "go"
+src  = "crypto/sha256"   # stdlib — no go get needed
 
-[[tool.molt.glue]]
-module    = "sha3"
-lang      = "go"
-src       = "golang.org/x/crypto/sha3"   # third-party; molt runs go get
+[[fn]]
+name    = "sum256"
+call    = "sha256.Sum256"
+args    = [{ name = "data", type = "bytes" }]
+returns = "bytes"
+```
+
+### sha3.molt.toml
+
+```toml
+lang = "go"
+src  = "golang.org/x/crypto/sha3"   # third-party; molt runs go get
+
+[[fn]]
+name    = "sum256"
+call    = "sha3.Sum256"
+args    = [{ name = "data", type = "bytes" }]
+returns = "bytes"
+
+[[fn]]
+name    = "sum512"
+call    = "sha3.Sum512"
+args    = [{ name = "data", type = "bytes" }]
+returns = "bytes"
 ```
 
 ### Run
@@ -752,20 +784,34 @@ Python threads can share it concurrently.
 
 ```
 21-glue-rust/
-  compress_glue.rs   ← pub fn deflate / inflate / ratio (NOT a crate)
+  compress_glue.rs      ← pub fn deflate / inflate / ratio (NOT a crate)
+  compress.molt.toml    ← glue manifest
   moltproject.toml
   main.py
 ```
 
-### moltproject.toml
+### compress.molt.toml
 
 ```toml
-[[tool.molt.glue]]
-module    = "compress"
 lang      = "rust"
 src       = "compress_glue.rs"
 crates    = ["flate2 = '1.0'"]
-transport = "unix_socket"     # persistent daemon; concurrent callers
+transport = "unix_socket"   # persistent daemon; concurrent callers
+
+[[fn]]
+name    = "deflate"
+args    = [{ name = "data", type = "bytes" }]
+returns = "bytes"
+
+[[fn]]
+name    = "inflate"
+args    = [{ name = "data", type = "bytes" }]
+returns = "bytes"
+
+[[fn]]
+name    = "ratio"
+args    = [{ name = "data", type = "bytes" }]
+returns = "f64"
 ```
 
 ### Run

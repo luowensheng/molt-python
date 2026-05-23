@@ -7,9 +7,35 @@ Calls Rust compression functions (via flate2) from Python using a persistent
 
 ```
 21-glue-rust/
-  compress_glue.rs    ← thin Rust adapter (NOT a full crate; pub fn only)
+  compress_glue.rs      ← thin Rust adapter (NOT a full crate; pub fn only)
+  compress.molt.toml    ← glue manifest
   moltproject.toml
   main.py
+```
+
+## Key config
+
+```toml
+# compress.molt.toml
+lang      = "rust"
+src       = "compress_glue.rs"
+crates    = ["flate2 = '1.0'"]
+transport = "unix_socket"
+
+[[fn]]
+name    = "deflate"
+args    = [{ name = "data", type = "bytes" }]
+returns = "bytes"
+
+[[fn]]
+name    = "inflate"
+args    = [{ name = "data", type = "bytes" }]
+returns = "bytes"
+
+[[fn]]
+name    = "ratio"
+args    = [{ name = "data", type = "bytes" }]
+returns = "f64"
 ```
 
 ## How `include!` works

@@ -4,20 +4,48 @@ Import Go's standard library and third-party packages from Python — **no local
 Go code required**. molt detects that the `src` field is a library import path
 (contains `/` with no file extension) and generates the server automatically.
 
+## Layout
+
+```
+20-glue-lib/
+  gosha256.molt.toml   ← wraps crypto/sha256 (stdlib)
+  sha3.molt.toml       ← wraps golang.org/x/crypto/sha3 (third-party)
+  moltproject.toml
+  main.py
+```
+
 ## Config
 
-```toml
-[[tool.molt.glue]]
-module    = "gosha256"
-lang      = "go"
-src       = "crypto/sha256"         # stdlib — no go get needed
-transport = "stdio"
+Each glue module has its own manifest file alongside `moltproject.toml`.
 
-[[tool.molt.glue]]
-module    = "sha3"
-lang      = "go"
-src       = "golang.org/x/crypto/sha3"  # third-party; molt runs go get
-transport = "stdio"
+```toml
+# gosha256.molt.toml
+lang = "go"
+src  = "crypto/sha256"   # stdlib — no go get needed
+
+[[fn]]
+name    = "sum256"
+call    = "sha256.Sum256"
+args    = [{ name = "data", type = "bytes" }]
+returns = "bytes"
+```
+
+```toml
+# sha3.molt.toml
+lang = "go"
+src  = "golang.org/x/crypto/sha3"  # third-party; molt runs go get
+
+[[fn]]
+name    = "sum256"
+call    = "sha3.Sum256"
+args    = [{ name = "data", type = "bytes" }]
+returns = "bytes"
+
+[[fn]]
+name    = "sum512"
+call    = "sha3.Sum512"
+args    = [{ name = "data", type = "bytes" }]
+returns = "bytes"
 ```
 
 ## What molt does

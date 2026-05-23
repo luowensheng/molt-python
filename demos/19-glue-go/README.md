@@ -11,6 +11,7 @@ subprocess and Python calls it via JSON-RPC over a stdio pipe.
   gocode/
     go.mod        ← module user/stats  (package stats, NOT package main)
     stats.go      ← Mean, Stddev, Histogram, Compress
+  stats.molt.toml
   moltproject.toml
   main.py
 ```
@@ -19,9 +20,38 @@ subprocess and Python calls it via JSON-RPC over a stdio pipe.
 > treating it as a namespace package when scanning the current directory.
 > The `package stats` declaration inside `stats.go` is unaffected.
 
+## Key config
+
+```toml
+# stats.molt.toml
+lang      = "go"
+src       = "./gocode"
+transport = "stdio"
+
+[[fn]]
+name    = "mean"
+args    = [{ name = "data", type = "[]f64" }]
+returns = "f64"
+
+[[fn]]
+name    = "stddev"
+args    = [{ name = "data", type = "[]f64" }]
+returns = "f64"
+
+[[fn]]
+name    = "histogram"
+args    = [{ name = "data", type = "[]f64" }, { name = "buckets", type = "i32" }]
+returns = "[]i32"
+
+[[fn]]
+name    = "compress"
+args    = [{ name = "payload", type = "bytes" }]
+returns = "bytes"
+```
+
 ## How it works
 
-`molt sync` reads the `[[tool.molt.glue]]` block in `moltproject.toml` and:
+`molt sync` reads `stats.molt.toml` and:
 
 1. **Generates** `.molt/_build_stats/go.mod` with a `replace` directive pointing at `./gocode`
 2. **Generates** `.molt/_build_stats/server.go` (imports `user/stats`, JSON dispatch loop)

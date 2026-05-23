@@ -1373,7 +1373,7 @@ molt run demo                   <span class="cmt"># preset dataset run</span></c
           <h2>Transport Glue — user-written Go functions called from Python</h2>
           <p class="demo-desc">
             A Go package (<code>package stats</code>) lives in <code>gocode/</code>.
-            Four functions declared in <code>moltproject.toml</code>. <code>molt sync</code>
+            Four functions declared in <code>stats.molt.toml</code>. <code>molt sync</code>
             compiles a stdio JSON-RPC server, generates <code>stats.py</code> + <code>stats.pyi</code>,
             and adds it to <code>PYTHONPATH</code>. <code>import stats</code> calls Go functions
             at full speed — no <code>.so</code>, no cgo, no ABI constraints. Works on any platform
@@ -1392,22 +1392,20 @@ molt run demo                   <span class="cmt"># preset dataset run</span></c
             </div>
             <div class="demo-section">
               <h4>Key config</h4>
-              <pre><code><span class="cmt"># moltproject.toml</span>
-[[tool.molt.glue]]
-module    = <span class="str">"stats"</span>
+              <pre><code><span class="cmt"># stats.molt.toml</span>
 lang      = <span class="str">"go"</span>
 src       = <span class="str">"./gocode"</span>   <span class="cmt"># package stats dir</span>
 transport = <span class="str">"stdio"</span>
 
-  [[tool.molt.glue.fn]]
-  name    = <span class="str">"mean"</span>
-  args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"[]f64"</span> }]
-  returns = <span class="str">"f64"</span>
+[[fn]]
+name    = <span class="str">"mean"</span>
+args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"[]f64"</span> }]
+returns = <span class="str">"f64"</span>
 
-  [[tool.molt.glue.fn]]
-  name    = <span class="str">"compress"</span>
-  args    = [{ name = <span class="str">"payload"</span>, type = <span class="str">"bytes"</span> }]
-  returns = <span class="str">"bytes"</span></code></pre>
+[[fn]]
+name    = <span class="str">"compress"</span>
+args    = [{ name = <span class="str">"payload"</span>, type = <span class="str">"bytes"</span> }]
+returns = <span class="str">"bytes"</span></code></pre>
             </div>
           </div>
           <div class="demo-section">
@@ -1450,20 +1448,25 @@ molt run demo        <span class="cmt"># calls Go mean/stddev/histogram/compress
             </div>
             <div class="demo-section">
               <h4>Key config</h4>
-              <pre><code><span class="cmt"># moltproject.toml — no Go code needed</span>
-[[tool.molt.glue]]
-module = <span class="str">"gosha256"</span>
-lang   = <span class="str">"go"</span>
-src    = <span class="str">"crypto/sha256"</span>   <span class="cmt"># stdlib</span>
-  [[tool.molt.glue.fn]]
-  name    = <span class="str">"sum256"</span>
-  args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
-  returns = <span class="str">"bytes"</span>
+              <pre><code><span class="cmt"># gosha256.molt.toml</span>
+lang = <span class="str">"go"</span>
+src  = <span class="str">"crypto/sha256"</span>   <span class="cmt"># stdlib</span>
 
-[[tool.molt.glue]]
-module = <span class="str">"sha3"</span>
-lang   = <span class="str">"go"</span>
-src    = <span class="str">"golang.org/x/crypto/sha3"</span></code></pre>
+[[fn]]
+name    = <span class="str">"sum256"</span>
+call    = <span class="str">"sha256.Sum256"</span>
+args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+returns = <span class="str">"bytes"</span>
+
+<span class="cmt"># sha3.molt.toml</span>
+lang = <span class="str">"go"</span>
+src  = <span class="str">"golang.org/x/crypto/sha3"</span>
+
+[[fn]]
+name    = <span class="str">"sum256"</span>
+call    = <span class="str">"sha3.Sum256"</span>
+args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+returns = <span class="str">"bytes"</span></code></pre>
             </div>
           </div>
           <div class="demo-section">
@@ -1505,18 +1508,26 @@ molt run demo        <span class="cmt"># hash with SHA-256 and SHA3-256/512 from
             </div>
             <div class="demo-section">
               <h4>Key files</h4>
-              <pre><code><span class="cmt"># moltproject.toml</span>
-[[tool.molt.glue]]
-module    = <span class="str">"compress"</span>
+              <pre><code><span class="cmt"># compress.molt.toml</span>
 lang      = <span class="str">"rust"</span>
 src       = <span class="str">"compress_glue.rs"</span>
 crates    = [<span class="str">"flate2 = '1.0'"</span>]
 transport = <span class="str">"unix_socket"</span>
 
-<span class="cmt"># compress_glue.rs (user writes ~38 lines)</span>
-<span class="cmt">pub fn deflate(data: Vec&lt;u8&gt;) -&gt; Vec&lt;u8&gt; { … }</span>
-<span class="cmt">pub fn inflate(data: Vec&lt;u8&gt;) -&gt; Vec&lt;u8&gt; { … }</span>
-<span class="cmt">pub fn ratio(data: Vec&lt;u8&gt;) -&gt; f64 { … }</span></code></pre>
+[[fn]]
+name    = <span class="str">"deflate"</span>
+args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+returns = <span class="str">"bytes"</span>
+
+[[fn]]
+name    = <span class="str">"inflate"</span>
+args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+returns = <span class="str">"bytes"</span>
+
+[[fn]]
+name    = <span class="str">"ratio"</span>
+args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+returns = <span class="str">"f64"</span></code></pre>
             </div>
           </div>
           <div class="demo-section">
