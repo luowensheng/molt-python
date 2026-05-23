@@ -1,0 +1,19 @@
+[project]
+name = "zig-project"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.molt.tasks]
+# Build the Zig binary using the auto-installed zig toolchain.
+# zig build-exe reads @import("stats.zig") from the same directory.
+build = "zig build-exe src/main.zig -femit-bin=bin/stats-zig && echo '✓ compiled bin/stats-zig'"
+
+# Run the binary directly
+stats = "bin/stats-zig"
+
+# Python-orchestrated demo
+demo  = "python demo.py"
+
+# Remove compiled output
+clean = "rm -f bin/stats-zig bin/stats-zig.exe bin/stats-zig.o"

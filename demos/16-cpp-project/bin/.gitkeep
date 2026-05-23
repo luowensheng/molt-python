@@ -1,0 +1,3 @@
+bin/stats-cpp
+bin/stats-cpp.exe
+*.o

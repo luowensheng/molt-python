@@ -55,9 +55,12 @@ var defaultHandlers = []Handler{
 		Windows: "cmd /c \"{zig} cc -O2 -o {dir}\\{basename}.exe {file} && {dir}\\{basename}.exe {args}\"",
 	},
 	{Ext: "cpp",
-		Unix:    "sh -c \"{zig} c++ -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}\"",
-		Windows: "cmd /c \"{zig} c++ -O2 -o {dir}\\{basename}.exe {file} && {dir}\\{basename}.exe {args}\"",
+		Unix:    "sh -c \"{zig} c++ -O2 -std=c++17 -o {dir}/{basename} {file} && {dir}/{basename} {args}\"",
+		Windows: "cmd /c \"{zig} c++ -O2 -std=c++17 -o {dir}\\{basename}.exe {file} && {dir}\\{basename}.exe {args}\"",
 	},
+	// Zig: zig run compiles and executes a single file; -- separates zig
+	// flags from program arguments.
+	{Ext: "zig", Command: "{zig} run {file} -- {args}"},
 	// Interpreted languages.
 	{Ext: "rb", Command: "ruby {file} {args}"},
 	{Ext: "js", Command: "node {file} {args}"},

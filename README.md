@@ -1411,12 +1411,15 @@ installed packages are available to child processes.
 
 ## Where to go next
 
-- [`demos/`](demos/) — fifteen runnable example projects:
+- [`demos/`](demos/) — seventeen runnable example projects:
   - `01–06` core toolchain (init, deps, FastAPI, data, CLI, binary dist)
   - `07` assembly kernel module
   - `08–12` Mojo (hello world, numpy interop, SIMD, matmul, Python extension)
   - `13` header-driven C extension (`[[tool.molt.c.modules]]`)
   - `14` universal script launcher (Ruby, Go, Julia, Elixir, Node, …)
+  - `15` C as primary language (`molt run hello.c` + multi-file project)
+  - `16` C++17 as primary language (`molt run hello.cpp` + multi-file project)
+  - `17` Zig 0.16 as primary language (`molt run hello.zig` + `zig build-exe`)
 - [`docs/MANUAL.md`](docs/MANUAL.md) — exhaustive command reference
 - [`docs/global-store.md`](docs/global-store.md) — store architecture deep dive
 - [`docs/kernel-modules.md`](docs/kernel-modules.md) — kernel-module reference

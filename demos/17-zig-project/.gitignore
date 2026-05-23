@@ -1,0 +1,3 @@
+bin/stats-zig
+bin/stats-zig.exe
+*.o

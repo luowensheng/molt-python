@@ -310,9 +310,9 @@
 <section id="demos">
   <div class="wrap">
     <div class="demos-header" data-reveal>
-      <p class="label">15 runnable examples</p>
+      <p class="label">17 runnable examples</p>
       <h2>See molt in action</h2>
-      <p>From Hello World to Mojo SIMD kernels, header-driven C extensions (Python calling C and C calling Python), hermetic binary distribution, and a universal polyglot script launcher across 27 runtimes.</p>
+      <p>From Hello World to Mojo SIMD kernels, header-driven C extensions (Python calling C and C calling Python), hermetic binary distribution, a universal polyglot script launcher across 27 runtimes, and full C, C++17, and Zig 0.16 project support.</p>
     </div>
 
     <div class="demo-tabs">
@@ -331,6 +331,8 @@
       <button class="demo-tab" data-demo="d13">13 C extension</button>
       <button class="demo-tab" data-demo="d14">14 Polyglot</button>
       <button class="demo-tab" data-demo="d15">15 C project</button>
+      <button class="demo-tab" data-demo="d16">16 C++ project</button>
+      <button class="demo-tab" data-demo="d17">17 Zig project</button>
     </div>
 
     <div class="demo-panels">
@@ -951,10 +953,99 @@ clean = <span class="str">"rm -f bin/stats"</span></code></pre>
         </div>
       </div>
 
+      <!-- 16 -->
+      <div class="demo-panel" data-demo="d16">
+        <div class="demo-info">
+          <span class="badge badge-native">⚙️ C++ project</span>
+          <h3>16 — Run and manage C++17 projects</h3>
+          <p><code>molt run hello.cpp</code> compiles with <code>zig c++ -std=c++17</code> and executes in one command. Multi-file C++17 projects are managed with molt tasks — templates, structured bindings, and STL algorithms, all without a system toolchain.</p>
+          <ul class="demo-bullets">
+            <li>Single-file: <code>molt run hello.cpp Alice</code> → compile + exec</li>
+            <li>Multi-file: <code>molt run build</code> → <code>zig c++ -O2 -std=c++17 → bin/stats-cpp</code></li>
+            <li>C++17 structured bindings: <code>auto [lo, hi] = std::minmax_element(...)</code></li>
+            <li>Python drives C++: <code>molt run demo</code> → subprocess to the binary</li>
+          </ul>
+          <a class="demo-link" href="demos/#d16">Full walkthrough →</a>
+        </div>
+        <div>
+          <pre><code><span class="cmt">// hello.cpp — no config needed</span>
+#<span class="kw">include</span> &lt;iostream&gt;
+#<span class="kw">include</span> &lt;string&gt;
+<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">int</span> argc, <span class="kw">char</span>* argv[]) {
+    std::string name = argc &gt; 1 ? argv[1] : <span class="str">"World"</span>;
+    std::cout &lt;&lt; <span class="str">"Hello from C++17! 👋 "</span> &lt;&lt; name &lt;&lt; <span class="str">"\n"</span>;
+}
+
+<span class="cmt"># pyproject.toml tasks</span>
+[tool.molt.tasks]
+build = <span class="str">"zig c++ -O2 -std=c++17 -o bin/stats-cpp src/main.cpp"</span>
+stats = <span class="str">"bin/stats-cpp"</span>
+demo  = <span class="str">"python demo.py"</span></code></pre>
+          <div class="terminal" style="margin-top:1rem;">
+            <div class="term-bar">
+              <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
+            </div>
+            <div class="term-body">
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run hello.cpp Alice</span></div>
+              <div class="term-line"><span class="term-out"> Hello from C++17! 👋 Alice</span></div>
+              <div class="term-blank"></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run build</span></div>
+              <div class="term-line"><span class="term-success"> ✓ compiled bin/stats-cpp</span></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run stats 88 92 71</span></div>
+              <div class="term-line"><span class="term-out">   mean    83.6667</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 17 -->
+      <div class="demo-panel" data-demo="d17">
+        <div class="demo-info">
+          <span class="badge badge-native">⚙️ Zig project</span>
+          <h3>17 — Run and manage Zig projects</h3>
+          <p><code>molt run hello.zig</code> uses <code>zig run</code> for instant single-file execution. Multi-file Zig projects use <code>zig build-exe</code> via molt tasks. The <code>{zig}</code> token in any task resolves to the auto-installed Zig binary — no manual toolchain setup.</p>
+          <ul class="demo-bullets">
+            <li>Single-file: <code>molt run hello.zig Alice</code> → <code>zig run hello.zig -- Alice</code></li>
+            <li>Multi-file: <code>molt run build</code> → <code>zig build-exe → bin/stats-zig</code></li>
+            <li>Zig 0.16 idioms: error unions, explicit allocators, <code>std.process.Init</code></li>
+            <li>Python drives Zig: <code>molt run demo</code> → subprocess to the binary</li>
+          </ul>
+          <a class="demo-link" href="demos/#d17">Full walkthrough →</a>
+        </div>
+        <div>
+          <pre><code><span class="cmt">// hello.zig — Zig 0.16 API</span>
+<span class="kw">const</span> std = @<span class="fn">import</span>(<span class="str">"std"</span>);
+<span class="kw">pub fn</span> <span class="fn">main</span>(init: std.process.Init) !<span class="kw">void</span> {
+    <span class="kw">const</span> arena = init.arena.<span class="fn">allocator</span>();
+    <span class="kw">const</span> args = <span class="kw">try</span> init.minimal.args.<span class="fn">toSlice</span>(arena);
+    <span class="kw">const</span> name = <span class="kw">if</span> (args.len &gt; 1) args[1] <span class="kw">else</span> <span class="str">"World"</span>;
+    <span class="kw">var</span> buf: [256]<span class="kw">u8</span> = <span class="kw">undefined</span>;
+    <span class="kw">const</span> msg = <span class="kw">try</span> std.fmt.<span class="fn">bufPrint</span>(&amp;buf,
+        <span class="str">"Hello from Zig {s}! 👋 {s}\n"</span>,
+        .{ @<span class="fn">import</span>(<span class="str">"builtin"</span>).zig_version_string, name });
+    <span class="kw">try</span> std.Io.File.<span class="fn">stdout</span>().<span class="fn">writeStreamingAll</span>(init.io, msg);
+}</code></pre>
+          <div class="terminal" style="margin-top:1rem;">
+            <div class="term-bar">
+              <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
+            </div>
+            <div class="term-body">
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run hello.zig Alice</span></div>
+              <div class="term-line"><span class="term-out"> Hello from Zig 0.16.0! 👋 Alice</span></div>
+              <div class="term-blank"></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run build</span></div>
+              <div class="term-line"><span class="term-success"> ✓ compiled bin/stats-zig</span></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run stats 88 92 71</span></div>
+              <div class="term-line"><span class="term-out">   mean    83.6667</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /.demo-panels -->
 
     <div style="text-align:center; margin-top:3rem;">
-      <a href="demos/" class="btn btn-ghost">View all 15 demos in detail →</a>
+      <a href="demos/" class="btn btn-ghost">View all 17 demos in detail →</a>
     </div>
   </div>
 </section>

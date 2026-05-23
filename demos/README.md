@@ -1,6 +1,6 @@
 # molt demos
 
-Fifteen runnable projects, each highlighting a different part of molt.
+Seventeen runnable projects, each highlighting a different part of molt.
 
 ```
 demos/
@@ -19,6 +19,8 @@ demos/
   13-c-extension/    C as a Python extension module (header-driven, no boilerplate)
   14-polyglot/       molt run as universal launcher: Ruby, Node, Go, Julia, Elixir…
   15-c-project/      C as the primary language: molt run hello.c + multi-file project
+  16-cpp-project/    C++17 as the primary language: molt run hello.cpp + multi-file
+  17-zig-project/    Zig 0.16 as the primary language: molt run hello.zig + build-exe
 ```
 
 ---
@@ -481,4 +483,105 @@ molt run hello.c Alice
 molt run-handler add c "sh -c \"clang -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}\""
 molt run-handler show c   # inspect the active command
 molt run-handler reset    # restore zig cc default
+```
+
+---
+
+## 16 — cpp-project
+
+**What it shows:** molt managing **C++17 as the primary project language** using `zig c++` as a zero-install C++17 compiler. No Xcode, no system toolchain required.
+
+Two capabilities in one demo:
+
+1. **`molt run hello.cpp`** — single-file compile-and-run. The built-in `.cpp` handler compiles with `zig c++ -std=c++17` and executes in one command.
+2. **Multi-file C++17 project via tasks** — `build`, `stats`, `demo`, `clean` tasks manage a real C++ project with templates and structured bindings.
+
+**What's in the demo:**
+
+```
+16-cpp-project/
+  hello.cpp      single-file C++17 program (molt run hello.cpp)
+  pyproject.toml tasks: build, stats, demo, clean
+  src/
+    vec.hpp      generic Stats<T> template — C++17 structured bindings
+    main.cpp     statistics CLI: mean/std/min/max + ASCII histogram
+  demo.py        Python orchestrator — calls the C++ binary with 3 datasets
+```
+
+**Running:**
+
+```bash
+cd demos/16-cpp-project
+
+# Single-file: compile and run in one command (no config)
+molt run hello.cpp              # Hello from C++17! 👋 World
+molt run hello.cpp Alice        # Hello from C++17! 👋 Alice
+
+# Multi-file project: build then run
+molt run build                  # zig c++ -O2 -std=c++17 → bin/stats-cpp
+molt run stats 88 92 71 95 84   # run the binary with args
+molt run demo                   # Python drives C++: 3 datasets + histograms
+molt run clean                  # rm compiled binaries
+```
+
+**How the `.cpp` handler works:**
+
+```
+molt run hello.cpp Alice
+  → ext "cpp" → run-handler lookup
+  → Unix: sh -c "{zig} c++ -O2 -std=c++17 -o {dir}/{basename} {file} && {dir}/{basename} {args}"
+  → Hello from C++17! 👋 Alice
+```
+
+---
+
+## 17 — zig-project
+
+**What it shows:** molt managing **Zig 0.16 as the primary project language**. molt auto-installs the Zig toolchain and resolves `{zig}` in all task commands.
+
+Two capabilities in one demo:
+
+1. **`molt run hello.zig`** — single-file run via `zig run` (no compile step).
+2. **Multi-file Zig project via tasks** — `zig build-exe` compiles a stats CLI with separate modules.
+
+**What's in the demo:**
+
+```
+17-zig-project/
+  hello.zig      single-file Zig 0.16 program (molt run hello.zig)
+  pyproject.toml tasks: build, stats, demo, clean
+  src/
+    stats.zig    statistics module: StatsResult + compute() with error union
+    main.zig     statistics CLI: parse args, call stats, print histogram
+  demo.py        Python orchestrator — calls the Zig binary with 3 datasets
+```
+
+**Running:**
+
+```bash
+cd demos/17-zig-project
+
+# Single-file: zig run (no compile step)
+molt run hello.zig              # Hello from Zig 0.16.0! 👋 World
+molt run hello.zig Alice        # Hello from Zig 0.16.0! 👋 Alice
+
+# Multi-file project: build then run
+molt run build                  # zig build-exe → bin/stats-zig
+molt run stats 88 92 71 95 84   # run the binary with args
+molt run demo                   # Python drives Zig: 3 datasets + histograms
+molt run clean                  # rm compiled binaries
+```
+
+**Zig 0.16 patterns used:**
+
+```zig
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const args  = try init.minimal.args.toSlice(arena);
+
+    var data: std.ArrayList(f64) = .empty;  // .empty sentinel — no init()
+    try data.append(arena, v);               // allocator passed per-call
+
+    try std.Io.File.stdout().writeStreamingAll(init.io, bytes);
+}
 ```

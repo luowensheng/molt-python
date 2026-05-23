@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Demos — molt</title>
-  <meta name="description" content="15 runnable molt demos: Python apps, FastAPI, data analysis, CLI tools, hermetic binaries, assembly kernels, Mojo, C extensions, polyglot scripting, and C project management.">
+  <meta name="description" content="17 runnable molt demos: Python apps, FastAPI, data analysis, CLI tools, hermetic binaries, assembly kernels, Mojo, C extensions, polyglot scripting, C, C++17, and Zig project management.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -127,7 +127,7 @@
   <div class="wrap" style="padding-block:4rem;">
     <div style="margin-bottom:3rem;">
       <p class="label">Demos</p>
-      <h1 style="font-size:clamp(1.8rem,4vw,3rem); margin-bottom:.8rem;">15 runnable examples</h1>
+      <h1 style="font-size:clamp(1.8rem,4vw,3rem); margin-bottom:.8rem;">17 runnable examples</h1>
       <p style="color:var(--muted); font-size:1.1rem; max-width:680px;">
         Every demo lives in <code>demos/</code> and runs with <code>molt run &lt;task&gt;</code>.
         Covers the full stack: Python apps, header-driven C extensions (Python ↔ C in both directions),
@@ -163,6 +163,8 @@
         <a href="/molt-python/demos/#d13"><span class="n">13</span> C extension</a>
         <a href="/molt-python/demos/#d14"><span class="n">14</span> Polyglot launcher</a>
         <a href="/molt-python/demos/#d15"><span class="n">15</span> C project</a>
+        <a href="/molt-python/demos/#d16"><span class="n">16</span> C++ project</a>
+        <a href="/molt-python/demos/#d17"><span class="n">17</span> Zig project</a>
       </aside>
 
       <!-- Demo cards -->
@@ -1090,6 +1092,175 @@ molt run build                <span class="cmt"># multi-file: cc → bin/stats</
 molt run demo                 <span class="cmt"># Python drives C binary: 3 datasets</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/15-c-project" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 16 -->
+        <div class="demo-card" id="d16">
+          <div class="demo-card-header">
+            <span class="demo-number">16</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-native">⚙️ C++ project</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">C++17</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">Python ↔ C++</span>
+            </div>
+          </div>
+          <h2>C++17 project management — run, build, orchestrate</h2>
+          <p class="demo-desc">
+            molt as a complete C++17 project manager. <strong>Single-file run</strong>:
+            <code>molt run hello.cpp</code> compiles with <code>zig c++ -std=c++17</code> and
+            executes immediately — no config, no CMake. <strong>Multi-file project</strong>:
+            templates, structured bindings, and STL algorithms managed via
+            <code>pyproject.toml</code> tasks. Python orchestrates the C++ binary in the
+            same project via <code>subprocess</code>.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li><code>molt run hello.cpp</code> → compiles + runs in one command</li>
+                <li><code>molt run hello.cpp Alice</code> → args forwarded after compile</li>
+                <li><code>molt run build</code> → <code>zig c++ -O2 -std=c++17 → bin/stats-cpp</code></li>
+                <li><code>molt run demo</code> → Python drives C++ binary: 3 datasets + histograms</li>
+                <li>C++17 structured bindings: <code>auto [lo, hi] = std::minmax_element(...)</code></li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run hello.cpp [name]</span> <span class="d">— one-shot compile + run</span></li>
+                <li><span class="c">molt run build</span> <span class="d">— zig c++ -O2 → bin/stats-cpp</span></li>
+                <li><span class="c">molt run stats &lt;nums...&gt;</span> <span class="d">— run the C++ binary</span></li>
+                <li><span class="c">molt run demo</span> <span class="d">— Python drives C++: 3 datasets</span></li>
+                <li><span class="c">molt run clean</span> <span class="d">— remove compiled binaries</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Single-file C++ — zero configuration</h4>
+            <pre><code><span class="cmt">// hello.cpp — no pyproject.toml needed for single-file run</span>
+#<span class="kw">include</span> &lt;iostream&gt;
+#<span class="kw">include</span> &lt;string&gt;
+<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">int</span> argc, <span class="kw">char</span>* argv[]) {
+    std::string name = argc &gt; 1 ? argv[1] : <span class="str">"World"</span>;
+    std::cout &lt;&lt; <span class="str">"Hello from C++17! 👋 "</span> &lt;&lt; name &lt;&lt; <span class="str">"\n"</span>;
+}
+
+<span class="cmt">$ molt run hello.cpp Alice</span>
+Hello from C++17! 👋 Alice</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Multi-file project — <code>src/vec.hpp</code> (C++17 template)</h4>
+            <pre><code><span class="kw">template</span>&lt;<span class="kw">typename</span> T&gt;
+Stats&lt;T&gt; <span class="fn">compute</span>(<span class="kw">const</span> std::vector&lt;T&gt;&amp; v) {
+    <span class="kw">double</span> s = std::<span class="fn">accumulate</span>(v.<span class="fn">begin</span>(), v.<span class="fn">end</span>(), 0.0);
+    <span class="kw">double</span> m = s / v.<span class="fn">size</span>();
+    <span class="kw">auto</span> [lo, hi] = std::<span class="fn">minmax_element</span>(v.<span class="fn">begin</span>(), v.<span class="fn">end</span>());
+    <span class="kw">return</span> { m, std::<span class="fn">sqrt</span>(var / v.<span class="fn">size</span>()), (<span class="kw">double</span>)*lo, (<span class="kw">double</span>)*hi, s, v.<span class="fn">size</span>() };
+}
+
+<span class="cmt"># pyproject.toml</span>
+[tool.molt.tasks]
+build = <span class="str">"zig c++ -O2 -std=c++17 -o bin/stats-cpp src/main.cpp"</span>
+stats = <span class="str">"bin/stats-cpp"</span>
+demo  = <span class="str">"python demo.py"</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/16-cpp-project
+molt run hello.cpp              <span class="cmt"># single-file compile + run</span>
+molt run hello.cpp Alice        <span class="cmt"># with arg</span>
+molt run build                  <span class="cmt"># multi-file: zig c++ → bin/stats-cpp</span>
+molt run demo                   <span class="cmt"># Python drives C++ binary: 3 datasets</span></code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/16-cpp-project" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 17 -->
+        <div class="demo-card" id="d17">
+          <div class="demo-card-header">
+            <span class="demo-number">17</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-native">⚙️ Zig project</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">Zig 0.16</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">Python ↔ Zig</span>
+            </div>
+          </div>
+          <h2>Zig 0.16 project management — run, build-exe, orchestrate</h2>
+          <p class="demo-desc">
+            molt as a complete Zig project manager. <strong>Single-file run</strong>:
+            <code>molt run hello.zig</code> invokes <code>zig run</code> with no build step.
+            <strong>Multi-file project</strong>: <code>zig build-exe</code> compiles separate
+            modules into a native binary managed by molt tasks. The <code>{zig}</code> token
+            in any task command resolves to the auto-installed Zig binary — no manual
+            toolchain installation. Python orchestrates the Zig binary via <code>subprocess</code>.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li><code>molt run hello.zig</code> → <code>zig run hello.zig</code> instantly</li>
+                <li><code>molt run hello.zig Alice</code> → args forwarded via <code>--</code></li>
+                <li><code>molt run build</code> → <code>zig build-exe → bin/stats-zig</code></li>
+                <li><code>molt run demo</code> → Python drives Zig binary: 3 datasets + histograms</li>
+                <li>Zig 0.16 idioms: error unions, explicit allocators, <code>std.process.Init</code></li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run hello.zig [name]</span> <span class="d">— zig run, no build step</span></li>
+                <li><span class="c">molt run build</span> <span class="d">— zig build-exe → bin/stats-zig</span></li>
+                <li><span class="c">molt run stats &lt;nums...&gt;</span> <span class="d">— run the Zig binary</span></li>
+                <li><span class="c">molt run demo</span> <span class="d">— Python drives Zig: 3 datasets</span></li>
+                <li><span class="c">molt run clean</span> <span class="d">— remove compiled binaries</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Single-file Zig — Zig 0.16 API</h4>
+            <pre><code><span class="cmt">// hello.zig — Zig 0.16: std.process.Init pattern</span>
+<span class="kw">const</span> std = @<span class="fn">import</span>(<span class="str">"std"</span>);
+<span class="kw">pub fn</span> <span class="fn">main</span>(init: std.process.Init) !<span class="kw">void</span> {
+    <span class="kw">const</span> arena = init.arena.<span class="fn">allocator</span>();
+    <span class="kw">const</span> args  = <span class="kw">try</span> init.minimal.args.<span class="fn">toSlice</span>(arena);
+    <span class="kw">const</span> name: []<span class="kw">const u8</span> = <span class="kw">if</span> (args.len &gt; 1) args[1] <span class="kw">else</span> <span class="str">"World"</span>;
+    <span class="kw">var</span> buf: [256]<span class="kw">u8</span> = <span class="kw">undefined</span>;
+    <span class="kw">const</span> msg = <span class="kw">try</span> std.fmt.<span class="fn">bufPrint</span>(&amp;buf,
+        <span class="str">"Hello from Zig {s}! 👋 {s}\n"</span>,
+        .{ @<span class="fn">import</span>(<span class="str">"builtin"</span>).zig_version_string, name });
+    <span class="kw">try</span> std.Io.File.<span class="fn">stdout</span>().<span class="fn">writeStreamingAll</span>(init.io, msg);
+}
+
+<span class="cmt">$ molt run hello.zig Alice</span>
+Hello from Zig 0.16.0! 👋 Alice</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Multi-file project — <code>src/stats.zig</code> (error union pattern)</h4>
+            <pre><code><span class="kw">pub const</span> StatsResult = <span class="kw">struct</span> {
+    n: <span class="kw">usize</span>, sum: <span class="kw">f64</span>, mean: <span class="kw">f64</span>, std_dev: <span class="kw">f64</span>, min: <span class="kw">f64</span>, max: <span class="kw">f64</span>,
+};
+
+<span class="cmt">// Error union: returns EmptySlice or StatsResult</span>
+<span class="kw">pub fn</span> <span class="fn">compute</span>(data: []<span class="kw">const f64</span>) <span class="kw">error</span>{EmptySlice}!StatsResult {
+    <span class="kw">if</span> (data.len == 0) <span class="kw">return error</span>.EmptySlice;
+    <span class="cmt">// ... two-pass mean and variance</span>
+}
+
+<span class="cmt"># pyproject.toml</span>
+[tool.molt.tasks]
+build = <span class="str">"zig build-exe src/main.zig -femit-bin=bin/stats-zig"</span>
+stats = <span class="str">"bin/stats-zig"</span>
+demo  = <span class="str">"python demo.py"</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/17-zig-project
+molt run hello.zig              <span class="cmt"># zig run, instant</span>
+molt run hello.zig Alice        <span class="cmt"># with arg</span>
+molt run build                  <span class="cmt"># zig build-exe → bin/stats-zig</span>
+molt run demo                   <span class="cmt"># Python drives Zig binary: 3 datasets</span></code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/17-zig-project" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
 
       </div><!-- /.demo-cards -->
