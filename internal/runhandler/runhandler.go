@@ -16,6 +16,7 @@
 package runhandler
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,13 +51,20 @@ var defaultHandlers = []Handler{
 	// Compiled languages: compile-then-run via shell one-liner.
 	// {zig} resolves to the auto-installed zig binary; zig cc/c++ work as
 	// drop-in replacements for clang/gcc and require no separate toolchain.
+	// {tmp} resolves to a stable per-file temp directory (~/.molt/run-cache/<hash>)
+	// so compiled binaries never appear in the project directory.
 	{Ext: "c",
-		Unix:    "sh -c \"{zig} cc -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}\"",
-		Windows: "cmd /c \"{zig} cc -O2 -o {dir}\\{basename}.exe {file} && {dir}\\{basename}.exe {args}\"",
+		Unix:    "sh -c \"{zig} cc -O2 -o {tmp}/{basename} {file} && {tmp}/{basename} {args}\"",
+		Windows: "cmd /c \"{zig} cc -O2 -o {tmp}\\{basename}.exe {file} && {tmp}\\{basename}.exe {args}\"",
 	},
 	{Ext: "cpp",
-		Unix:    "sh -c \"{zig} c++ -O2 -std=c++17 -o {dir}/{basename} {file} && {dir}/{basename} {args}\"",
-		Windows: "cmd /c \"{zig} c++ -O2 -std=c++17 -o {dir}\\{basename}.exe {file} && {dir}\\{basename}.exe {args}\"",
+		Unix:    "sh -c \"{zig} c++ -O2 -std=c++17 -o {tmp}/{basename} {file} && {tmp}/{basename} {args}\"",
+		Windows: "cmd /c \"{zig} c++ -O2 -std=c++17 -o {tmp}\\{basename}.exe {file} && {tmp}\\{basename}.exe {args}\"",
+	},
+	// Rust: rustc compiles to a temp binary then executes it.
+	{Ext: "rs",
+		Unix:    "sh -c \"rustc -o {tmp}/{basename} {file} && {tmp}/{basename} {args}\"",
+		Windows: "cmd /c \"rustc -o {tmp}\\{basename}.exe {file} && {tmp}\\{basename}.exe {args}\"",
 	},
 	// Zig: zig run compiles and executes a single file; -- separates zig
 	// flags from program arguments.
@@ -247,6 +255,13 @@ func Resolve(command, filePath string, tokens map[string]string) string {
 	ext := filepath.Ext(base)
 	basename := strings.TrimSuffix(base, ext)
 	out = strings.ReplaceAll(out, "{basename}", basename)
+
+	// {tmp} — stable per-file temp dir so compiled binaries never pollute CWD.
+	// Path: <os.TempDir()>/molt-run/<first 8 hex chars of sha256(abs)>
+	h := sha256.Sum256([]byte(abs))
+	tmpDir := filepath.Join(os.TempDir(), "molt-run", fmt.Sprintf("%x", h[:8]))
+	_ = os.MkdirAll(tmpDir, 0o755)
+	out = strings.ReplaceAll(out, "{tmp}", tmpDir)
 
 	// Caller-supplied tokens.
 	for k, v := range tokens {

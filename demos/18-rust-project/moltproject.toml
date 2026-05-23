@@ -1,0 +1,11 @@
+[project]
+name = "rust-project"
+version = "0.1.0"
+lang = "rust"
+
+[tool.molt.tasks]
+build  = "cargo build --release"
+stats  = "cargo run --release --"
+test   = "cargo test"
+demo   = "cargo run --release -- 88 92 71 95 84 76 89 93 67 88"
+clean  = "cargo clean"

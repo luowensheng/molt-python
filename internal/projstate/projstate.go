@@ -127,7 +127,7 @@ type Entry struct {
 	Dir          string   // absolute path of the state dir
 	ProjectDir   string   // original project path from meta.json (may not exist)
 	Hash         string   // the 16-char suffix
-	ProjectAlive bool     // whether ProjectDir/pyproject.toml currently exists
+	ProjectAlive bool     // whether ProjectDir contains moltproject.toml or pyproject.toml
 	Meta         MetaInfo // parsed meta.json (zero value if missing/malformed)
 }
 
@@ -164,8 +164,12 @@ func ListAll() ([]Entry, error) {
 			}
 		}
 		if entry.ProjectDir != "" {
-			if _, err := os.Stat(filepath.Join(entry.ProjectDir, "pyproject.toml")); err == nil {
-				entry.ProjectAlive = true
+			// Accept either moltproject.toml (non-Python) or pyproject.toml.
+			for _, cfg := range []string{"moltproject.toml", "pyproject.toml"} {
+				if _, err := os.Stat(filepath.Join(entry.ProjectDir, cfg)); err == nil {
+					entry.ProjectAlive = true
+					break
+				}
 			}
 		}
 		out = append(out, entry)

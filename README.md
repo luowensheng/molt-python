@@ -57,6 +57,7 @@ for runnable example projects see [`demos/`](demos/).
 - [The global package store](#the-global-package-store)
 - [Python version management](#python-version-management)
 - [Tasks](#tasks)
+  - [`moltproject.toml` — tasks for non-Python projects](#moltprojecttoml--tasks-for-non-python-projects)
 - [Templates](#templates)
 - [Multi-project tracking](#multi-project-tracking)
 - [Tool registry: global CLI shims](#tool-registry-global-cli-shims)
@@ -323,6 +324,38 @@ $ molt task remove ci
 Tasks run under the same hermetic environment as `molt run python` —
 `PATH` includes `.molt/bin` so console scripts work, `PYTHONPATH` is
 the store, no venv activation.
+
+### `moltproject.toml` — tasks for non-Python projects
+
+C, C++, Zig, and other compiled-language projects that don't need a
+Python runtime can use `moltproject.toml` instead of `pyproject.toml`.
+It supports the same `[tool.molt.tasks]` format but without the
+Python-specific `[project]` fields (`requires-python`, `dependencies`):
+
+```toml
+# moltproject.toml — no requires-python, no dependencies needed
+[project]
+name = "stats-engine"
+version = "0.1.0"
+
+[tool.molt.tasks]
+build = "zig c++ -O2 -std=c++17 -o bin/stats src/main.cpp"
+run   = "bin/stats"
+clean = "rm -f bin/stats"
+```
+
+```sh
+$ molt run build    # compiles the C++ binary
+$ molt run run      # executes bin/stats
+$ molt task list    # shows all tasks, same as pyproject.toml
+```
+
+molt searches for `moltproject.toml` first, then falls back to
+`pyproject.toml` — mixed projects (Python + native orchestration)
+can keep both files. When no `syspath.json` exists (project has never
+been synced as a Python project), task `env` falls back gracefully to
+the current shell environment, so `zig`, `clang`, and other tools on
+`PATH` are available without any Python setup step.
 
 If the first arg to `molt run` isn't a task name, it's treated as a
 binary:
@@ -1365,7 +1398,7 @@ $ molt run hello.jl        # → julia hello.jl
 $ molt run hello.exs       # → elixir hello.exs
 ```
 
-27 runtimes ship built-in. Add your own in one command:
+28 runtimes ship built-in (including `.rs` → `rustc`). Add your own in one command:
 
 ```sh
 $ molt run-handler add deno "deno run {file} {args}"
@@ -1398,14 +1431,101 @@ $ molt run-handler reset   # restore factory defaults
 | `{dir}` | Directory containing the script |
 | `{basename}` | Filename without extension |
 | `{args}` | Extra arguments, space-joined |
+| `{tmp}` | Stable per-file temp dir (`$TMPDIR/molt-run/<hash>/`) |
 | `{python}` | Project's pinned Python interpreter |
 | `{zig}` | Auto-installed zig binary |
+
+The built-in `.c` and `.cpp` handlers use `{tmp}` so compiled binaries
+never appear in your working directory. Custom compile-then-run handlers
+can use it the same way:
+
+```sh
+$ molt run-handler add odin \
+    "sh -c \"odin build {file} -file -out:{tmp}/{basename} && {tmp}/{basename} {args}\""
+$ molt run main.odin          # compiled to $TMPDIR/molt-run/<hash>/main — not CWD
+```
 
 Handlers are stored in `~/.molt/run-handlers.yaml`. User entries take
 precedence over built-ins of the same extension. The project's full
 molt environment (`PYTHONPATH`, `.molt/bin/` on `PATH`) is applied
 before exec — so `{python}` resolves to the pinned interpreter and any
 installed packages are available to child processes.
+
+---
+
+## Polyglot package management (pkg-backend system)
+
+`molt add`, `molt remove`, and `molt sync` are language-agnostic interfaces.
+For a **Python** project they delegate to `uv`; for any other language they
+route to the ecosystem's native tool via a configurable **pkg-backend**.
+
+```sh
+# Rust project (lang = "rust" in moltproject.toml)
+$ molt add serde --features derive   # → cargo add serde --features derive
+$ molt add tokio --version "^1"      # → cargo add tokio --version ^1
+$ molt sync                          # → cargo fetch
+$ molt remove serde                  # → cargo remove serde
+
+# Go project
+$ molt add github.com/spf13/cobra    # → go get github.com/spf13/cobra
+$ molt sync                          # → go mod download
+
+# Node project
+$ molt add express@4                 # → npm install express@4
+$ molt sync                          # → npm install
+
+# Force a specific language in a mixed or ambiguous project
+$ molt add openssl --lang rust       # explicit --lang flag
+```
+
+molt infers the target language from the **package name structure**
+(e.g. `github.com/…` → Go, `@scope/pkg` → Node, `lib*` → C, `*-sys` → Rust)
+and from the project's `lang` field. When inference is ambiguous, pass `--lang`.
+
+**Per-ecosystem version formatting** is handled automatically:
+
+| Language | `molt add pkg 1.6` becomes |
+|---|---|
+| python | `uv add pkg==1.6` |
+| rust | `cargo add pkg --version 1.6` |
+| go | `go get pkg@v1.6` |
+| node/bun | `npm install pkg@1.6` |
+| swift | `swift package add pkg --exact 1.6` |
+
+**Backend token vocabulary** (used in custom command templates):
+
+| Token | Expands to |
+|---|---|
+| `{package}` | Package name as typed |
+| `{version_flag}` | Formatted version argument for the ecosystem's CLI |
+| `{flags}` | Extra flags forwarded from the CLI |
+| `{manifest}` | Absolute path to the project manifest |
+| `{project}` | Absolute path to the project root |
+
+**Inspect and customise backends:**
+
+```sh
+$ molt pkg-backend list            # show all langs (built-in + user)
+$ molt pkg-backend show rust       # print the rust backend commands
+$ molt pkg-backend add nim \
+    --add "nimble install {package}{version_flag}" \
+    --remove "nimble uninstall {package}" \
+    --sync "nimble install"
+$ molt pkg-backend reset           # restore factory defaults
+```
+
+**Project-level override** — swap to Bun without changing the global backend:
+
+```toml
+# moltproject.toml
+[tool.molt.backend]
+add  = "bun add {package}{version_flag}"
+sync = "bun install"
+# remove, list, upgrade fall back to the global node backend
+```
+
+9 built-in backends: `python` `rust` `go` `node` `bun` `zig` `c` `swift` `nim`.
+Backends are stored in `~/.molt/pkg-backends.yaml`.
 
 ---
 
@@ -1568,7 +1688,7 @@ staged, and visible to Python in one `molt sync` invocation.
 
 ## Where to go next
 
-- [`demos/`](demos/) — seventeen runnable example projects:
+- [`demos/`](demos/) — eighteen runnable example projects:
   - `01–06` core toolchain (init, deps, FastAPI, data, CLI, binary dist)
   - `07` assembly kernel module
   - `08–12` Mojo (hello world, numpy interop, SIMD, matmul, Python extension)
@@ -1577,6 +1697,7 @@ staged, and visible to Python in one `molt sync` invocation.
   - `15` C as primary language (`molt run hello.c` + multi-file project)
   - `16` C++17 as primary language (`molt run hello.cpp` + multi-file project)
   - `17` Zig 0.16 as primary language (`molt run hello.zig` + `zig build-exe`)
+  - `18` Rust as primary language (`molt add` → Cargo, `molt sync` → `cargo fetch`)
 - [`docs/MANUAL.md`](docs/MANUAL.md) — exhaustive command reference
 - [`docs/global-store.md`](docs/global-store.md) — store architecture deep dive
 - [`docs/kernel-modules.md`](docs/kernel-modules.md) — kernel-module reference

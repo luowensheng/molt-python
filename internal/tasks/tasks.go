@@ -59,9 +59,9 @@ func (r *Runner) Run(name string, watch bool, extraArgs []string) error {
 	return r.runOnce(task, extraArgs)
 }
 
-// Add adds a task to pyproject.toml.
+// Add adds a task to moltproject.toml (preferred) or pyproject.toml.
 func (r *Runner) Add(name, command, description string) error {
-	tomlPath := filepath.Join(r.ProjectDir, "pyproject.toml")
+	tomlPath := r.configPath()
 	data, err := os.ReadFile(tomlPath)
 	if err != nil {
 		return err
@@ -141,10 +141,11 @@ func tomlString(s string) string {
 	return b.String()
 }
 
-// Remove removes a task from pyproject.toml. Returns an error if the task
-// does not exist so callers (and CI) can fail loudly on typos.
+// Remove removes a task from moltproject.toml (preferred) or pyproject.toml.
+// Returns an error if the task does not exist so callers (and CI) can fail
+// loudly on typos.
 func (r *Runner) Remove(name string) error {
-	tomlPath := filepath.Join(r.ProjectDir, "pyproject.toml")
+	tomlPath := r.configPath()
 	data, err := os.ReadFile(tomlPath)
 	if err != nil {
 		return err
@@ -198,7 +199,7 @@ func (r *Runner) PrintList() error {
 		return err
 	}
 	if len(tasks) == 0 {
-		fmt.Println("No tasks defined. Add tasks to [tool.molt.tasks] in pyproject.toml.")
+		fmt.Println("No tasks defined. Add tasks to [tool.molt.tasks] in moltproject.toml or pyproject.toml.")
 		return nil
 	}
 
@@ -216,6 +217,18 @@ func (r *Runner) PrintList() error {
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
+
+// configPath returns the path to the project's task/config file. It prefers
+// moltproject.toml (used for non-Python projects) and falls back to
+// pyproject.toml. If neither exists it returns the moltproject.toml path so
+// callers produce a consistent "file not found" message.
+func (r *Runner) configPath() string {
+	mp := filepath.Join(r.ProjectDir, "moltproject.toml")
+	if _, err := os.Stat(mp); err == nil {
+		return mp
+	}
+	return filepath.Join(r.ProjectDir, "pyproject.toml")
+}
 
 func (r *Runner) runOnce(task *types.Task, extraArgs []string) error {
 	// Structured task forms (module/script) bypass the shell entirely and
@@ -364,10 +377,10 @@ func (r *Runner) latestMtime() int64 {
 }
 
 func (r *Runner) loadTasks() ([]types.Task, error) {
-	tomlPath := filepath.Join(r.ProjectDir, "pyproject.toml")
+	tomlPath := r.configPath()
 	data, err := os.ReadFile(tomlPath)
 	if err != nil {
-		return nil, fmt.Errorf("pyproject.toml not found in %s", r.ProjectDir)
+		return nil, fmt.Errorf("%s not found in %s", filepath.Base(tomlPath), r.ProjectDir)
 	}
 
 	var tasks []types.Task
@@ -543,15 +556,15 @@ func conflictedTask(t *types.Task) bool {
 	return n > 1
 }
 
-// buildTaskEnv constructs the env for a shell-form task (Command). It
-// requires .molt/syspath.json to exist (so the .molt/bin/ shim PATH is
-// known); callers should auto-sync before running tasks. The legacy .venv
-// fallback was removed because it produced a misleading PATH that made
-// "python: command not found" failures look like a packaging bug.
+// buildTaskEnv constructs the env for a shell-form task (Command). For Python
+// projects it loads syspath.json so the .molt/bin/ shim is on PATH. For
+// non-Python projects (moltproject.toml with no syspath.json) it falls back
+// to the current process environment so tasks still run.
 func (r *Runner) buildTaskEnv(taskEnv []string) ([]string, error) {
 	spec, err := syspath.Load(r.ProjectDir)
 	if err != nil {
-		return nil, fmt.Errorf("project not synced; run 'molt sync' (%w)", err)
+		// Non-Python project or project not yet synced — fall back gracefully.
+		return r.layerEnv(os.Environ(), taskEnv), nil
 	}
 	return r.layerEnv(spec.BuildEnv(os.Environ()), taskEnv), nil
 }

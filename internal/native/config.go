@@ -10,7 +10,18 @@ import (
 	"molt/internal/kernelbuilder"
 )
 
-// NativeModuleConfig is one [[tool.molt.native]] entry from pyproject.toml.
+// readConfigFile reads the project configuration file, preferring
+// moltproject.toml (non-Python / polyglot projects) over pyproject.toml.
+func readConfigFile(projectDir string) ([]byte, error) {
+	for _, name := range []string{"moltproject.toml", "pyproject.toml"} {
+		if data, err := os.ReadFile(filepath.Join(projectDir, name)); err == nil {
+			return data, nil
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
+// NativeModuleConfig is one [[tool.molt.native]] entry from the project config.
 type NativeModuleConfig struct {
 	Module      string
 	Src         string   // project-relative path to source folder or file
@@ -23,7 +34,7 @@ type NativeModuleConfig struct {
 // loadNativeModuleConfigs reads all [[tool.molt.native]] array-of-table entries
 // from pyproject.toml. Returns nil if none are found.
 func loadNativeModuleConfigs(projectDir string) []NativeModuleConfig {
-	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
+	data, err := readConfigFile(projectDir)
 	if err != nil {
 		return nil
 	}
@@ -181,7 +192,7 @@ func LoadCythonConfig(projectDir string) CythonConfig {
 		Defines:    map[string]string{},
 	}
 
-	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
+	data, err := readConfigFile(projectDir)
 	if err != nil {
 		return cfg
 	}
@@ -316,7 +327,7 @@ func LoadZigConfig(projectDir string) ZigConfig {
 		Version:     ZigDefaultVersion,
 		AutoInstall: true,
 	}
-	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
+	data, err := readConfigFile(projectDir)
 	if err != nil {
 		return cfg
 	}
@@ -427,7 +438,7 @@ func LoadKernelConfig(projectDir string) KernelConfig {
 	// Read pyproject.toml if present, otherwise fall through to the
 	// auto-extension block (so global builders still extend the
 	// watched-extensions list even when no pyproject exists).
-	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
+	data, err := readConfigFile(projectDir)
 	if err != nil {
 		mergeGlobalTargetFlags(&cfg)
 		return augmentKernelExtensions(cfg)
@@ -597,7 +608,7 @@ func LoadRustConfig(projectDir string) RustConfig {
 		AutoAttrs:    true,
 	}
 
-	data, err := os.ReadFile(filepath.Join(projectDir, "pyproject.toml"))
+	data, err := readConfigFile(projectDir)
 	if err != nil {
 		return cfg
 	}

@@ -21,6 +21,9 @@ deep-dive on the package store specifically, read `docs/global-store.md`.
    - 7.1 [Project lifecycle](#71-project-lifecycle)
    - 7.2 [Python versions](#72-python-versions)
    - 7.3 [Run & tasks](#73-run--tasks)
+     - [moltproject.toml — non-Python projects](#moltprojecttoml--non-python-projects)
+     - [Universal script launcher](#molt-run-scriptext--universal-script-launcher)
+     - [Polyglot pkg-backend system](#polyglot-molt-add--molt-remove--molt-sync)
    - 7.4 [Build & deploy](#74-build--deploy)
    - 7.5 [Multi-project ops](#75-multi-project-ops)
    - 7.6 [Global tools](#76-global-tools)
@@ -540,6 +543,80 @@ runs `uv add -r <file>` to merge its lines into `pyproject.toml`'s
 
 Skipped under `--frozen`, so CI never mutates deps.
 
+#### Polyglot `molt add` / `molt remove` / `molt sync`
+
+For non-Python projects `molt add`, `molt remove`, and `molt sync` are
+language-agnostic interfaces routed through the **pkg-backend** system.
+
+```sh
+# Rust project (lang = "rust" in moltproject.toml)
+$ molt add serde --features derive     # → cargo add serde --features derive
+$ molt add tokio --version "^1"        # → cargo add tokio --version ^1
+$ molt sync                            # → cargo fetch
+$ molt remove serde                    # → cargo remove serde
+
+# Go project
+$ molt add github.com/spf13/cobra      # → go get github.com/spf13/cobra
+$ molt sync                            # → go mod download
+
+# Explicit disambiguation in a mixed project
+$ molt add openssl --lang rust
+```
+
+Language inference rules (applied in order when `--lang` is absent):
+
+1. Module path with a dotted prefix (`github.com/…`) → `go`
+2. Starts with `@` → `node`
+3. Ends with `-sys` → `rust`
+4. Starts with `lib` (all-lowercase) → `c`
+5. Ends with `-rs` → `rust`; ends with `-go` → `go`
+6. Otherwise → use project `lang` field; error if mixed/ambiguous
+
+#### `molt pkg-backend list/show/add/reset`
+
+```sh
+$ molt pkg-backend list              # list all langs (built-in + user)
+$ molt pkg-backend show rust         # print the rust backend's commands
+$ molt pkg-backend add nim \
+    --add "nimble install {package}{version_flag}" \
+    --remove "nimble uninstall {package}" \
+    --sync "nimble install"
+$ molt pkg-backend reset             # restore factory defaults
+```
+
+**Backend token vocabulary:**
+
+| Token | Expands to |
+|---|---|
+| `{package}` | Package name as typed |
+| `{version_flag}` | Formatted version flag for the ecosystem's CLI |
+| `{flags}` | Extra flags forwarded from the CLI |
+| `{manifest}` | Absolute path to the project manifest file |
+| `{project}` | Absolute path to the project root |
+
+**Per-ecosystem version formatting:**
+
+| Lang | Raw `1.6` becomes |
+|---|---|
+| python | `==1.6` (appended to package: `numpy==1.6`) |
+| rust | `--version 1.6` |
+| go | `@v1.6` |
+| node / bun | `@1.6` |
+| swift | `--exact 1.6` |
+
+**Project-level override** (partial fields merge with the global backend):
+
+```toml
+# moltproject.toml
+[tool.molt.backend]
+add  = "bun add {package}{version_flag}"
+sync = "bun install"
+# remove / list / upgrade fall back to the global node backend
+```
+
+9 built-in backends: `python` `rust` `go` `node` `bun` `zig` `c` `swift` `nim`.
+User backends live in `~/.molt/pkg-backends.yaml`; built-ins are compiled in.
+
 #### `molt lock`
 
 Regenerate `uv.lock` from `pyproject.toml` without touching the store.
@@ -743,7 +820,39 @@ Checking environment isolation...
 
 ### 7.3 Run & tasks
 
-Tasks live in `pyproject.toml` under `[tool.molt.tasks]`. Three forms are
+#### `moltproject.toml` — non-Python projects
+
+C, C++, Zig, and other compiled-language projects that don't need a Python
+runtime can use `moltproject.toml` instead of `pyproject.toml`. It supports
+the same `[tool.molt.tasks]` format but without `requires-python` or
+`dependencies`:
+
+```toml
+# moltproject.toml
+[project]
+name = "stats-engine"
+version = "0.1.0"
+
+[tool.molt.tasks]
+build = "zig c++ -O2 -std=c++17 -o bin/stats src/main.cpp"
+run   = "bin/stats"
+clean = "rm -f bin/stats"
+```
+
+molt searches for `moltproject.toml` first, then falls back to
+`pyproject.toml`. When no `syspath.json` exists (the project has never been
+synced as a Python project), task env falls back gracefully to the current
+shell environment — `zig`, `clang`, and other tools on PATH are available
+without any Python setup step.
+
+**Resolution order:**
+1. `<project>/moltproject.toml` — preferred for non-Python projects
+2. `<project>/pyproject.toml` — standard Python projects
+3. Error if neither is present
+
+---
+
+Tasks live in `pyproject.toml` (or `moltproject.toml`) under `[tool.molt.tasks]`. Three forms are
 supported:
 
 ```toml
@@ -863,6 +972,69 @@ error: task "hello" not found
 ```
 
 Removing a non-existent task is a hard error, never a silent success.
+
+#### `molt run <script>.<ext>` — universal script launcher
+
+Any file extension with a registered handler is dispatched directly — no
+task definition, no project config needed:
+
+```sh
+$ molt run hello.rb        # ruby hello.rb
+$ molt run hello.js Alice  # node hello.js Alice
+$ molt run hello.go        # go run hello.go
+$ molt run hello.c         # zig cc -O2 … (compile+run, binary in temp dir)
+$ molt run hello.cpp       # zig c++ -O2 -std=c++17 … (same)
+$ molt run hello.zig       # zig run hello.zig
+```
+
+28 runtimes are built in. Manage handlers with `molt run-handler`:
+
+```sh
+$ molt run-handler list              # show all handlers
+$ molt run-handler show rb           # Extension: .rb  Command: ruby {file} {args}
+$ molt run-handler add odin \
+    "sh -c \"odin build {file} -file -out:{tmp}/{basename} && {tmp}/{basename} {args}\""
+$ molt run-handler reset             # restore factory defaults
+```
+
+**Token reference:**
+
+| Token | Expands to |
+|---|---|
+| `{file}` | Absolute path to the script |
+| `{dir}` | Directory containing the script |
+| `{basename}` | Filename without extension |
+| `{args}` | Extra arguments passed after the filename, space-joined |
+| `{tmp}` | Stable per-file temp directory: `$TMPDIR/molt-run/<sha256[:8]>/` |
+| `{python}` | Project's pinned Python interpreter |
+| `{zig}` | Auto-installed Zig binary (`~/.molt/toolchains/zig/`) |
+
+**`{tmp}` — compiled binaries stay out of your working directory.**
+The built-in `.c` and `.cpp` handlers use `{tmp}` so the output binary
+lands in `$TMPDIR/molt-run/<hash>/` rather than next to your source file.
+The path is stable for a given source file path, so repeated runs reuse the
+same binary (acting as a simple compilation cache). The OS cleans it up on
+reboot. Custom compile-then-run handlers should use `{tmp}` the same way:
+
+```sh
+# Output goes to $TMPDIR/molt-run/<hash>/hello, not ./hello
+$ molt run-handler add odin \
+    "sh -c \"odin build {file} -file -out:{tmp}/{basename} && {tmp}/{basename} {args}\""
+$ molt run hello.odin
+```
+
+Handlers are stored in `~/.molt/run-handlers.yaml`. User entries take
+precedence over built-ins of the same extension. The full molt environment
+(`PYTHONPATH`, `.molt/bin/` on `PATH`) is applied before exec.
+
+**Per-OS overrides.** Use `--unix` / `--windows` to provide platform-specific
+commands:
+
+```sh
+$ molt run-handler add ts \
+    "npx ts-node {file} {args}" \
+    --windows "npx.cmd ts-node {file} {args}"
+```
 
 ### 7.4 Build & deploy
 

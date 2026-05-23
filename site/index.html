@@ -24,6 +24,7 @@
     </a>
     <div class="nav-links">
       <a href="#features">Features</a>
+      <a href="#polyglot">Polyglot</a>
       <a href="#how">How it works</a>
       <a href="#performance">Performance</a>
       <a href="#demos">Demos</a>
@@ -51,10 +52,9 @@
         </h1>
         <p class="hero-sub fade-up delay-2">
           One global package store. Zero <code>.venv</code> directories.
-          Header-driven C extensions with no boilerplate — drop in a <code>.h</code> file
-          and get <strong>30–100× speedups</strong> on CPU-bound hot paths.
-          First-class C, C++17, Zig, Mojo, and assembly support.
-          Cross-compile for Linux from macOS with <code>zig cc</code> — no Docker.
+          <strong>Language-agnostic</strong> — <code>molt add serde</code> calls Cargo, <code>molt add express</code> calls npm, <code>molt add numpy</code> calls uv.
+          Header-driven C extensions: drop in a <code>.h</code> and get <strong>30–100× speedups</strong>.
+          First-class Mojo, Zig, C, C++17, Rust, and assembly support.
           Ship everything as a single integrity-verified binary.
         </p>
         <div class="hero-btns fade-up delay-3">
@@ -67,7 +67,7 @@
         </div>
         <div class="hero-stats fade-up delay-4">
           <div>
-            <div class="stat-num">17</div>
+            <div class="stat-num">18</div>
             <div class="stat-lbl">runnable demos</div>
           </div>
           <div>
@@ -79,8 +79,12 @@
             <div class="stat-lbl">native code paths</div>
           </div>
           <div>
-            <div class="stat-num">27</div>
+            <div class="stat-num">28</div>
             <div class="stat-lbl">script runtimes</div>
+          </div>
+          <div>
+            <div class="stat-num">9</div>
+            <div class="stat-lbl">pkg ecosystems</div>
           </div>
           <div>
             <div class="stat-num">1</div>
@@ -113,7 +117,7 @@
 <!-- ── 4 pillars ──────────────────────────────────────────────────────── -->
 <section id="pillars" style="padding-block:4rem; background:var(--bg2);">
   <div class="wrap">
-    <div class="grid4">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1.5rem;">
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🗄️</div>
         <div class="feat-title">Global package store</div>
@@ -152,6 +156,15 @@
           SHA-256 integrity trailer. Ship anywhere — no Python on target.
         </p>
       </div>
+      <div class="feature-card" data-reveal>
+        <div class="feat-icon">📦</div>
+        <div class="feat-title">Polyglot packages <span class="badge-new">NEW</span></div>
+        <p class="feat-desc">
+          <code>molt add</code> is language-agnostic. For Rust it calls <code>cargo</code>,
+          for Go <code>go get</code>, for Node <code>npm</code>. 9 built-in pkg-backends;
+          add your own or override per-project.
+        </p>
+      </div>
     </div>
   </div>
 </section>
@@ -161,10 +174,11 @@
   <div class="wrap">
     <div class="section-head" data-reveal>
       <p class="label">Everything you need</p>
-      <h2>Replace six tools with one</h2>
-      <p>molt unifies pyenv, pip, venv, task runners, native build pipelines, and distribution tooling under a single coherent CLI.</p>
+      <h2>Replace every tool with one</h2>
+      <p>molt unifies pyenv, pip, venv, task runners, native build pipelines, distribution tooling, and cross-language package management (Cargo, go mod, npm, and more) under a single coherent CLI.</p>
     </div>
-    <div class="grid3">
+    <div class="grid3" style="row-gap:2rem;">
+      <div class="feat-group-label"><span>Core Python toolchain</span></div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🐍</div>
         <div class="feat-title">Python version management</div>
@@ -180,6 +194,7 @@
         <div class="feat-title">Task runner built-in</div>
         <p class="feat-desc">Define tasks in <code>pyproject.toml</code> under <code>[tool.molt.tasks]</code>. No Makefile, no shell scripts. <code>molt run dev</code> just works.</p>
       </div>
+      <div class="feat-group-label"><span>Native code &amp; performance</span></div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🔥</div>
         <div class="feat-title">First-class Mojo support</div>
@@ -200,10 +215,51 @@
         <div class="feat-title">Six native code paths</div>
         <p class="feat-desc">Header-driven C, Cython, Rust + PyO3, manifest-driven kernel modules (any C-ABI language: Zig, C++, Odin, Nim, ASM), pre-built <code>.so</code> binding, and external build recipes. All cached in <code>~/.molt/native/</code>.</p>
       </div>
+      <div class="feat-group-label"><span>Polyglot &amp; distribution</span></div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🌐</div>
         <div class="feat-title">Universal script launcher</div>
-        <p class="feat-desc"><code>molt run hello.c</code> compiles with <code>zig cc</code> and executes. <code>molt run hello.rb</code> → <code>ruby hello.rb</code>. 27 runtimes built in — C, C++, Ruby, Node, Go, Julia, Elixir, Lua, Swift, Perl, and more. Add your own: <code>molt run-handler add deno "deno run {file} {args}"</code>.</p>
+        <p class="feat-desc"><code>molt run hello.c</code> compiles with <code>zig cc</code> and executes — binary lands in a stable temp dir, never your CWD. <code>molt run hello.rb</code> → <code>ruby hello.rb</code>. 28 runtimes built in (including <code>.rs</code>). Add your own with a custom <code>{tmp}</code> token for compile-then-run workflows.</p>
+      </div>
+      <div class="feature-spotlight" data-reveal>
+        <div style="display:flex;align-items:center;gap:.8rem;margin-bottom:1.2rem;">
+          <span style="font-size:1.8rem;">📦</span>
+          <div>
+            <div class="feat-title" style="margin-bottom:0;">Polyglot package management <span class="badge-new">NEW</span></div>
+            <div style="font-size:.82rem;color:var(--muted);margin-top:.2rem;">9 built-in ecosystems · language inferred from package name structure</div>
+          </div>
+        </div>
+        <div class="feature-spotlight-inner">
+          <div>
+            <p style="font-size:.9rem;color:var(--muted);margin-bottom:1rem;line-height:1.7;">
+              <code>molt add</code>, <code>molt remove</code>, and <code>molt sync</code> are
+              language-agnostic. The pkg-backend system routes each operation to the
+              ecosystem's native tool — no per-language CLI to memorise.
+            </p>
+            <table class="routing-table">
+              <thead>
+                <tr><th>You type</th><th>molt runs</th><th>lang</th></tr>
+              </thead>
+              <tbody>
+                <tr><td class="rt-cmd">molt add serde</td><td class="rt-out">cargo add serde</td><td class="rt-lang">rust</td></tr>
+                <tr><td class="rt-cmd">molt add github.com/spf13/cobra</td><td class="rt-out">go get …</td><td class="rt-lang">go</td></tr>
+                <tr><td class="rt-cmd">molt add @types/node</td><td class="rt-out">npm install @types/node</td><td class="rt-lang">node</td></tr>
+                <tr><td class="rt-cmd">molt add numpy</td><td class="rt-out">uv add numpy</td><td class="rt-lang">python</td></tr>
+                <tr><td class="rt-cmd">molt add libssl</td><td class="rt-out">molt-pkg-resolve libssl</td><td class="rt-lang">c</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <p style="font-size:.82rem;color:var(--muted);margin-bottom:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;">Version formatting per ecosystem</p>
+            <div style="font-family:var(--font-mono);font-size:.8rem;line-height:2;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:1rem;">
+              <div><span style="color:var(--muted);">python </span><span style="color:var(--accent2);">numpy 2.0</span> → <span style="color:var(--green);">uv add numpy==2.0</span></div>
+              <div><span style="color:var(--muted);">rust   </span><span style="color:var(--accent2);">serde ^1</span> → <span style="color:var(--green);">cargo add serde --version ^1</span></div>
+              <div><span style="color:var(--muted);">go     </span><span style="color:var(--accent2);">cobra 1.8</span> → <span style="color:var(--green);">go get cobra@v1.8</span></div>
+              <div><span style="color:var(--muted);">node   </span><span style="color:var(--accent2);">express 4</span> → <span style="color:var(--green);">npm install express@4</span></div>
+            </div>
+            <p style="font-size:.82rem;color:var(--muted);margin-top:1rem;">Override per-project via <code>[tool.molt.backend]</code> in <code>moltproject.toml</code>. Custom backends stored in <code>~/.molt/pkg-backends.yaml</code>.</p>
+          </div>
+        </div>
       </div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🤖</div>
@@ -395,13 +451,113 @@ python -c <span class="str">"import fastsum; print(fastsum.sum_f64(data))"</span
   </div>
 </section>
 
+<!-- ── Polyglot showcase ──────────────────────────────────────────────── -->
+<section id="polyglot">
+  <div class="wrap">
+    <div class="section-head" data-reveal>
+      <p class="label">Language-agnostic interface</p>
+      <h2>One CLI. Every package ecosystem.</h2>
+      <p>molt's <code>add</code>, <code>sync</code>, and <code>remove</code> commands are interfaces, not implementations. The pkg-backend system routes each call to the ecosystem's native tool — Cargo, go mod, npm, uv, and more — with version strings formatted correctly for each CLI.</p>
+    </div>
+
+    <div class="polyglot-grid" data-reveal>
+      <div>
+        <h3 style="margin-bottom:1.5rem;font-size:1.1rem;">Before molt: memorise every tool</h3>
+        <div class="ba-card ba-before">
+          <span class="ba-label">Without molt — 5 different CLIs</span>
+          <div class="ba-strike" style="color:#94a3b8;"># Python</div>
+          <div class="ba-strike" style="color:#94a3b8;">pip install numpy==2.0</div>
+          <div style="height:.4rem;"></div>
+          <div class="ba-strike" style="color:#94a3b8;"># Rust</div>
+          <div class="ba-strike" style="color:#94a3b8;">cargo add serde --version "^1"</div>
+          <div style="height:.4rem;"></div>
+          <div class="ba-strike" style="color:#94a3b8;"># Go</div>
+          <div class="ba-strike" style="color:#94a3b8;">go get github.com/spf13/cobra@v1.8.1</div>
+          <div style="height:.4rem;"></div>
+          <div class="ba-strike" style="color:#94a3b8;"># Node</div>
+          <div class="ba-strike" style="color:#94a3b8;">npm install express@4</div>
+          <div style="height:.4rem;"></div>
+          <div class="ba-strike" style="color:#94a3b8;"># Zig</div>
+          <div class="ba-strike" style="color:#94a3b8;">zig fetch --save &lt;url&gt;</div>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin-bottom:1.5rem;font-size:1.1rem;">After molt: one interface</h3>
+        <div class="ba-card ba-after">
+          <span class="ba-label">With molt — always the same</span>
+          <div style="color:var(--muted);"># Python project</div>
+          <div><span style="color:var(--green);">molt add numpy 2.0</span></div>
+          <div style="height:.4rem;"></div>
+          <div style="color:var(--muted);"># Rust project</div>
+          <div><span style="color:var(--green);">molt add serde ^1</span></div>
+          <div style="height:.4rem;"></div>
+          <div style="color:var(--muted);"># Go project</div>
+          <div><span style="color:var(--green);">molt add github.com/spf13/cobra 1.8.1</span></div>
+          <div style="height:.4rem;"></div>
+          <div style="color:var(--muted);"># Node project</div>
+          <div><span style="color:var(--green);">molt add express 4</span></div>
+          <div style="height:.4rem;"></div>
+          <div style="color:var(--muted);"># Zig project</div>
+          <div><span style="color:var(--green);">molt add &lt;url&gt;</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stats-bar" data-reveal style="margin-top:3rem;">
+      <div class="stats-bar-item">
+        <div class="stats-bar-num">9</div>
+        <div class="stats-bar-sub">built-in pkg<br>backends</div>
+      </div>
+      <div class="stats-bar-item">
+        <div class="stats-bar-num">28</div>
+        <div class="stats-bar-sub">script runtimes<br>for <code>molt run</code></div>
+      </div>
+      <div class="stats-bar-item">
+        <div class="stats-bar-num">5</div>
+        <div class="stats-bar-sub">version formats<br>auto-applied</div>
+      </div>
+      <div class="stats-bar-item">
+        <div class="stats-bar-num">∞</div>
+        <div class="stats-bar-sub">custom backends<br>via YAML</div>
+      </div>
+    </div>
+
+    <div data-reveal style="margin-top:3rem;display:grid;grid-template-columns:1fr 1fr;gap:2rem;align-items:start;">
+      <div>
+        <h3 style="font-size:1.05rem;margin-bottom:1rem;">Language inference — no flag needed</h3>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1.2rem;font-family:var(--font-mono);font-size:.8rem;line-height:2;">
+          <div><span style="color:var(--accent2);">github.com/…</span> <span style="color:var(--muted);">→ go  (dotted prefix + slash)</span></div>
+          <div><span style="color:var(--accent2);">@scope/pkg</span>   <span style="color:var(--muted);">→ node (starts with @)</span></div>
+          <div><span style="color:var(--accent2);">openssl-sys</span>  <span style="color:var(--muted);">→ rust (-sys suffix)</span></div>
+          <div><span style="color:var(--accent2);">libpng</span>       <span style="color:var(--muted);">→ c    (lib* all-lowercase)</span></div>
+          <div><span style="color:var(--accent2);">tokio-rs</span>     <span style="color:var(--muted);">→ rust (-rs suffix)</span></div>
+          <div><span style="color:var(--accent2);">numpy</span>        <span style="color:var(--muted);">→ python (project lang)</span></div>
+        </div>
+      </div>
+      <div>
+        <h3 style="font-size:1.05rem;margin-bottom:1rem;">Per-project backend override</h3>
+        <pre style="margin:0;"><code><span class="cmt"># moltproject.toml — swap npm → bun</span>
+[tool.molt.backend]
+add  = <span class="str">"bun add {package}{version_flag}"</span>
+sync = <span class="str">"bun install"</span>
+<span class="cmt"># remove/list fall back to node built-in</span>
+
+<span class="cmt"># Custom backend for any language</span>
+$ molt pkg-backend add nim \
+    --add <span class="str">"nimble install {package}"</span> \
+    --sync <span class="str">"nimble install"</span></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ── Demos ──────────────────────────────────────────────────────────── -->
 <section id="demos">
   <div class="wrap">
     <div class="demos-header" data-reveal>
-      <p class="label">17 runnable examples</p>
+      <p class="label">18 runnable examples</p>
       <h2>See molt in action</h2>
-      <p>From Hello World to Mojo SIMD kernels, header-driven C extensions (Python calling C and C calling Python), hermetic binary distribution, a universal polyglot script launcher across 27 runtimes, and full C, C++17, and Zig 0.16 project support.</p>
+      <p>From Hello World to Mojo SIMD kernels, header-driven C extensions (Python calling C and C calling Python), hermetic binary distribution, a universal polyglot script launcher across 28 runtimes, full C, C++17, Zig 0.16, and Rust project support, and a language-agnostic package management interface routing to Cargo, go mod, npm, and more.</p>
     </div>
 
     <div class="demo-tabs">
@@ -422,6 +578,7 @@ python -c <span class="str">"import fastsum; print(fastsum.sum_f64(data))"</span
       <button class="demo-tab" data-demo="d15">15 C project</button>
       <button class="demo-tab" data-demo="d16">16 C++ project</button>
       <button class="demo-tab" data-demo="d17">17 Zig project</button>
+      <button class="demo-tab" data-demo="d18">18 Rust project</button>
     </div>
 
     <div class="demo-panels">
@@ -961,11 +1118,12 @@ src  = [<span class="str">"fastmath.c"</span>]
         <div class="demo-info">
           <span class="badge badge-native">🌐 Polyglot</span>
           <h3>14 — Universal script launcher</h3>
-          <p><code>molt run hello.rb</code> → <code>ruby hello.rb</code>. Any file whose extension is registered in <code>~/.molt/run-handlers.yaml</code> is dispatched directly — 27 runtimes built in, add your own in one command.</p>
+          <p><code>molt run hello.rb</code> → <code>ruby hello.rb</code>. Any file whose extension is registered in <code>~/.molt/run-handlers.yaml</code> is dispatched directly — 28 runtimes built in, add your own in one command. Compiled languages use the <code>{tmp}</code> token so binaries land in a temp dir, not your CWD.</p>
           <ul class="demo-bullets">
             <li>Ruby, Node, Go, Julia, Elixir, Swift, Lua, Perl, Bash — just <code>molt run</code></li>
             <li>Args forwarded: <code>molt run hello.rb Alice</code></li>
             <li>Add custom handlers: <code>molt run-handler add deno "deno run {file} {args}"</code></li>
+            <li>Compile tokens: <code>{tmp}</code> = stable per-file temp dir; <code>{zig}</code> = auto-installed Zig</li>
             <li>Per-OS overrides: <code>--windows "npx.cmd ts-node {file} {args}"</code></li>
           </ul>
           <a class="demo-link" href="demos/#d14">Full walkthrough →</a>
@@ -1001,7 +1159,7 @@ molt run server.ts      <span class="cmt"># → deno run server.ts</span></code>
         <div class="demo-info">
           <span class="badge badge-native">⚙️ C project</span>
           <h3>15 — Run and manage C projects</h3>
-          <p>Two capabilities: <code>molt run hello.c</code> compiles with <code>zig cc</code> and executes in one command — no config, no Makefile. Multi-file C projects are managed with <code>pyproject.toml</code> tasks (<code>build</code>, <code>run</code>, <code>clean</code>) — same workflow as any Python project. Python orchestrates the C binary in the same project.</p>
+          <p>Two capabilities: <code>molt run hello.c</code> compiles with <code>zig cc</code> and executes in one command — compiled binary lands in a temp dir, never your CWD. Multi-file C projects use <code>moltproject.toml</code> tasks — no Python required, no <code>requires-python</code>, no sync step.</p>
           <ul class="demo-bullets">
             <li>Single-file: <code>molt run hello.c Alice</code> → compile + exec, args forwarded</li>
             <li>Multi-file: <code>molt run build</code> → <code>cc -O2 → bin/stats</code></li>
@@ -1018,7 +1176,7 @@ molt run server.ts      <span class="cmt"># → deno run server.ts</span></code>
            argc &gt; 1 ? argv[1] : <span class="str">"World"</span>);
 }
 
-<span class="cmt"># pyproject.toml tasks</span>
+<span class="cmt"># moltproject.toml — no Python required</span>
 [tool.molt.tasks]
 build = <span class="str">"cc -O2 -o bin/stats src/main.c src/stats.c -lm"</span>
 stats = <span class="str">"bin/stats"</span>
@@ -1047,11 +1205,11 @@ clean = <span class="str">"rm -f bin/stats"</span></code></pre>
         <div class="demo-info">
           <span class="badge badge-native">⚙️ C++ project</span>
           <h3>16 — Run and manage C++17 projects</h3>
-          <p><code>molt run hello.cpp</code> compiles with <code>zig c++ -std=c++17</code> and executes in one command. Multi-file C++17 projects are managed with molt tasks — templates, structured bindings, and STL algorithms, all without a system toolchain.</p>
+          <p><code>molt run hello.cpp</code> compiles with <code>zig c++ -std=c++17</code> — binary goes to a temp dir, not your CWD. Multi-file C++17 projects use <code>moltproject.toml</code>: no Python runtime or sync step required, just tasks and your compiler.</p>
           <ul class="demo-bullets">
-            <li>Single-file: <code>molt run hello.cpp Alice</code> → compile + exec</li>
+            <li>Single-file: <code>molt run hello.cpp Alice</code> → compile + exec (binary in <code>$TMPDIR</code>)</li>
             <li>Multi-file: <code>molt run build</code> → <code>zig c++ -O2 -std=c++17 → bin/stats-cpp</code></li>
-            <li>C++17 structured bindings: <code>auto [lo, hi] = std::minmax_element(...)</code></li>
+            <li><code>moltproject.toml</code> — same task format as <code>pyproject.toml</code>, no Python required</li>
             <li>Python drives C++: <code>molt run demo</code> → subprocess to the binary</li>
           </ul>
           <a class="demo-link" href="demos/#d16">Full walkthrough →</a>
@@ -1065,7 +1223,7 @@ clean = <span class="str">"rm -f bin/stats"</span></code></pre>
     std::cout &lt;&lt; <span class="str">"Hello from C++17! 👋 "</span> &lt;&lt; name &lt;&lt; <span class="str">"\n"</span>;
 }
 
-<span class="cmt"># pyproject.toml tasks</span>
+<span class="cmt"># moltproject.toml — no Python required</span>
 [tool.molt.tasks]
 build = <span class="str">"zig c++ -O2 -std=c++17 -o bin/stats-cpp src/main.cpp"</span>
 stats = <span class="str">"bin/stats-cpp"</span>
@@ -1092,12 +1250,12 @@ demo  = <span class="str">"python demo.py"</span></code></pre>
         <div class="demo-info">
           <span class="badge badge-native">⚙️ Zig project</span>
           <h3>17 — Run and manage Zig projects</h3>
-          <p><code>molt run hello.zig</code> uses <code>zig run</code> for instant single-file execution. Multi-file Zig projects use <code>zig build-exe</code> via molt tasks. The <code>{zig}</code> token in any task resolves to the auto-installed Zig binary — no manual toolchain setup.</p>
+          <p><code>molt run hello.zig</code> uses <code>zig run</code> for instant single-file execution. Multi-file Zig projects use <code>moltproject.toml</code> — no Python runtime or sync step, just tasks and <code>zig build-exe</code>. The <code>{zig}</code> token resolves to the auto-installed Zig binary.</p>
           <ul class="demo-bullets">
             <li>Single-file: <code>molt run hello.zig Alice</code> → <code>zig run hello.zig -- Alice</code></li>
             <li>Multi-file: <code>molt run build</code> → <code>zig build-exe → bin/stats-zig</code></li>
+            <li><code>moltproject.toml</code> — same task format, no Python required</li>
             <li>Zig 0.16 idioms: error unions, explicit allocators, <code>std.process.Init</code></li>
-            <li>Python drives Zig: <code>molt run demo</code> → subprocess to the binary</li>
           </ul>
           <a class="demo-link" href="demos/#d17">Full walkthrough →</a>
         </div>
@@ -1131,10 +1289,52 @@ demo  = <span class="str">"python demo.py"</span></code></pre>
         </div>
       </div>
 
+      <!-- 18 -->
+      <div class="demo-panel" data-demo="d18">
+        <div class="demo-info">
+          <span class="badge badge-native">🦀 Rust project</span>
+          <h3>18 — Polyglot package management: Rust</h3>
+          <p><code>molt add</code> and <code>molt sync</code> are language-agnostic. For a Rust project they route to <code>cargo</code> — same familiar interface, no cargo invocations to memorise. The pkg-backend system covers 9 ecosystems out of the box.</p>
+          <ul class="demo-bullets">
+            <li><code>molt add serde --features derive</code> → <code>cargo add serde --features derive</code></li>
+            <li><code>molt sync</code> → <code>cargo fetch</code></li>
+            <li><code>moltproject.toml</code> with <code>lang = "rust"</code> activates the Cargo backend</li>
+            <li>Custom backends: <code>molt pkg-backend add nim …</code> → stored in <code>~/.molt/pkg-backends.yaml</code></li>
+          </ul>
+          <a class="demo-link" href="demos/#d18">Full walkthrough →</a>
+        </div>
+        <div>
+          <pre><code><span class="cmt"># moltproject.toml</span>
+[project]
+name = <span class="str">"rust-project"</span>
+lang = <span class="str">"rust"</span>
+
+[tool.molt.tasks]
+build = <span class="str">"cargo build --release"</span>
+stats = <span class="str">"cargo run --release --"</span>
+test  = <span class="str">"cargo test"</span></code></pre>
+          <div class="terminal" style="margin-top:1rem;">
+            <div class="term-bar">
+              <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
+            </div>
+            <div class="term-body">
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt add serde --features derive</span></div>
+              <div class="term-line"><span class="term-out">    Updating crates.io index</span></div>
+              <div class="term-line"><span class="term-success">      Adding serde v1 to dependencies</span></div>
+              <div class="term-blank"></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run build</span></div>
+              <div class="term-line"><span class="term-success">   Compiling rust-project v0.1.0</span></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run stats 88 92 71 95 84</span></div>
+              <div class="term-line"><span class="term-out">   mean    86.0000</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /.demo-panels -->
 
     <div style="text-align:center; margin-top:3rem;">
-      <a href="demos/" class="btn btn-ghost">View all 17 demos in detail →</a>
+      <a href="demos/" class="btn btn-ghost">View all 18 demos in detail →</a>
     </div>
   </div>
 </section>
@@ -1300,6 +1500,22 @@ molt run python</pre>
             <td class="no">✗</td>
             <td class="no">✗</td>
             <td class="no">✗</td>
+          </tr>
+          <tr>
+            <td>Polyglot pkg management (Rust, Go, Node…)</td>
+            <td class="yes">✓ 9 backends</td>
+            <td class="no">✗ Python only</td>
+            <td class="no">✗ Python only</td>
+            <td class="no">✗</td>
+            <td class="yes">✓ any image</td>
+          </tr>
+          <tr>
+            <td>Universal script launcher (28 runtimes)</td>
+            <td class="yes">✓</td>
+            <td class="no">✗</td>
+            <td class="no">✗</td>
+            <td class="no">✗</td>
+            <td class="yes">✓ via image</td>
           </tr>
         </tbody>
       </table>

@@ -1,6 +1,6 @@
 # molt demos
 
-Seventeen runnable projects, each highlighting a different part of molt.
+Eighteen runnable projects, each highlighting a different part of molt.
 
 ```
 demos/
@@ -21,6 +21,7 @@ demos/
   15-c-project/      C as the primary language: molt run hello.c + multi-file project
   16-cpp-project/    C++17 as the primary language: molt run hello.cpp + multi-file
   17-zig-project/    Zig 0.16 as the primary language: molt run hello.zig + build-exe
+  18-rust-project/   Rust via pkg-backend: molt add → cargo, molt sync → cargo fetch
 ```
 
 ---
@@ -584,4 +585,64 @@ pub fn main(init: std.process.Init) !void {
 
     try std.Io.File.stdout().writeStreamingAll(init.io, bytes);
 }
+```
+
+## 18 — rust-project
+
+**What it shows:** The **pkg-backend system** — `molt add`, `molt sync`, and `molt remove` as language-agnostic interfaces routing to the ecosystem's native tool. For a Rust project (`lang = "rust"` in `moltproject.toml`) every package operation delegates to `cargo`.
+
+**Polyglot package routing:**
+
+| molt command | routes to |
+|---|---|
+| `molt add serde` | `cargo add serde` |
+| `molt add tokio --version "^1"` | `cargo add tokio --version ^1` |
+| `molt sync` | `cargo fetch` |
+| `molt remove serde` | `cargo remove serde` |
+
+**What's in the demo:**
+
+```
+18-rust-project/
+  moltproject.toml   lang = "rust" + tasks: build, stats, test, demo, clean
+  Cargo.toml         standard Rust manifest, [dependencies] section
+  src/
+    main.rs          pure-std statistics CLI: mean, std-dev, min, max, histogram
+```
+
+**Running:**
+
+```bash
+cd demos/18-rust-project
+
+molt run build                  # cargo build --release
+molt run stats 88 92 71 95 84   # Rust binary: statistics + 8-bucket histogram
+molt run test                   # cargo test (unit tests in #[cfg(test)])
+molt run demo                   # preset dataset
+molt run clean                  # cargo clean
+```
+
+**pkg-backend commands:**
+
+```bash
+# Inspect the rust backend
+molt pkg-backend show rust
+# add:     cargo add {package} {version_flag} {flags}
+# remove:  cargo remove {package}
+# sync:    cargo fetch
+# upgrade: cargo update {package}
+
+# List all 9 built-in backends
+molt pkg-backend list
+
+# Add a custom backend (Nim example)
+molt pkg-backend add nim \
+  --add "nimble install {package}{version_flag}" \
+  --remove "nimble uninstall {package}" \
+  --sync "nimble install"
+
+# Per-project override in moltproject.toml (partial — unset fields fall back)
+# [tool.molt.backend]
+# add  = "bun add {package}{version_flag}"
+# sync = "bun install"
 ```

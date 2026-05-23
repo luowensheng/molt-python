@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Demos — molt</title>
-  <meta name="description" content="17 runnable molt demos: Python apps, FastAPI, data analysis, CLI tools, hermetic binaries, assembly kernels, Mojo, C extensions, polyglot scripting, C, C++17, and Zig project management.">
+  <meta name="description" content="18 runnable molt demos: Python apps, FastAPI, data analysis, CLI tools, hermetic binaries, assembly kernels, Mojo, C extensions, polyglot scripting, C, C++17, Zig, and Rust project management with the pkg-backend system.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -127,13 +127,13 @@
   <div class="wrap" style="padding-block:4rem;">
     <div style="margin-bottom:3rem;">
       <p class="label">Demos</p>
-      <h1 style="font-size:clamp(1.8rem,4vw,3rem); margin-bottom:.8rem;">17 runnable examples</h1>
+      <h1 style="font-size:clamp(1.8rem,4vw,3rem); margin-bottom:.8rem;">18 runnable examples</h1>
       <p style="color:var(--muted); font-size:1.1rem; max-width:680px;">
         Every demo lives in <code>demos/</code> and runs with <code>molt run &lt;task&gt;</code>.
         Covers the full stack: Python apps, header-driven C extensions (Python ↔ C in both directions,
         <strong>30–100× speedup</strong> over Python loops), Mojo SIMD kernels (<strong>47× vs Python</strong>),
-        hermetic binary distribution, C/C++17/Zig project management, cross-platform builds from one machine,
-        and a universal polyglot launcher for 28 runtimes.
+        hermetic binary distribution, C/C++17/Zig/Rust project management, cross-platform builds from one machine,
+        a universal polyglot launcher for 28 runtimes, and polyglot package management routing to Cargo, go mod, npm, and more.
         Clone the repo and explore at your own pace.
       </p>
       <div style="display:flex;gap:1rem;margin-top:1.5rem;flex-wrap:wrap;">
@@ -167,6 +167,7 @@
         <a href="/molt-python/demos/#d15"><span class="n">15</span> C project</a>
         <a href="/molt-python/demos/#d16"><span class="n">16</span> C++ project</a>
         <a href="/molt-python/demos/#d17"><span class="n">17</span> Zig project</a>
+        <a href="/molt-python/demos/#d18"><span class="n">18</span> Rust project</a>
       </aside>
 
       <!-- Demo cards -->
@@ -918,8 +919,9 @@ molt run bench      <span class="cmt"># benchmark: C extension vs Python (30–5
           <p class="demo-desc">
             <code>molt run hello.rb</code> dispatches to <code>ruby hello.rb</code> — no tasks, no config, no activation.
             Any file extension registered in <code>~/.molt/run-handlers.yaml</code> is dispatched directly.
-            25 runtimes ship built-in and you can add your own in one command. All handlers support
-            per-OS command overrides and the full token vocabulary.
+            28 runtimes ship built-in and you can add your own in one command. All handlers support
+            per-OS command overrides and the full token vocabulary — including <code>{tmp}</code> for
+            compile-then-run workflows so compiled binaries never appear in your working directory.
           </p>
           <div class="two-col">
             <div class="demo-section">
@@ -941,7 +943,7 @@ molt run bench      <span class="cmt"># benchmark: C extension vs Python (30–5
                 <li><span class="c">molt run hello.jl [name]</span> <span class="d">— Julia</span></li>
                 <li><span class="c">molt run hello.exs [name]</span> <span class="d">— Elixir</span></li>
                 <li><span class="c">molt run all</span> <span class="d">— all languages in a table</span></li>
-                <li><span class="c">molt run-handler list</span> <span class="d">— show all 25 built-ins</span></li>
+                <li><span class="c">molt run-handler list</span> <span class="d">— show all 28 built-ins</span></li>
               </ul>
             </div>
           </div>
@@ -971,8 +973,9 @@ molt run-handler reset                        <span class="cmt"># restore factor
 {dir}       <span class="cmt"># directory containing the script</span>
 {basename}  <span class="cmt"># filename without extension</span>
 {args}      <span class="cmt"># extra arguments, space-joined</span>
+{tmp}       <span class="cmt"># stable per-file temp dir: $TMPDIR/molt-run/&lt;sha256[:8]&gt;/</span>
 {python}    <span class="cmt"># project's pinned Python interpreter</span>
-{zig}       <span class="cmt"># auto-installed zig binary</span></code></pre>
+{zig}       <span class="cmt"># auto-installed zig binary (~/.molt/toolchains/zig/)</span></code></pre>
           </div>
           <div class="demo-section">
             <h4>Live test output</h4>
@@ -1038,7 +1041,7 @@ molt run all                   <span class="cmt"># polyglot table with timing</s
           </div>
           <div class="demo-section">
             <h4>Single-file C — zero configuration</h4>
-            <pre><code><span class="cmt">/* hello.c — no pyproject.toml needed for single-file run */</span>
+            <pre><code><span class="cmt">/* hello.c — no config needed; compiled binary goes to $TMPDIR, not CWD */</span>
 #<span class="kw">include</span> &lt;stdio.h&gt;
 <span class="kw">int</span> <span class="fn">main</span>(<span class="kw">int</span> argc, <span class="kw">char</span> *argv[]) {
     <span class="kw">const char</span> *name = argc &gt; 1 ? argv[1] : <span class="str">"World"</span>;
@@ -1052,19 +1055,19 @@ $ molt run hello.c Alice    <span class="cmt"># Hello from C! 👋 Alice</span><
           <div class="demo-section">
             <h4>How the .c handler works</h4>
             <pre><code><span class="cmt"># The built-in handler (inspect with: molt run-handler show c)</span>
-<span class="cmt"># Unix:    sh -c "{zig} cc -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}"</span>
-<span class="cmt"># Windows: cmd /c "{zig} cc -O2 -o {dir}\{basename}.exe {file} && {dir}\{basename}.exe {args}"</span>
+<span class="cmt"># Unix:    sh -c "{zig} cc -O2 -o {tmp}/{basename} {file} && {tmp}/{basename} {args}"</span>
+<span class="cmt"># Windows: cmd /c "{zig} cc -O2 -o {tmp}\{basename}.exe {file} && {tmp}\{basename}.exe {args}"</span>
 
 <span class="cmt"># Tokens resolved at run time:</span>
-{zig}      <span class="cmt">→ /Users/.../.molt/toolchains/zig/0.14.1/zig  (auto-installed)</span>
-{dir}      <span class="cmt">→ /path/to/15-c-project</span>
+{zig}      <span class="cmt">→ /Users/.../.molt/toolchains/zig/0.16.0/zig  (auto-installed)</span>
+{tmp}      <span class="cmt">→ /var/.../molt-run/e54e302c/  (stable per-file temp dir)</span>
 {basename} <span class="cmt">→ hello</span>
 {file}     <span class="cmt">→ /path/to/15-c-project/hello.c</span>
 {args}     <span class="cmt">→ Alice</span></code></pre>
           </div>
           <div class="demo-section">
-            <h4>Multi-file project — pyproject.toml tasks</h4>
-            <pre><code><span class="cmt"># pyproject.toml — same format as any Python project</span>
+            <h4>Multi-file project — <code>moltproject.toml</code> tasks</h4>
+            <pre><code><span class="cmt"># moltproject.toml — for non-Python projects; no requires-python needed</span>
 [tool.molt.tasks]
 build = <span class="str">"cc -O2 -Wall -o bin/stats src/main.c src/stats.c -lm"</span>
 stats = <span class="str">"bin/stats"</span>       <span class="cmt"># run the binary (pass args with: molt run stats 1 2 3)</span>
@@ -1096,11 +1099,11 @@ result = subprocess.<span class="fn">run</span>(
           </div>
           <div class="demo-section">
             <h4>Customise the handler</h4>
-            <pre><code><span class="cmt"># Use system clang instead of zig cc</span>
-molt run-handler add c <span class="str">"sh -c \"clang -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}\""</span>
+            <pre><code><span class="cmt"># Use system clang instead of zig cc (keep {tmp} so binary stays out of CWD)</span>
+molt run-handler add c <span class="str">"sh -c \"clang -O2 -o {tmp}/{basename} {file} && {tmp}/{basename} {args}\""</span>
 
 <span class="cmt"># C++ works the same way (.cpp is also built-in)</span>
-molt run hello.cpp      <span class="cmt"># → zig c++ -O2 ...</span>
+molt run hello.cpp      <span class="cmt"># → zig c++ -O2 ... binary in $TMPDIR</span>
 
 <span class="cmt"># Restore defaults</span>
 molt run-handler reset</code></pre>
@@ -1129,11 +1132,11 @@ molt run demo                 <span class="cmt"># Python drives C binary: 3 data
           <h2>C++17 project management — run, build, orchestrate</h2>
           <p class="demo-desc">
             molt as a complete C++17 project manager. <strong>Single-file run</strong>:
-            <code>molt run hello.cpp</code> compiles with <code>zig c++ -std=c++17</code> and
-            executes immediately — no config, no CMake. <strong>Multi-file project</strong>:
+            <code>molt run hello.cpp</code> compiles with <code>zig c++ -std=c++17</code>
+            and executes — the binary lands in a temp dir, not your CWD. <strong>Multi-file project</strong>:
             templates, structured bindings, and STL algorithms managed via
-            <code>pyproject.toml</code> tasks. Python orchestrates the C++ binary in the
-            same project via <code>subprocess</code>.
+            <code>moltproject.toml</code> tasks — no Python runtime required. Python can still
+            orchestrate the C++ binary via <code>subprocess</code>.
           </p>
           <div class="two-col">
             <div class="demo-section">
@@ -1159,7 +1162,7 @@ molt run demo                 <span class="cmt"># Python drives C binary: 3 data
           </div>
           <div class="demo-section">
             <h4>Single-file C++ — zero configuration</h4>
-            <pre><code><span class="cmt">// hello.cpp — no pyproject.toml needed for single-file run</span>
+            <pre><code><span class="cmt">// hello.cpp — no config needed for single-file run (binary → temp dir)</span>
 #<span class="kw">include</span> &lt;iostream&gt;
 #<span class="kw">include</span> &lt;string&gt;
 <span class="kw">int</span> <span class="fn">main</span>(<span class="kw">int</span> argc, <span class="kw">char</span>* argv[]) {
@@ -1180,7 +1183,7 @@ Stats&lt;T&gt; <span class="fn">compute</span>(<span class="kw">const</span> std
     <span class="kw">return</span> { m, std::<span class="fn">sqrt</span>(var / v.<span class="fn">size</span>()), (<span class="kw">double</span>)*lo, (<span class="kw">double</span>)*hi, s, v.<span class="fn">size</span>() };
 }
 
-<span class="cmt"># pyproject.toml</span>
+<span class="cmt"># moltproject.toml — no Python required</span>
 [tool.molt.tasks]
 build = <span class="str">"zig c++ -O2 -std=c++17 -o bin/stats-cpp src/main.cpp"</span>
 stats = <span class="str">"bin/stats-cpp"</span>
@@ -1212,9 +1215,9 @@ molt run demo                   <span class="cmt"># Python drives C++ binary: 3 
             molt as a complete Zig project manager. <strong>Single-file run</strong>:
             <code>molt run hello.zig</code> invokes <code>zig run</code> with no build step.
             <strong>Multi-file project</strong>: <code>zig build-exe</code> compiles separate
-            modules into a native binary managed by molt tasks. The <code>{zig}</code> token
-            in any task command resolves to the auto-installed Zig binary — no manual
-            toolchain installation. Python orchestrates the Zig binary via <code>subprocess</code>.
+            modules into a native binary managed by <code>moltproject.toml</code> tasks — no Python
+            runtime required. The <code>{zig}</code> token resolves to the auto-installed Zig binary.
+            Python can still orchestrate the Zig binary via <code>subprocess</code>.
           </p>
           <div class="two-col">
             <div class="demo-section">
@@ -1268,7 +1271,7 @@ Hello from Zig 0.16.0! 👋 Alice</code></pre>
     <span class="cmt">// ... two-pass mean and variance</span>
 }
 
-<span class="cmt"># pyproject.toml</span>
+<span class="cmt"># moltproject.toml — no Python required</span>
 [tool.molt.tasks]
 build = <span class="str">"zig build-exe src/main.zig -femit-bin=bin/stats-zig"</span>
 stats = <span class="str">"bin/stats-zig"</span>
@@ -1283,6 +1286,75 @@ molt run build                  <span class="cmt"># zig build-exe → bin/stats-
 molt run demo                   <span class="cmt"># Python drives Zig binary: 3 datasets</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/17-zig-project" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 18 -->
+        <div class="demo-card" id="d18">
+          <div class="demo-card-header">
+            <span class="demo-number">18</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-native">🦀 Rust project</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">pkg-backend</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">Cargo</span>
+            </div>
+          </div>
+          <h2>Polyglot package management — Rust via the pkg-backend system</h2>
+          <p class="demo-desc">
+            <code>molt add</code>, <code>molt sync</code>, and <code>molt remove</code> are
+            language-agnostic interfaces. Set <code>lang = "rust"</code> in
+            <code>moltproject.toml</code> and molt routes every package operation to
+            <code>cargo</code> automatically — no manual Cargo invocations required.
+            The pkg-backend system covers 9 ecosystems out of the box: Rust, Go, Node,
+            Bun, Zig, C, Swift, Nim, and Python. Add or override backends with one command.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li><code>molt add serde --features derive</code> → <code>cargo add serde --features derive</code></li>
+                <li><code>molt sync</code> → <code>cargo fetch</code></li>
+                <li><code>molt remove serde</code> → <code>cargo remove serde</code></li>
+                <li><code>molt run build</code> → <code>cargo build --release</code></li>
+                <li><code>molt run stats 88 92 71 95 84</code> → Rust binary with histogram</li>
+                <li>Custom backend: <code>molt pkg-backend add nim …</code></li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Key files</h4>
+              <pre><code><span class="cmt"># moltproject.toml</span>
+[project]
+name = <span class="str">"rust-project"</span>
+lang = <span class="str">"rust"</span>        <span class="cmt"># activates cargo backend</span>
+
+[tool.molt.tasks]
+build = <span class="str">"cargo build --release"</span>
+stats = <span class="str">"cargo run --release --"</span>
+test  = <span class="str">"cargo test"</span>
+demo  = <span class="str">"cargo run --release -- 88 92 71 95 84"</span></code></pre>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>pkg-backend token reference</h4>
+            <pre><code>molt pkg-backend show rust
+<span class="cmt"># add:     cargo add {package} {version_flag} {flags}</span>
+<span class="cmt"># remove:  cargo remove {package}</span>
+<span class="cmt"># sync:    cargo fetch</span>
+<span class="cmt"># upgrade: cargo update {package}</span>
+
+<span class="cmt"># Per-project override (any fields; rest fall back to global backend)</span>
+<span class="cmt"># [tool.molt.backend]</span>
+<span class="cmt"># add  = "bun add {package}{version_flag}"</span>
+<span class="cmt"># sync = "bun install"</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/18-rust-project
+molt run build                  <span class="cmt"># cargo build --release</span>
+molt run stats 88 92 71 95 84   <span class="cmt"># Rust binary: stats + histogram</span>
+molt run test                   <span class="cmt"># cargo test</span>
+molt run demo                   <span class="cmt"># preset dataset run</span></code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/18-rust-project" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
 
       </div><!-- /.demo-cards -->

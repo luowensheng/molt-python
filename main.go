@@ -26,6 +26,7 @@ import (
 	"molt/internal/integrity"
 	"molt/internal/kernelbuilder"
 	"molt/internal/libcache"
+	"molt/internal/pkgbackend"
 	"molt/internal/runhandler"
 	"molt/internal/moltenv"
 	"molt/internal/native"
@@ -164,6 +165,8 @@ func main() {
 		err = cmdKernelBuilder(os.Args[2:])
 	case "run-handler":
 		err = cmdRunHandler(os.Args[2:])
+	case "pkg-backend":
+		err = cmdPkgBackend(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
 	case "envs":
@@ -803,42 +806,213 @@ func (r *reqFilesFlag) String() string     { return strings.Join(*r, ",") }
 func (r *reqFilesFlag) Set(s string) error { *r = append(*r, s); return nil }
 
 func cmdAdd(args []string) error {
+	// Pre-extract --lang before the standard flag parser, which stops at the
+	// first positional arg. This lets users write either:
+	//   molt add --lang rust serde
+	//   molt add serde --lang rust
+	langFlag, args := extractFlagValue("--lang", args)
+
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
-	dev := fs.Bool("dev", false, "Dev dependency")
+	dev := fs.Bool("dev", false, "Dev dependency (Python only)")
 	var reqFiles reqFilesFlag
-	fs.Var(&reqFiles, "r", "Requirements file (can be repeated)")
+	fs.Var(&reqFiles, "r", "Requirements file (can be repeated; Python only)")
 	fs.Parse(args)
+
 	if fs.NArg() == 0 && len(reqFiles) == 0 {
-		return fmt.Errorf("usage: molt add [--dev] [-r requirements.txt] [package...]")
+		return fmt.Errorf("usage: molt add [--lang <lang>] [--dev] [-r file] <package[@version]...>")
 	}
+
 	absDir := projectRoot()
-	if err := internuv.Add(absDir, fs.Args(), internuv.AddOptions{Dev: *dev, RequirementFiles: reqFiles}); err != nil {
+	lang, err := resolvePackageLang(langFlag, fs.Args(), absDir)
+	if err != nil {
 		return err
 	}
-	return syncplan.Sync(absDir, syncplan.Options{Verbose: true})
+
+	// Python: use the existing uv-backed path (handles pyproject.toml edits,
+	// syspath.json update, shim writes, native recompile, etc.).
+	if lang == "python" {
+		if err := internuv.Add(absDir, fs.Args(), internuv.AddOptions{Dev: *dev, RequirementFiles: reqFiles}); err != nil {
+			return err
+		}
+		return syncplan.Sync(absDir, syncplan.Options{Verbose: true})
+	}
+
+	// Non-Python: delegate to the configured backend.
+	return runBackendOp(absDir, lang, pkgbackend.OpAdd, fs.Args(), "")
 }
 
 func cmdRemove(args []string) error {
+	langFlag, args := extractFlagValue("--lang", args)
+
 	fs := flag.NewFlagSet("remove", flag.ExitOnError)
-	dev := fs.Bool("dev", false, "Dev dependency")
+	dev := fs.Bool("dev", false, "Dev dependency (Python only)")
 	fs.Parse(args)
+
 	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: molt remove <package...>")
+		return fmt.Errorf("usage: molt remove [--lang <lang>] <package...>")
 	}
+
 	absDir := projectRoot()
-	if err := internuv.Remove(absDir, fs.Args(), *dev); err != nil {
+	lang, err := resolvePackageLang(langFlag, fs.Args(), absDir)
+	if err != nil {
 		return err
 	}
-	return syncplan.Sync(absDir, syncplan.Options{Verbose: true})
+
+	if lang == "python" {
+		if err := internuv.Remove(absDir, fs.Args(), *dev); err != nil {
+			return err
+		}
+		return syncplan.Sync(absDir, syncplan.Options{Verbose: true})
+	}
+
+	return runBackendOp(absDir, lang, pkgbackend.OpRemove, fs.Args(), "")
 }
 
 func cmdSync(args []string) error {
+	langFlag, args := extractFlagValue("--lang", args)
+
 	fs := flag.NewFlagSet("sync", flag.ExitOnError)
 	frozen := fs.Bool("frozen", false, "Fail if lockfile needs updating")
-	refresh := fs.Bool("refresh", false, "Force-reinstall all packages")
+	refresh := fs.Bool("refresh", false, "Force-reinstall all packages (Python only)")
 	fs.Parse(args)
+
 	absDir := projectRoot()
-	return syncplan.Sync(absDir, syncplan.Options{Frozen: *frozen, Refresh: *refresh, Verbose: true})
+	lang := pkgbackend.ProjectLang(absDir)
+	if langFlag != "" {
+		lang = strings.ToLower(langFlag)
+	}
+
+	// Python and mixed projects: run the full Python sync pipeline (syspath,
+	// shims, native compilation, etc.) when the project has Python deps.
+	if lang == "python" || lang == "mixed" {
+		return syncplan.Sync(absDir, syncplan.Options{Frozen: *frozen, Refresh: *refresh, Verbose: true})
+	}
+
+	// Pure non-Python project: delegate to the backend's sync command.
+	return runBackendOp(absDir, lang, pkgbackend.OpSync, nil, "")
+}
+
+// resolvePackageLang determines which language backend to use for a package
+// operation. Priority:
+//  1. --lang flag (explicit)
+//  2. Structural inference from the first package name
+//  3. Project's declared lang
+//  4. Error when project lang is "mixed" and inference fails
+func resolvePackageLang(flag string, packages []string, projectDir string) (string, error) {
+	if flag != "" {
+		return strings.ToLower(strings.TrimSpace(flag)), nil
+	}
+
+	// Try to infer from the first package name.
+	if len(packages) > 0 {
+		// Strip version suffix for inference (e.g. "numpy>=2.0" → "numpy").
+		pkg := packages[0]
+		for _, sep := range []string{">=", "<=", "!=", "==", "@", "^", "~"} {
+			if idx := strings.Index(pkg, sep); idx > 0 {
+				pkg = pkg[:idx]
+				break
+			}
+		}
+		if inferred, ok := pkgbackend.InferLang(pkg); ok {
+			return inferred, nil
+		}
+	}
+
+	// Fall back to the project's declared language.
+	lang := pkgbackend.ProjectLang(projectDir)
+	if lang == "mixed" && len(packages) > 0 {
+		return "", fmt.Errorf(
+			"cannot determine language for %q in a mixed-language project\n"+
+				"Use --lang to disambiguate, e.g.:\n"+
+				"  molt add %s --lang python\n"+
+				"  molt add %s --lang rust\n"+
+				"  molt add %s --lang c",
+			packages[0], packages[0], packages[0], packages[0])
+	}
+	return lang, nil
+}
+
+// runBackendOp executes one package-manager operation via the configured
+// backend for lang. packages may be nil for ops like sync that take no args.
+// extraFlags are passed as {flags}.
+func runBackendOp(projectDir, lang string, op pkgbackend.Op, packages []string, extraFlags string) error {
+	backend, ok, err := pkgbackend.ProjectBackend(projectDir, lang)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf(
+			"no package backend configured for lang %q\n"+
+				"Add one with: molt pkg-backend add %s --add \"<cmd>\" --remove \"<cmd>\" --sync \"<cmd>\"",
+			lang, lang)
+	}
+
+	cmd := backend.Resolve(op, runtime.GOOS)
+	if cmd == "" {
+		return fmt.Errorf("backend %q has no command for operation %q", lang, op)
+	}
+
+	// For operations that take a package list, run once per package.
+	// sync/list/upgrade-all take no package args.
+	if op == pkgbackend.OpSync || op == pkgbackend.OpList || len(packages) == 0 {
+		expanded := pkgbackend.Expand(cmd, map[string]string{
+			"package":      "",
+			"version":      "",
+			"version_flag": "",
+			"flags":        extraFlags,
+			"project":      projectDir,
+		})
+		return runShell(expanded, projectDir)
+	}
+
+	for _, pkg := range packages {
+		name, version := splitPackageVersion(pkg)
+		expanded := pkgbackend.Expand(cmd, map[string]string{
+			"package":      name,
+			"version":      version,
+			"version_flag": pkgbackend.FormatVersionFlag(lang, version),
+			"flags":        extraFlags,
+			"project":      projectDir,
+		})
+		fmt.Printf("→ %s\n", expanded)
+		if err := runShell(expanded, projectDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// splitPackageVersion splits "numpy>=2.0" into ("numpy", ">=2.0"),
+// "serde@^1.0" into ("serde", "^1.0"), etc.
+// Returns (pkg, "") when no version specifier is found.
+func splitPackageVersion(pkg string) (string, string) {
+	// @ separator (go, npm, zig)
+	if idx := strings.LastIndex(pkg, "@"); idx > 0 {
+		return pkg[:idx], pkg[idx+1:]
+	}
+	// Comparator-style (pip/uv): >=, <=, ==, !=, ^, ~
+	for _, op := range []string{">=", "<=", "!=", "==", "~=", "^", "~"} {
+		if idx := strings.Index(pkg, op); idx > 0 {
+			return pkg[:idx], pkg[idx:]
+		}
+	}
+	return pkg, ""
+}
+
+// runShell execs a command string via /bin/sh (or cmd.exe on Windows)
+// with the project directory as cwd.
+func runShell(command, cwd string) error {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/C", command)
+	} else {
+		cmd = exec.Command("sh", "-c", command)
+	}
+	cmd.Dir = cwd
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
 }
 
 func cmdLock(args []string) error {
@@ -2967,6 +3141,27 @@ func hasFlag(args []string, flag string) bool {
 	return false
 }
 
+// extractFlagValue removes --flag <value> or --flag=<value> from args,
+// returning (value, remainingArgs). Returns ("", args) when the flag is absent.
+// This lets us handle flags that appear anywhere in the arg list, including
+// after positional arguments (which the standard flag package cannot do).
+func extractFlagValue(flag string, args []string) (string, []string) {
+	eqPrefix := flag + "="
+	out := make([]string, 0, len(args))
+	value := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag && i+1 < len(args) {
+			value = args[i+1]
+			i++ // skip value
+		} else if strings.HasPrefix(args[i], eqPrefix) {
+			value = strings.TrimPrefix(args[i], eqPrefix)
+		} else {
+			out = append(out, args[i])
+		}
+	}
+	return value, out
+}
+
 // extractPythonVersionFlag pulls `-v <ver>` or `--python <ver>` out of args
 // and returns the version (or "") plus args with that pair removed.
 // Stops scanning at "--" so user-supplied script args aren't accidentally
@@ -3674,6 +3869,169 @@ func cmdRunHandlerTemplates() error {
 		fmt.Printf("  .%-8s  %s\n", h.Ext, cmd)
 	}
 	fmt.Println("\nTokens: {file} {dir} {basename} {args} {python} {zig}")
+	return nil
+}
+
+// ── pkg-backend: language package-manager interface ──────────────────────────
+
+func cmdPkgBackend(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: molt pkg-backend <subcommand>\n\n" +
+			"Subcommands:\n" +
+			"  list                           List all backends (built-in + user)\n" +
+			"  show <lang>                    Show commands for a language backend\n" +
+			"  add <lang> [options]           Add or update a backend\n" +
+			"    --add <cmd>                  Command for molt add\n" +
+			"    --remove <cmd>               Command for molt remove\n" +
+			"    --sync <cmd>                 Command for molt sync\n" +
+			"    --list <cmd>                 Command for molt list\n" +
+			"    --upgrade <cmd>              Command for molt upgrade\n" +
+			"    --add-windows <cmd>          Windows override for add\n" +
+			"    --sync-windows <cmd>         Windows override for sync\n" +
+			"  remove <lang>                  Remove a user backend (restores built-in)\n" +
+			"  reset                          Restore all built-in defaults\n" +
+			"  path                           Print ~/.molt/pkg-backends.yaml path\n" +
+			"\nTokens: {package} {version} {version_flag} {flags} {project} {manifest} {lockfile}\n")
+	}
+	switch args[0] {
+	case "list":
+		return cmdPkgBackendList()
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt pkg-backend show <lang>")
+		}
+		return cmdPkgBackendShow(args[1])
+	case "add":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt pkg-backend add <lang> [--add <cmd>] [--remove <cmd>] [--sync <cmd>] ...")
+		}
+		return cmdPkgBackendAdd(args[1:])
+	case "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt pkg-backend remove <lang>")
+		}
+		if err := pkgbackend.Remove(args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("✓ backend for %q removed (built-in default restored)\n", args[1])
+		return nil
+	case "reset":
+		if err := pkgbackend.Reset(); err != nil {
+			return err
+		}
+		fmt.Println("✓ pkg-backends reset to built-in defaults")
+		return nil
+	case "path":
+		p, err := pkgbackend.GlobalPath()
+		if err != nil {
+			return err
+		}
+		fmt.Println(p)
+		return nil
+	default:
+		return fmt.Errorf("unknown molt pkg-backend subcommand: %s", args[0])
+	}
+}
+
+func cmdPkgBackendList() error {
+	backends, err := pkgbackend.Load()
+	if err != nil {
+		return err
+	}
+	// Merge with defaults so built-ins always appear.
+	seen := map[string]bool{}
+	all := make([]pkgbackend.Backend, 0, len(backends)+len(pkgbackend.DefaultBackends()))
+	for _, b := range backends {
+		all = append(all, b)
+		seen[strings.ToLower(b.Lang)] = true
+	}
+	for _, b := range pkgbackend.DefaultBackends() {
+		if !seen[strings.ToLower(b.Lang)] {
+			all = append(all, b)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Lang < all[j].Lang })
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "LANG\tADD\tSYNC")
+	fmt.Fprintln(w, "----\t---\t----")
+	for _, b := range all {
+		add := b.Add
+		if len(add) > 50 {
+			add = add[:47] + "..."
+		}
+		sync := b.Sync
+		if len(sync) > 40 {
+			sync = sync[:37] + "..."
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", b.Lang, add, sync)
+	}
+	return w.Flush()
+}
+
+func cmdPkgBackendShow(lang string) error {
+	b, ok, err := pkgbackend.Find(lang)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no backend registered for lang %q\nAdd one with: molt pkg-backend add %s --add \"<cmd>\" ...", lang, lang)
+	}
+	fmt.Printf("Lang    : %s\n", b.Lang)
+	fmt.Printf("Add     : %s\n", b.Add)
+	fmt.Printf("Remove  : %s\n", b.Remove)
+	fmt.Printf("Sync    : %s\n", b.Sync)
+	fmt.Printf("List    : %s\n", b.List)
+	fmt.Printf("Upgrade : %s\n", b.Upgrade)
+	if b.AddWindows != "" {
+		fmt.Printf("Add (Windows)  : %s\n", b.AddWindows)
+	}
+	if b.SyncWindows != "" {
+		fmt.Printf("Sync (Windows) : %s\n", b.SyncWindows)
+	}
+	return nil
+}
+
+func cmdPkgBackendAdd(args []string) error {
+	// args[0] is lang; remainder are --flag value pairs.
+	lang := strings.ToLower(strings.TrimSpace(args[0]))
+
+	// Start from existing backend if present (allows partial updates).
+	b, _, _ := pkgbackend.Find(lang)
+	b.Lang = lang
+
+	for i := 1; i < len(args)-1; i++ {
+		switch args[i] {
+		case "--add":
+			b.Add = args[i+1]
+			i++
+		case "--remove":
+			b.Remove = args[i+1]
+			i++
+		case "--sync":
+			b.Sync = args[i+1]
+			i++
+		case "--list":
+			b.List = args[i+1]
+			i++
+		case "--upgrade":
+			b.Upgrade = args[i+1]
+			i++
+		case "--add-windows":
+			b.AddWindows = args[i+1]
+			i++
+		case "--sync-windows":
+			b.SyncWindows = args[i+1]
+			i++
+		}
+	}
+	if b.Add == "" && b.Sync == "" {
+		return fmt.Errorf("provide at least --add and --sync")
+	}
+	if err := pkgbackend.Add(b); err != nil {
+		return err
+	}
+	fmt.Printf("✓ backend registered: %s → add: %s\n", lang, b.Add)
 	return nil
 }
 

@@ -1,0 +1,17 @@
+[project]
+name = "cpp-project"
+version = "0.1.0"
+lang = "cpp"
+
+[tool.molt.tasks]
+# Build the C++17 binary — zig c++ is a zero-install drop-in for clang++
+build = "zig c++ -O2 -std=c++17 -o bin/stats-cpp src/main.cpp && echo '✓ compiled bin/stats-cpp'"
+
+# Run the binary directly (pass numbers as args)
+stats = "bin/stats-cpp"
+
+# Python-orchestrated demo: calls the C++ binary with three datasets
+demo  = "python demo.py"
+
+# Remove compiled output
+clean = "rm -f bin/stats-cpp bin/stats-cpp.exe"

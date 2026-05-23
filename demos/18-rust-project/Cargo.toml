@@ -1,0 +1,10 @@
+[package]
+name = "rust-project"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "stats"
+path = "src/main.rs"
+
+[dependencies]
