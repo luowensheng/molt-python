@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"molt/internal/adopt"
@@ -25,6 +26,7 @@ import (
 	"molt/internal/integrity"
 	"molt/internal/kernelbuilder"
 	"molt/internal/libcache"
+	"molt/internal/runhandler"
 	"molt/internal/moltenv"
 	"molt/internal/native"
 	"molt/internal/nativepreset"
@@ -160,6 +162,8 @@ func main() {
 		err = cmdNativePreset(os.Args[2:])
 	case "kernel-builder":
 		err = cmdKernelBuilder(os.Args[2:])
+	case "run-handler":
+		err = cmdRunHandler(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
 	case "envs":
@@ -257,6 +261,16 @@ Tool registry (~/.molt/bin global shims):
   tool uninstall <name>            Remove a tool's shim + metadata
   tool path                        Print ~/.molt/bin (add this to your PATH)
 
+Run handlers (~/.molt/run-handlers.yaml — global per-extension run recipes):
+  run-handler list                       List all handlers (built-in + user)
+  run-handler show <ext>                 Show command for .ext files
+  run-handler add <ext> <command>        Register a handler globally
+    --windows <cmd>                      Platform override for Windows
+    --unix    <cmd>                      Platform override for Unix
+  run-handler remove <ext>               Remove a user handler
+  run-handler reset                      Restore built-in defaults
+  run-handler templates                  List all built-in command templates
+
 Kernel builders (~/.molt/kernel-builders.yaml — per-extension recipes):
   kernel-builder list                       List builders (global + built-in)
   kernel-builder show <ext>                 Show one builder's command
@@ -313,6 +327,8 @@ Task runner:
   run <task>   [-- extra-args]     Run a named task from [tool.molt.tasks]
   run main.py  [args...]           Run a Python script (auto-dispatch by extension)
   run main.mojo [args...]          Run a Mojo script   (requires: molt add mojo)
+  run <file.ext> [args...]         Run any file via registered handler
+                                     (molt run-handler list for all supported extensions)
   run <binary> [args...]           Exec a binary under the project environment
   task list                        List tasks
   task add <name> <command>        Add a task
@@ -1470,6 +1486,28 @@ func cmdRun(args []string) error {
 		}
 	}
 
+	// Generic file-extension handler: `molt run file.rb`, `molt run file.ts`, …
+	// Only activates when the argument looks like a file (has a dot-extension)
+	// AND that file actually exists on disk. Unknown extensions fall through
+	// to task/binary lookup as before.
+	{
+		ext := strings.TrimPrefix(filepath.Ext(taskName), ".")
+		if ext != "" {
+			candidates := []string{taskName}
+			if !filepath.IsAbs(taskName) {
+				candidates = append(candidates, filepath.Join(projectRoot(), taskName))
+			}
+			for _, c := range candidates {
+				if _, err := os.Stat(c); err == nil {
+					if h, ok, _ := runhandler.Find(ext); ok {
+						return runWithHandler(h, c, args[1:], envSpec)
+					}
+					break
+				}
+			}
+		}
+	}
+
 	// When an env override is active, fall through to direct exec with the
 	// env's Python rather than trying task lookup (tasks belong to projects).
 	if envSpec != nil {
@@ -1567,6 +1605,62 @@ func runMojoScript(projectDir, script string, scriptArgs []string, override *sys
 	env := spec.BuildEnv(os.Environ())
 	argv := append([]string{"mojo", "run", abs}, scriptArgs...)
 	return syscall.Exec(spec.MojoBin, argv, env)
+}
+
+// runWithHandler executes a file using a registered run-handler recipe.
+// The handler command has tokens substituted, then the result is split
+// into argv and exec'd under the project's molt environment.
+func runWithHandler(h runhandler.Handler, filePath string, extraArgs []string, override *syspath.Spec) error {
+	// Resolve Python + zig for token substitution (best-effort; fall back
+	// to bare names if the project isn't synced).
+	pythonBin := "python3"
+	zigBin := "zig"
+	projDir := projectRoot()
+	spec := override
+	if spec == nil {
+		if s, err := syspath.Load(projDir); err == nil {
+			spec = s
+			pythonBin = s.Python
+		}
+	} else {
+		pythonBin = spec.Python
+	}
+	// Try to resolve zig from the project's zig config.
+	zigCfg := native.LoadZigConfig(projDir)
+	if zp, err := native.EnsureZig(zigCfg.Version); err == nil {
+		zigBin = zp
+	}
+
+	tokens := map[string]string{
+		"python": pythonBin,
+		"zig":    zigBin,
+		"args":   strings.Join(extraArgs, " "),
+	}
+	cmd := h.Resolve(runtime.GOOS)
+	if cmd == "" {
+		return fmt.Errorf("run-handler for .%s has no command defined", h.Ext)
+	}
+	resolved := runhandler.Resolve(cmd, filePath, tokens)
+	argv := runhandler.SplitCommand(resolved)
+	if len(argv) == 0 {
+		return fmt.Errorf("run-handler for .%s produced empty command", h.Ext)
+	}
+	bin := argv[0]
+	binPath, err := exec.LookPath(bin)
+	if err != nil {
+		return fmt.Errorf("run-handler for .%s: %q not found on PATH\n"+
+			"Install it or update the handler with: molt run-handler add %s \"<command>\"",
+			h.Ext, bin, h.Ext)
+	}
+	// Apply project environment if available.
+	var env []string
+	if spec != nil {
+		env = spec.BuildEnv(os.Environ())
+	} else {
+		env = os.Environ()
+	}
+	argv[0] = binPath
+	return syscall.Exec(binPath, argv, env)
 }
 
 // runBareScript runs a Python script with no molt env — just the system (or
@@ -3440,6 +3534,147 @@ func removeKernelBuilderFromPyproject(ext string) error {
 		return fmt.Errorf("[tool.molt.native_kernel.build.%s] not found in pyproject.toml", ext)
 	}
 	return os.WriteFile("pyproject.toml", []byte(strings.Join(out, "\n")), 0o644)
+}
+
+// ── run-handler: global per-extension run recipes ───────────────────────────
+
+func cmdRunHandler(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: molt run-handler <subcommand>\n\n" +
+			"Subcommands:\n" +
+			"  list                       List all handlers (built-in + user)\n" +
+			"  show <ext>                 Show the command for an extension\n" +
+			"  add <ext> <command>        Add or update a handler\n" +
+			"  add <ext> <command> --windows <cmd>  Add with platform override\n" +
+			"  remove <ext>               Remove a user handler\n" +
+			"  reset                      Restore built-in defaults\n" +
+			"  path                       Print ~/.molt/run-handlers.yaml path\n" +
+			"  templates                  List available command templates\n")
+	}
+	switch args[0] {
+	case "list":
+		return cmdRunHandlerList()
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt run-handler show <ext>")
+		}
+		return cmdRunHandlerShow(args[1])
+	case "add":
+		return cmdRunHandlerAdd(args[1:])
+	case "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt run-handler remove <ext>")
+		}
+		return runhandler.Remove(args[1])
+	case "reset":
+		if err := runhandler.Reset(); err != nil {
+			return err
+		}
+		fmt.Println("✓ run-handlers reset to built-in defaults")
+		return nil
+	case "path":
+		p, err := runhandler.GlobalPath()
+		if err != nil {
+			return err
+		}
+		fmt.Println(p)
+		return nil
+	case "templates":
+		return cmdRunHandlerTemplates()
+	default:
+		return fmt.Errorf("unknown molt run-handler subcommand: %s", args[0])
+	}
+}
+
+func cmdRunHandlerList() error {
+	handlers, err := runhandler.Load()
+	if err != nil {
+		return err
+	}
+	// Merge with defaults so built-ins always show.
+	seen := map[string]bool{}
+	all := make([]runhandler.Handler, 0, len(handlers)+len(runhandler.DefaultHandlers()))
+	for _, h := range handlers {
+		all = append(all, h)
+		seen[h.Ext] = true
+	}
+	for _, h := range runhandler.DefaultHandlers() {
+		if !seen[h.Ext] {
+			all = append(all, h)
+		}
+	}
+	// Sort by ext for stable output.
+	sort.Slice(all, func(i, j int) bool { return all[i].Ext < all[j].Ext })
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "EXT\tCOMMAND\tPLATFORM OVERRIDE")
+	fmt.Fprintln(w, "---\t-------\t-----------------")
+	for _, h := range all {
+		override := ""
+		if h.Windows != "" {
+			override = "windows: " + h.Windows
+		}
+		if h.Unix != "" {
+			override += " unix: " + h.Unix
+		}
+		fmt.Fprintf(w, ".%s\t%s\t%s\n", h.Ext, h.Command, strings.TrimSpace(override))
+	}
+	return w.Flush()
+}
+
+func cmdRunHandlerShow(ext string) error {
+	h, ok, err := runhandler.Find(ext)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no handler registered for .%s\nAdd one with: molt run-handler add %s \"<command>\"", ext, ext)
+	}
+	fmt.Printf("Extension : .%s\n", h.Ext)
+	fmt.Printf("Command   : %s\n", h.Command)
+	if h.Unix != "" {
+		fmt.Printf("Unix      : %s\n", h.Unix)
+	}
+	if h.Windows != "" {
+		fmt.Printf("Windows   : %s\n", h.Windows)
+	}
+	return nil
+}
+
+func cmdRunHandlerAdd(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: molt run-handler add <ext> <command> [--windows <cmd>] [--unix <cmd>]")
+	}
+	ext := strings.TrimPrefix(args[0], ".")
+	h := runhandler.Handler{Ext: ext, Command: args[1]}
+	for i := 2; i < len(args)-1; i++ {
+		switch args[i] {
+		case "--windows":
+			h.Windows = args[i+1]
+			i++
+		case "--unix":
+			h.Unix = args[i+1]
+			i++
+		}
+	}
+	if err := runhandler.Add(h); err != nil {
+		return err
+	}
+	fmt.Printf("✓ handler registered: .%s → %s\n", ext, h.Command)
+	return nil
+}
+
+func cmdRunHandlerTemplates() error {
+	fmt.Println("Available command templates (use with: molt run-handler add <ext> \"<command>\"):")
+	fmt.Println()
+	for _, h := range runhandler.DefaultHandlers() {
+		cmd := h.Command
+		if cmd == "" {
+			cmd = h.Unix
+		}
+		fmt.Printf("  .%-8s  %s\n", h.Ext, cmd)
+	}
+	fmt.Println("\nTokens: {file} {dir} {basename} {args} {python} {zig}")
+	return nil
 }
 
 // ── env: per-project + global env-var registry ──────────────────────────────
