@@ -1,0 +1,15 @@
+[project]
+name = "13-c-extension"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[[tool.molt.c.modules]]
+name = "fastmath"
+src  = ["fastmath.c"]
+# headers defaults to fastmath.h — auto-parsed for function signatures
+
+[tool.molt.tasks]
+build = "molt c build"
+demo  = "python main.py"
+bench = "python bench.py"

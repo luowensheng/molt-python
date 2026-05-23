@@ -26,8 +26,10 @@ import (
 	"molt/internal/kernelbuilder"
 	"molt/internal/libcache"
 	"molt/internal/moltenv"
+	"molt/internal/native"
 	"molt/internal/nativepreset"
 	"molt/internal/projstate"
+	"molt/internal/pyabi"
 	"molt/internal/python"
 	"molt/internal/store"
 	"molt/internal/syncplan"
@@ -144,6 +146,10 @@ func main() {
 	// ── Mojo ──────────────────────────────────────────────────────────────
 	case "mojo":
 		err = cmdMojo(os.Args[2:])
+
+	// ── C extensions ──────────────────────────────────────────────────────
+	case "c":
+		err = cmdC(os.Args[2:])
 
 	// ── AI / MCP server ───────────────────────────────────────────────────
 	case "mcp":
@@ -317,6 +323,10 @@ Mojo:
                                      (requires: molt add mojo)
                                      e.g. molt mojo build ops.mojo --emit shared-lib -o ops.so
                                           molt mojo --help
+
+C extensions:
+  c build                          Compile [[tool.molt.c.modules]] entries
+  c list                           List discovered C modules
 
 Build:
   build    [flags] [project-path]  Build self-contained binary
@@ -1120,6 +1130,143 @@ func cmdMojo(args []string) error {
 	}
 	env := spec.BuildEnv(os.Environ())
 	return syscall.Exec(spec.MojoBin, append([]string{"mojo"}, args...), env)
+}
+
+// cmdC dispatches `molt c <subcommand>`.
+func cmdC(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: molt c <subcommand>\n\nSubcommands:\n  build   Compile C modules defined in pyproject.toml\n  list    List discovered C modules")
+	}
+	switch args[0] {
+	case "build":
+		return cmdCBuild(args[1:])
+	case "list":
+		return cmdCList(args[1:])
+	default:
+		return fmt.Errorf("unknown molt c subcommand: %s", args[0])
+	}
+}
+
+// cmdCBuild compiles all [[tool.molt.c.modules]] entries in the current project.
+// Accepts an optional --target flag for cross-compilation (passed to ZigConfig).
+func cmdCBuild(args []string) error {
+	fs := flag.NewFlagSet("c build", flag.ContinueOnError)
+	target := fs.String("target", "", "cross-compile target (e.g. linux_amd64)")
+	verbose := fs.Bool("v", false, "verbose output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	projDir := projectRoot()
+	cCfg := native.LoadCConfig(projDir)
+	if len(cCfg.Modules) == 0 {
+		fmt.Println("no [[tool.molt.c.modules]] entries found in pyproject.toml")
+		return nil
+	}
+
+	pm, err := python.New(projDir)
+	if err != nil {
+		return err
+	}
+	pyExe, err := pm.Which()
+	if err != nil || pyExe == "" {
+		return fmt.Errorf("no python interpreter — run molt sync first")
+	}
+	abi, err := pyabi.Detect(pyExe)
+	if err != nil {
+		return fmt.Errorf("detect interpreter ABI: %w", err)
+	}
+	extSuffix, err := native.PythonExtSuffix(pyExe)
+	if err != nil {
+		return err
+	}
+	includeDir, err := native.PythonIncludeDir(pyExe)
+	if err != nil {
+		return err
+	}
+
+	zigCfg := native.LoadZigConfig(projDir)
+	_ = target // target flag reserved for future cross-compile support via ZigConfig
+
+	arts, err := native.BuildCModules(projDir, pyExe, includeDir, extSuffix, *abi, zigCfg, cCfg, *verbose)
+	if err != nil {
+		return err
+	}
+	if err := native.PlaceProjectView(projDir, arts); err != nil {
+		return err
+	}
+	fmt.Printf("built %d C module(s)\n", len(arts))
+	return nil
+}
+
+// cmdCList prints each [[tool.molt.c.modules]] entry with its name, source
+// files, detected headers, and cache status.
+func cmdCList(args []string) error {
+	_ = args
+	projDir := projectRoot()
+	cCfg := native.LoadCConfig(projDir)
+	if len(cCfg.Modules) == 0 {
+		fmt.Println("no [[tool.molt.c.modules]] entries found in pyproject.toml")
+		return nil
+	}
+
+	// Try to detect the Python interpreter for extSuffix / ABI info.
+	var extSuffix, abiTag, plat string
+	pm, err := python.New(projDir)
+	if err == nil {
+		if pyExe, err2 := pm.Which(); err2 == nil && pyExe != "" {
+			if sfx, err3 := native.PythonExtSuffix(pyExe); err3 == nil {
+				extSuffix = sfx
+			}
+			if abi, err3 := pyabi.Detect(pyExe); err3 == nil {
+				abiTag = abi.AbiTag
+				for _, p := range abi.Platforms {
+					if p != "any" && p != "" {
+						plat = p
+						break
+					}
+				}
+			}
+		}
+	}
+
+	for _, mod := range cCfg.Modules {
+		fmt.Printf("module: %s\n", mod.Name)
+		fmt.Printf("  src:     %s\n", strings.Join(mod.Src, ", "))
+
+		// Resolve absolute src paths.
+		absSrcs := make([]string, 0, len(mod.Src))
+		for _, s := range mod.Src {
+			if filepath.IsAbs(s) {
+				absSrcs = append(absSrcs, s)
+			} else {
+				absSrcs = append(absSrcs, filepath.Join(projDir, s))
+			}
+		}
+
+		headers := native.FindCModuleHeaders(projDir, mod, absSrcs)
+		if len(headers) > 0 {
+			fmt.Printf("  headers: %s\n", strings.Join(headers, ", "))
+		} else {
+			fmt.Printf("  headers: (none found)\n")
+		}
+		if len(mod.Flags) > 0 {
+			fmt.Printf("  flags:   %s\n", strings.Join(mod.Flags, " "))
+		}
+
+		// Check cache if we have ABI info.
+		if extSuffix != "" && abiTag != "" {
+			soName := mod.Name + extSuffix
+			hash := native.HashCModuleKey(absSrcs, headers, mod.Name, abiTag, plat, mod.Flags, native.LoadZigConfig(projDir).Version)
+			if hit, _, err2 := native.HasCacheEntry(hash, soName); err2 == nil && hit {
+				fmt.Printf("  cached:  yes (%s)\n", hash)
+			} else {
+				fmt.Printf("  cached:  no\n")
+			}
+		}
+		fmt.Println()
+	}
+	return nil
 }
 
 func cmdPython(args []string) error {

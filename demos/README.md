@@ -1,6 +1,6 @@
 # molt demos
 
-Twelve runnable projects, each highlighting a different part of molt.
+Thirteen runnable projects, each highlighting a different part of molt.
 
 ```
 demos/
@@ -16,6 +16,7 @@ demos/
   10-mojo-simd/      SIMD vectorization + benchmark vs Python/numpy
   11-mojo-matmul/    Matrix multiply: naive → SIMD → tiled + parallel
   12-mojo-extension/ Mojo compiled to Python .so via PythonModuleBuilder
+  13-c-extension/    C extension module from a .h header — no .molt.toml needed
 ```
 
 ---
@@ -285,3 +286,58 @@ for d in [0-9][0-9]-*/; do
   echo "=== $d ===" && cd "$d" && molt sync --frozen && cd ..
 done
 ```
+
+---
+
+## 13 — c-extension
+
+**What it shows:** First-class C extension modules with zero boilerplate — no `.molt.toml` manifest, no Cython, no cffi. Declare `[[tool.molt.c.modules]]` in `pyproject.toml`, point at a `.h` header, and `molt sync` (or `molt c build`) auto-parses the function signatures and compiles a proper CPython extension module via `zig cc`.
+
+**What's in the demo:**
+
+```
+13-c-extension/
+  fastmath.h        function declarations (parsed automatically)
+  fastmath.c        implementations: add, mul, clamp, lerp, gcd, ipow, mean3, variance3
+  pyproject.toml    [[tool.molt.c.modules]] entry — just name + src
+  main.py           import fastmath and call all functions
+  bench.py          microbenchmark: C extension call overhead vs pure Python
+```
+
+**Running:**
+
+```bash
+cd demos/13-c-extension
+molt sync             # parses fastmath.h → compiles fastmath.so via zig cc
+molt run demo         # import fastmath; call all 8 functions
+molt run bench        # benchmark C extension vs Python
+```
+
+**How it works:**
+
+1. `molt sync` reads `[[tool.molt.c.modules]]` from `pyproject.toml`
+2. Parses `fastmath.h` — extracts all scalar function signatures automatically
+3. Synthesises a manifest from the parsed signatures
+4. Generates `glue.c` (CPython `PyInit_fastmath`, `PyMethodDef` table, argument parsing)
+5. Compiles `fastmath.c + glue.c → fastmath.cpython-3XX-platform.so` via `zig cc`
+6. Caches the result in `~/.molt/native/<hash>/`; subsequent syncs are instant
+
+**Cross-compilation:**
+
+```bash
+molt c build --target linux_amd64   # compile for Linux x86-64 from macOS
+molt c build --target linux_arm64   # compile for Linux ARM64
+```
+
+The `zig cc` toolchain handles the cross-compile without any separate toolchain install.
+
+**pyproject.toml:**
+
+```toml
+[[tool.molt.c.modules]]
+name = "fastmath"
+src  = ["fastmath.c"]
+# headers defaults to fastmath.h — auto-discovered from src directory
+```
+
+That's the entire configuration. Compare to Cython (`.pyx` + `setup.py` + compiler) or cffi (manual `ffi.cdef()` with copy-pasted signatures).

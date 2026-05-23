@@ -665,6 +665,19 @@ func compileNativeIfPresent(projectDir, pyExe string, abi *pyabi.Info, syspathDi
 		allArts = append(allArts, extArts...)
 	}
 
+	// ── Step 3: [[tool.molt.c.modules]] — manifest-free C extensions ────────
+	cCfg := native.LoadCConfig(projectDir)
+	if len(cCfg.Modules) > 0 {
+		if verbose {
+			fmt.Printf("→ c: %d module(s)\n", len(cCfg.Modules))
+		}
+		cArts, err := native.BuildCModules(projectDir, pyExe, includeDir, extSuffix, *abi, zigCfg, cCfg, verbose)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warn: C module build: %v\n", err)
+		}
+		allArts = append(allArts, cArts...)
+	}
+
 	if len(allArts) == 0 {
 		return "", nil
 	}
