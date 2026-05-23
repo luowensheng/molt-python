@@ -45,7 +45,7 @@
       <div class="hero-text">
         <div class="hero-eyebrow fade-up">
           <span class="dot"></span>
-          v0.1.0 — Public Beta
+          v0.2.0 — Transport Glue
         </div>
         <h1 class="hero-title fade-up delay-1">
           The <span class="hi">hermetic</span><br>Python toolchain.
@@ -1354,28 +1354,36 @@ test  = <span class="str">"cargo test"</span></code></pre>
           <a class="demo-link" href="demos/#d19">Full walkthrough →</a>
         </div>
         <div>
-          <pre><code><span class="cmt"># moltproject.toml</span>
-[[tool.molt.glue]]
-module = <span class="str">"stats"</span>
-lang   = <span class="str">"go"</span>
-src    = <span class="str">"./gocode"</span>
+          <div class="glue-split">
+            <div class="glue-block">
+              <div class="glue-lang-bar go"><span class="glue-dot"></span> Go &nbsp;·&nbsp; gocode/stats.go</div>
+              <pre><code><span class="kw">func</span> <span class="fn">Mean</span>(data []<span class="kw">float64</span>) <span class="kw">float64</span>      { <span class="cmt">/* … */</span> }
+<span class="kw">func</span> <span class="fn">Stddev</span>(data []<span class="kw">float64</span>) <span class="kw">float64</span>    { <span class="cmt">/* … */</span> }
+<span class="kw">func</span> <span class="fn">Histogram</span>(data []<span class="kw">float64</span>, n <span class="kw">int32</span>) []<span class="kw">int32</span> { <span class="cmt">/* … */</span> }
+<span class="kw">func</span> <span class="fn">Compress</span>(payload []<span class="kw">byte</span>) []<span class="kw">byte</span>   { <span class="cmt">/* … */</span> }</code></pre>
+            </div>
+            <div class="glue-arrow-row"><span class="glue-arrow-icon">↓</span> <code>molt sync</code> compiles a server &amp; generates <code>stats.py</code></div>
+            <div class="glue-block">
+              <div class="glue-lang-bar py"><span class="glue-dot"></span> Python &nbsp;·&nbsp; main.py</div>
+              <pre><code><span class="kw">import</span> <span class="glue-hi">stats</span>  <span class="cmt"># ← this module calls Go under the hood</span>
 
-  [[tool.molt.glue.fn]]
-  name    = <span class="str">"mean"</span>
-  args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"[]f64"</span> }]
-  returns = <span class="str">"f64"</span></code></pre>
+m  = stats.<span class="fn">mean</span>([<span class="num">84.2</span>, <span class="num">91.5</span>, <span class="num">78.3</span>, <span class="num">88.0</span>])   <span class="cmt"># → 85.5  (Go)</span>
+sd = stats.<span class="fn">stddev</span>([<span class="num">84.2</span>, <span class="num">91.5</span>, <span class="num">78.3</span>, <span class="num">88.0</span>])  <span class="cmt"># → 2.9   (Go)</span>
+hist = stats.<span class="fn">histogram</span>(data, <span class="num">5</span>)               <span class="cmt"># → list[int]  (Go)</span>
+out  = stats.<span class="fn">compress</span>(b<span class="str">"hello world"</span>)         <span class="cmt"># → bytes  (Go)</span></code></pre>
+            </div>
+          </div>
           <div class="terminal" style="margin-top:1rem;">
             <div class="term-bar">
               <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
             </div>
             <div class="term-body">
               <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt sync</span></div>
-              <div class="term-line"><span class="term-success"> → glue/stats: building (go/stdio)…</span></div>
-              <div class="term-line"><span class="term-success"> ✓ glue/stats built</span></div>
+              <div class="term-line"><span class="term-success"> → glue/stats: building (go/stdio)…  ✓</span></div>
               <div class="term-blank"></div>
               <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run demo</span></div>
-              <div class="term-line"><span class="term-out"> mean:   84.33  stddev: 8.80</span></div>
-              <div class="term-line"><span class="term-out"> Compressed 7,000 bytes → 84 bytes</span></div>
+              <div class="term-line"><span class="term-out"> mean: 84.33  stddev: 8.80</span></div>
+              <div class="term-line"><span class="term-out"> Compressed 7,000 bytes → 84 bytes (1.2%)</span></div>
             </div>
           </div>
         </div>
@@ -1396,25 +1404,36 @@ src    = <span class="str">"./gocode"</span>
           <a class="demo-link" href="demos/#d20">Full walkthrough →</a>
         </div>
         <div>
-          <pre><code><span class="cmt"># moltproject.toml</span>
-[[tool.molt.glue]]
-module = <span class="str">"sha3"</span>
-lang   = <span class="str">"go"</span>
-src    = <span class="str">"golang.org/x/crypto/sha3"</span>
+          <div class="glue-split">
+            <div class="glue-block">
+              <div class="glue-lang-bar go"><span class="glue-dot"></span> Go &nbsp;·&nbsp; no local code — just declare the import path</div>
+              <pre><code><span class="cmt"># moltproject.toml — zero lines of Go written by user</span>
+src = <span class="str">"crypto/sha256"</span>           <span class="cmt"># Go stdlib package</span>
+src = <span class="str">"golang.org/x/crypto/sha3"</span>  <span class="cmt"># third-party module</span>
+<span class="cmt"># molt sync runs `go get` and compiles the server automatically</span></code></pre>
+            </div>
+            <div class="glue-arrow-row"><span class="glue-arrow-icon">↓</span> <code>molt sync</code> generates <code>gosha256.py</code> and <code>sha3.py</code></div>
+            <div class="glue-block">
+              <div class="glue-lang-bar py"><span class="glue-dot"></span> Python &nbsp;·&nbsp; main.py</div>
+              <pre><code><span class="kw">import</span> <span class="glue-hi">gosha256</span>  <span class="cmt"># ← wraps Go stdlib  crypto/sha256</span>
+<span class="kw">import</span> <span class="glue-hi">sha3</span>       <span class="cmt"># ← wraps Go module golang.org/x/crypto/sha3</span>
 
-  [[tool.molt.glue.fn]]
-  name    = <span class="str">"sum256"</span>
-  args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
-  returns = <span class="str">"bytes"</span></code></pre>
+data = b<span class="str">"Transport Glue demo"</span>
+
+digest_256  = gosha256.<span class="fn">sum256</span>(data)   <span class="cmt"># → bytes  (Go stdlib)</span>
+digest_sha3 = sha3.<span class="fn">sum256</span>(data)       <span class="cmt"># → bytes  (Go x/crypto)</span>
+digest_512  = sha3.<span class="fn">sum512</span>(data)       <span class="cmt"># → bytes  (Go x/crypto)</span></code></pre>
+            </div>
+          </div>
           <div class="terminal" style="margin-top:1rem;">
             <div class="term-bar">
               <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
             </div>
             <div class="term-body">
               <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run demo</span></div>
-              <div class="term-line"><span class="term-out"> SHA-256 (Go stdlib):  42a53681…</span></div>
-              <div class="term-line"><span class="term-out"> SHA3-256 (x/crypto):  7398bb66…</span></div>
-              <div class="term-line"><span class="term-success"> ✓ Both Go packages called from Python</span></div>
+              <div class="term-line"><span class="term-out"> SHA-256  (Go stdlib):  42a53681d823e1ef…</span></div>
+              <div class="term-line"><span class="term-out"> SHA3-256 (x/crypto):  7398bb669bc2f172…</span></div>
+              <div class="term-line"><span class="term-success"> ✓ Both Go packages called from Python with zero local Go code</span></div>
             </div>
           </div>
         </div>
@@ -1435,21 +1454,40 @@ src    = <span class="str">"golang.org/x/crypto/sha3"</span>
           <a class="demo-link" href="demos/#d21">Full walkthrough →</a>
         </div>
         <div>
-          <pre><code><span class="cmt"># moltproject.toml</span>
-[[tool.molt.glue]]
-module    = <span class="str">"compress"</span>
-lang      = <span class="str">"rust"</span>
-src       = <span class="str">"compress_glue.rs"</span>
-crates    = [<span class="str">"flate2 = '1.0'"</span>]
-transport = <span class="str">"unix_socket"</span></code></pre>
+          <div class="glue-split">
+            <div class="glue-block">
+              <div class="glue-lang-bar rust"><span class="glue-dot"></span> Rust &nbsp;·&nbsp; compress_glue.rs  <span style="font-weight:400;opacity:.7;">(~38 lines, uses flate2 crate)</span></div>
+              <pre><code><span class="kw">pub fn</span> <span class="fn">deflate</span>(data: <span class="cls">Vec</span>&lt;<span class="kw">u8</span>&gt;) -&gt; <span class="cls">Vec</span>&lt;<span class="kw">u8</span>&gt; {
+    <span class="kw">let mut</span> enc = <span class="cls">ZlibEncoder</span>::<span class="fn">new</span>(<span class="cls">Vec</span>::<span class="fn">new</span>(), <span class="cls">Compression</span>::default());
+    enc.<span class="fn">write_all</span>(&amp;data).<span class="fn">ok</span>(); enc.<span class="fn">finish</span>().<span class="fn">unwrap_or_default</span>()
+}
+<span class="kw">pub fn</span> <span class="fn">inflate</span>(data: <span class="cls">Vec</span>&lt;<span class="kw">u8</span>&gt;) -&gt; <span class="cls">Vec</span>&lt;<span class="kw">u8</span>&gt; { <span class="cmt">/* zlib decode */</span> }
+<span class="kw">pub fn</span> <span class="fn">ratio</span>(data: <span class="cls">Vec</span>&lt;<span class="kw">u8</span>&gt;) -&gt; <span class="kw">f64</span>       { <span class="cmt">/* compressed / original */</span> }</code></pre>
+            </div>
+            <div class="glue-arrow-row"><span class="glue-arrow-icon">↓</span> <code>molt sync</code> runs <code>cargo build</code> &amp; generates <code>compress.py</code></div>
+            <div class="glue-block">
+              <div class="glue-lang-bar py"><span class="glue-dot"></span> Python &nbsp;·&nbsp; main.py</div>
+              <pre><code><span class="kw">import</span> <span class="glue-hi">compress</span>  <span class="cmt"># ← this module calls Rust (flate2) under the hood</span>
+<span class="kw">import</span> threading
+
+data = b<span class="str">"x"</span> * <span class="num">14_500</span>
+out  = compress.<span class="fn">deflate</span>(data)         <span class="cmt"># → 90 bytes  (Rust)</span>
+back = compress.<span class="fn">inflate</span>(out)          <span class="cmt"># → original  (Rust)</span>
+r    = compress.<span class="fn">ratio</span>(data)           <span class="cmt"># → 0.006     (Rust)</span>
+
+<span class="cmt"># 10 threads share one unix_socket Rust daemon concurrently</span>
+threads = [threading.<span class="cls">Thread</span>(target=compress.<span class="fn">deflate</span>, args=(data,))
+           <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="num">10</span>)]</code></pre>
+            </div>
+          </div>
           <div class="terminal" style="margin-top:1rem;">
             <div class="term-bar">
               <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
             </div>
             <div class="term-body">
               <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run demo</span></div>
-              <div class="term-line"><span class="term-out"> Original: 14,500 bytes</span></div>
-              <div class="term-line"><span class="term-out"> Compressed: 90 bytes (0.6%)</span></div>
+              <div class="term-line"><span class="term-out"> Original: 14,500 bytes  →  Compressed: 90 bytes (0.6%)</span></div>
+              <div class="term-line"><span class="term-out"> ✓ Round-trip check passed</span></div>
               <div class="term-line"><span class="term-success"> ✓ 10 threads completed in 2.8 ms</span></div>
             </div>
           </div>

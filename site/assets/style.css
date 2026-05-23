@@ -320,6 +320,67 @@ code { font-family: var(--font-mono); font-size: .85em; }
 .cls { color: #e5c07b; }
 .punc{ color: var(--muted); }
 
+/* ── Glue language-split code display ────────────────────────────────────── */
+/* Shows Go/Rust source on top, Python caller below, with language badges     */
+.glue-split {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  font-size: .82rem;
+}
+.glue-block {
+  position: relative;
+}
+.glue-block pre {
+  margin: 0;
+  border-radius: 0;
+  border: none;
+  border-top: 1px solid var(--border);
+  padding: .9rem 1rem;
+  background: var(--code-bg);
+  font-size: .78rem;
+  line-height: 1.55;
+}
+.glue-block:first-child pre { border-top: none; }
+.glue-lang-bar {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .35rem .75rem;
+  font-size: .72rem;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+.glue-lang-bar.go   { background: rgba(0,173,216,.12); color: #4fc3f7; border-bottom: 1px solid rgba(0,173,216,.2); }
+.glue-lang-bar.py   { background: rgba(52,211,153,.10); color: var(--green); border-bottom: 1px solid rgba(52,211,153,.2); }
+.glue-lang-bar.rust { background: rgba(251,146,60,.12); color: #fb923c; border-bottom: 1px solid rgba(251,146,60,.2); }
+.glue-lang-bar .glue-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  display: inline-block; flex-shrink: 0;
+}
+.glue-lang-bar.go   .glue-dot { background: #4fc3f7; }
+.glue-lang-bar.py   .glue-dot { background: var(--green); }
+.glue-lang-bar.rust .glue-dot { background: #fb923c; }
+.glue-arrow-row {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .3rem .75rem;
+  background: var(--bg3);
+  color: var(--muted);
+  font-size: .72rem;
+  font-family: var(--font-mono);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.glue-arrow-row .glue-arrow-icon { font-size: .9rem; color: var(--accent); }
+.glue-hi { background: rgba(108,142,245,.13); border-radius: 3px; padding: 0 2px; }
+
 /* ── Demos ────────────────────────────────────────────────────────────────── */
 #demos { background: var(--bg2); }
 .demos-header { text-align: center; margin-bottom: 3.5rem; }
