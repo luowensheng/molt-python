@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Demos — molt</title>
-  <meta name="description" content="14 runnable molt demos: Python apps, FastAPI, data analysis, CLI tools, hermetic binaries, assembly kernels, Mojo, C extensions, and polyglot scripting.">
+  <meta name="description" content="15 runnable molt demos: Python apps, FastAPI, data analysis, CLI tools, hermetic binaries, assembly kernels, Mojo, C extensions, polyglot scripting, and C project management.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -127,11 +127,11 @@
   <div class="wrap" style="padding-block:4rem;">
     <div style="margin-bottom:3rem;">
       <p class="label">Demos</p>
-      <h1 style="font-size:clamp(1.8rem,4vw,3rem); margin-bottom:.8rem;">14 runnable examples</h1>
+      <h1 style="font-size:clamp(1.8rem,4vw,3rem); margin-bottom:.8rem;">15 runnable examples</h1>
       <p style="color:var(--muted); font-size:1.1rem; max-width:680px;">
         Every demo lives in <code>demos/</code> and runs with <code>molt run &lt;task&gt;</code>.
         Covers the full stack: Python apps, header-driven C extensions (Python ↔ C in both directions),
-        Mojo kernels, hermetic binary distribution, and a universal polyglot launcher for 25 runtimes.
+        Mojo kernels, hermetic binary distribution, and a universal polyglot launcher for 27 runtimes.
         Clone the repo and explore at your own pace.
       </p>
       <div style="display:flex;gap:1rem;margin-top:1.5rem;flex-wrap:wrap;">
@@ -162,6 +162,7 @@
         <a href="/molt-python/demos/#d12"><span class="n">12</span> Mojo extension</a>
         <a href="/molt-python/demos/#d13"><span class="n">13</span> C extension</a>
         <a href="/molt-python/demos/#d14"><span class="n">14</span> Polyglot launcher</a>
+        <a href="/molt-python/demos/#d15"><span class="n">15</span> C project</a>
       </aside>
 
       <!-- Demo cards -->
@@ -967,6 +968,128 @@ molt run hello.rb Alice        <span class="cmt"># Hello from Ruby! 👋 Alice</
 molt run all                   <span class="cmt"># polyglot table with timing</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/14-polyglot" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 15 -->
+        <div class="demo-card" id="d15">
+          <div class="demo-card-header">
+            <span class="demo-number">15</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-native">⚙️ C project</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">run + build</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">Python ↔ C</span>
+            </div>
+          </div>
+          <h2>C project management — run, build, orchestrate</h2>
+          <p class="demo-desc">
+            molt as a complete C project manager — not C-as-a-Python-extension (that's demo 13), but C as
+            the <em>primary language</em>. Two distinct capabilities: <strong>single-file run</strong>
+            (<code>molt run hello.c</code> compiles with <code>zig cc</code> and executes immediately —
+            no config, no Makefile) and <strong>multi-file project tasks</strong> (build, run, clean all
+            via <code>molt run &lt;task&gt;</code>). Python orchestrates the C binary through
+            <code>subprocess</code>, living in the same molt project.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li><code>molt run hello.c</code> → compiles + runs in one command</li>
+                <li><code>molt run hello.c Alice</code> → args forwarded after compile</li>
+                <li><code>molt run build</code> → multi-file C binary (<code>bin/stats</code>)</li>
+                <li><code>molt run demo</code> → Python drives C binary: 3 datasets + histograms</li>
+                <li><code>molt run clean</code> → removes compiled artifacts</li>
+                <li><code>molt run-handler show c</code> → inspect the zig cc compile template</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run hello.c [name]</span> <span class="d">— one-shot compile + run</span></li>
+                <li><span class="c">molt run build</span> <span class="d">— cc -O2 → bin/stats</span></li>
+                <li><span class="c">molt run stats &lt;nums...&gt;</span> <span class="d">— run the C binary</span></li>
+                <li><span class="c">molt run demo</span> <span class="d">— Python drives C: 3 datasets</span></li>
+                <li><span class="c">molt run clean</span> <span class="d">— remove compiled binaries</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Single-file C — zero configuration</h4>
+            <pre><code><span class="cmt">/* hello.c — no pyproject.toml needed for single-file run */</span>
+#<span class="kw">include</span> &lt;stdio.h&gt;
+<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">int</span> argc, <span class="kw">char</span> *argv[]) {
+    <span class="kw">const char</span> *name = argc &gt; 1 ? argv[1] : <span class="str">"World"</span>;
+    printf(<span class="str">"Hello from C! 👋 %s\n"</span>, name);
+    <span class="kw">return</span> 0;
+}
+
+$ molt run hello.c          <span class="cmt"># Hello from C! 👋 World</span>
+$ molt run hello.c Alice    <span class="cmt"># Hello from C! 👋 Alice</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>How the .c handler works</h4>
+            <pre><code><span class="cmt"># The built-in handler (inspect with: molt run-handler show c)</span>
+<span class="cmt"># Unix:    sh -c "{zig} cc -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}"</span>
+<span class="cmt"># Windows: cmd /c "{zig} cc -O2 -o {dir}\{basename}.exe {file} && {dir}\{basename}.exe {args}"</span>
+
+<span class="cmt"># Tokens resolved at run time:</span>
+{zig}      <span class="cmt">→ /Users/.../.molt/toolchains/zig/0.14.1/zig  (auto-installed)</span>
+{dir}      <span class="cmt">→ /path/to/15-c-project</span>
+{basename} <span class="cmt">→ hello</span>
+{file}     <span class="cmt">→ /path/to/15-c-project/hello.c</span>
+{args}     <span class="cmt">→ Alice</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Multi-file project — pyproject.toml tasks</h4>
+            <pre><code><span class="cmt"># pyproject.toml — same format as any Python project</span>
+[tool.molt.tasks]
+build = <span class="str">"cc -O2 -Wall -o bin/stats src/main.c src/stats.c -lm"</span>
+stats = <span class="str">"bin/stats"</span>       <span class="cmt"># run the binary (pass args with: molt run stats 1 2 3)</span>
+demo  = <span class="str">"python demo.py"</span>  <span class="cmt"># Python drives the C binary</span>
+clean = <span class="str">"rm -f bin/stats"</span>
+
+<span class="cmt"># Swap cc for zig cc for guaranteed cross-platform compilation:</span>
+<span class="cmt"># build = "zig cc -O2 -target x86_64-linux -o bin/stats-linux src/main.c src/stats.c"</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Python orchestrating C</h4>
+            <pre><code><span class="cmt"># demo.py — Python calls the C binary, lives in the same molt project</span>
+<span class="kw">import</span> subprocess
+<span class="kw">from</span> pathlib <span class="kw">import</span> Path
+
+BIN = Path(__file__).parent / <span class="str">"bin"</span> / <span class="str">"stats"</span>
+
+result = subprocess.<span class="fn">run</span>(
+    [<span class="fn">str</span>(BIN), <span class="str">"88"</span>, <span class="str">"92"</span>, <span class="str">"71"</span>, <span class="str">"95"</span>, <span class="str">"84"</span>],
+    capture_output=True, text=True
+)
+<span class="fn">print</span>(result.stdout)
+<span class="cmt"># ─────────────────────────────</span>
+<span class="cmt">#   mean      84.0000</span>
+<span class="cmt">#   std        8.0623</span>
+<span class="cmt">#   min       71.0000</span>
+<span class="cmt">#   max       95.0000</span>
+<span class="cmt"># ─────────────────────────────</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Customise the handler</h4>
+            <pre><code><span class="cmt"># Use system clang instead of zig cc</span>
+molt run-handler add c <span class="str">"sh -c \"clang -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}\""</span>
+
+<span class="cmt"># C++ works the same way (.cpp is also built-in)</span>
+molt run hello.cpp      <span class="cmt"># → zig c++ -O2 ...</span>
+
+<span class="cmt"># Restore defaults</span>
+molt run-handler reset</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/15-c-project
+molt run hello.c              <span class="cmt"># single-file compile + run</span>
+molt run hello.c Alice        <span class="cmt"># with arg</span>
+molt run build                <span class="cmt"># multi-file: cc → bin/stats</span>
+molt run demo                 <span class="cmt"># Python drives C binary: 3 datasets</span></code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/15-c-project" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
 
       </div><!-- /.demo-cards -->

@@ -1,0 +1,18 @@
+[project]
+name = "c-project"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.molt.tasks]
+# Build the multi-file C binary into bin/stats
+build = "cc -O2 -Wall -o bin/stats src/main.c src/stats.c -lm && echo '✓ compiled bin/stats'"
+
+# Run the binary directly (pass args: molt run stats -- 1 2 3 4 5)
+stats = "bin/stats"
+
+# Python-orchestrated demo — calls the C binary with three datasets
+demo  = "python demo.py"
+
+# Remove compiled output
+clean = "rm -f bin/stats bin/stats.exe"

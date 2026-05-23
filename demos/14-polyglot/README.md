@@ -95,7 +95,7 @@ molt run-handler templates
 
 ---
 
-## Built-in handlers (25)
+## Built-in handlers (27)
 
 | Extension   | Runtime         | Command                              |
 |-------------|-----------------|--------------------------------------|

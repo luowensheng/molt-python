@@ -64,7 +64,7 @@
         </div>
         <div class="hero-stats fade-up delay-4">
           <div>
-            <div class="stat-num">14</div>
+            <div class="stat-num">15</div>
             <div class="stat-lbl">runnable demos</div>
           </div>
           <div>
@@ -76,7 +76,7 @@
             <div class="stat-lbl">native code paths</div>
           </div>
           <div>
-            <div class="stat-num">25</div>
+            <div class="stat-num">27</div>
             <div class="stat-lbl">script runtimes</div>
           </div>
           <div>
@@ -199,7 +199,7 @@
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🌐</div>
         <div class="feat-title">Universal script launcher</div>
-        <p class="feat-desc"><code>molt run hello.rb</code> → <code>ruby hello.rb</code>. 25 runtimes built in (Ruby, Node, Go, Julia, Elixir, Lua, Swift, Perl, R, Kotlin, Dart, …). Add your own: <code>molt run-handler add deno "deno run {file} {args}"</code>. Per-OS overrides supported.</p>
+        <p class="feat-desc"><code>molt run hello.c</code> compiles with <code>zig cc</code> and executes. <code>molt run hello.rb</code> → <code>ruby hello.rb</code>. 27 runtimes built in — C, C++, Ruby, Node, Go, Julia, Elixir, Lua, Swift, Perl, and more. Add your own: <code>molt run-handler add deno "deno run {file} {args}"</code>.</p>
       </div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🤖</div>
@@ -310,9 +310,9 @@
 <section id="demos">
   <div class="wrap">
     <div class="demos-header" data-reveal>
-      <p class="label">14 runnable examples</p>
+      <p class="label">15 runnable examples</p>
       <h2>See molt in action</h2>
-      <p>From Hello World to Mojo SIMD kernels, header-driven C extensions (Python calling C and C calling Python), hermetic binary distribution, and a universal polyglot script launcher across 25 runtimes.</p>
+      <p>From Hello World to Mojo SIMD kernels, header-driven C extensions (Python calling C and C calling Python), hermetic binary distribution, and a universal polyglot script launcher across 27 runtimes.</p>
     </div>
 
     <div class="demo-tabs">
@@ -330,6 +330,7 @@
       <button class="demo-tab" data-demo="d12">12 Mojo extension</button>
       <button class="demo-tab" data-demo="d13">13 C extension</button>
       <button class="demo-tab" data-demo="d14">14 Polyglot</button>
+      <button class="demo-tab" data-demo="d15">15 C project</button>
     </div>
 
     <div class="demo-panels">
@@ -869,7 +870,7 @@ src  = [<span class="str">"fastmath.c"</span>]
         <div class="demo-info">
           <span class="badge badge-native">🌐 Polyglot</span>
           <h3>14 — Universal script launcher</h3>
-          <p><code>molt run hello.rb</code> → <code>ruby hello.rb</code>. Any file whose extension is registered in <code>~/.molt/run-handlers.yaml</code> is dispatched directly — 25 runtimes built in, add your own in one command.</p>
+          <p><code>molt run hello.rb</code> → <code>ruby hello.rb</code>. Any file whose extension is registered in <code>~/.molt/run-handlers.yaml</code> is dispatched directly — 27 runtimes built in, add your own in one command.</p>
           <ul class="demo-bullets">
             <li>Ruby, Node, Go, Julia, Elixir, Swift, Lua, Perl, Bash — just <code>molt run</code></li>
             <li>Args forwarded: <code>molt run hello.rb Alice</code></li>
@@ -904,10 +905,56 @@ molt run server.ts      <span class="cmt"># → deno run server.ts</span></code>
         </div>
       </div>
 
+      <!-- 15 -->
+      <div class="demo-panel" data-demo="d15">
+        <div class="demo-info">
+          <span class="badge badge-native">⚙️ C project</span>
+          <h3>15 — Run and manage C projects</h3>
+          <p>Two capabilities: <code>molt run hello.c</code> compiles with <code>zig cc</code> and executes in one command — no config, no Makefile. Multi-file C projects are managed with <code>pyproject.toml</code> tasks (<code>build</code>, <code>run</code>, <code>clean</code>) — same workflow as any Python project. Python orchestrates the C binary in the same project.</p>
+          <ul class="demo-bullets">
+            <li>Single-file: <code>molt run hello.c Alice</code> → compile + exec, args forwarded</li>
+            <li>Multi-file: <code>molt run build</code> → <code>cc -O2 → bin/stats</code></li>
+            <li>Python drives C: <code>molt run demo</code> → subprocess to the binary</li>
+            <li>C and Python share the same molt project, same tasks, same <code>molt run</code></li>
+          </ul>
+          <a class="demo-link" href="demos/#d15">Full walkthrough →</a>
+        </div>
+        <div>
+          <pre><code><span class="cmt">/* hello.c — no config needed */</span>
+#<span class="kw">include</span> &lt;stdio.h&gt;
+<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">int</span> argc, <span class="kw">char</span> *argv[]) {
+    <span class="fn">printf</span>(<span class="str">"Hello from C! 👋 %s\n"</span>,
+           argc &gt; 1 ? argv[1] : <span class="str">"World"</span>);
+}
+
+<span class="cmt"># pyproject.toml tasks</span>
+[tool.molt.tasks]
+build = <span class="str">"cc -O2 -o bin/stats src/main.c src/stats.c -lm"</span>
+stats = <span class="str">"bin/stats"</span>
+demo  = <span class="str">"python demo.py"</span>
+clean = <span class="str">"rm -f bin/stats"</span></code></pre>
+          <div class="terminal" style="margin-top:1rem;">
+            <div class="term-bar">
+              <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
+            </div>
+            <div class="term-body">
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run hello.c Alice</span></div>
+              <div class="term-line"><span class="term-out"> Hello from C! 👋 Alice</span></div>
+              <div class="term-blank"></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run build</span></div>
+              <div class="term-line"><span class="term-success"> ✓ compiled bin/stats</span></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run demo</span></div>
+              <div class="term-line"><span class="term-out">   mean   81.8333</span></div>
+              <div class="term-line"><span class="term-out">   std    10.2537</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /.demo-panels -->
 
     <div style="text-align:center; margin-top:3rem;">
-      <a href="demos/" class="btn btn-ghost">View all 14 demos in detail →</a>
+      <a href="demos/" class="btn btn-ghost">View all 15 demos in detail →</a>
     </div>
   </div>
 </section>

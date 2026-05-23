@@ -1365,7 +1365,7 @@ $ molt run hello.jl        # → julia hello.jl
 $ molt run hello.exs       # → elixir hello.exs
 ```
 
-25 runtimes ship built-in. Add your own in one command:
+27 runtimes ship built-in. Add your own in one command:
 
 ```sh
 $ molt run-handler add deno "deno run {file} {args}"
@@ -1375,7 +1375,7 @@ $ molt run server.ts       # → deno run server.ts
 $ molt run-handler add ts "npx ts-node {file} {args}" --windows "npx.cmd ts-node {file} {args}"
 
 # Inspect and manage
-$ molt run-handler list    # all 25 built-ins + user handlers
+$ molt run-handler list    # all 27 built-ins + user handlers
 $ molt run-handler show rb # Extension: .rb  Command: ruby {file} {args}
 $ molt run-handler reset   # restore factory defaults
 ```
@@ -1411,7 +1411,7 @@ installed packages are available to child processes.
 
 ## Where to go next
 
-- [`demos/`](demos/) — fourteen runnable example projects:
+- [`demos/`](demos/) — fifteen runnable example projects:
   - `01–06` core toolchain (init, deps, FastAPI, data, CLI, binary dist)
   - `07` assembly kernel module
   - `08–12` Mojo (hello world, numpy interop, SIMD, matmul, Python extension)

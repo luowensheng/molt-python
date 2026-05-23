@@ -1,0 +1,5 @@
+bin/stats
+bin/stats.exe
+bin/hello
+bin/hello.exe
+*.o

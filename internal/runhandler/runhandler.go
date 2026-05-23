@@ -47,6 +47,18 @@ func (h Handler) Resolve(goos string) string {
 // defaultHandlers are the set of recipes seeded into a fresh
 // ~/.molt/run-handlers.yaml.
 var defaultHandlers = []Handler{
+	// Compiled languages: compile-then-run via shell one-liner.
+	// {zig} resolves to the auto-installed zig binary; zig cc/c++ work as
+	// drop-in replacements for clang/gcc and require no separate toolchain.
+	{Ext: "c",
+		Unix:    "sh -c \"{zig} cc -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}\"",
+		Windows: "cmd /c \"{zig} cc -O2 -o {dir}\\{basename}.exe {file} && {dir}\\{basename}.exe {args}\"",
+	},
+	{Ext: "cpp",
+		Unix:    "sh -c \"{zig} c++ -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}\"",
+		Windows: "cmd /c \"{zig} c++ -O2 -o {dir}\\{basename}.exe {file} && {dir}\\{basename}.exe {args}\"",
+	},
+	// Interpreted languages.
 	{Ext: "rb", Command: "ruby {file} {args}"},
 	{Ext: "js", Command: "node {file} {args}"},
 	{Ext: "ts", Command: "npx ts-node {file} {args}", Windows: "npx.cmd ts-node {file} {args}"},

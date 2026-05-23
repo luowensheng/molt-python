@@ -1,6 +1,6 @@
 # molt demos
 
-Fourteen runnable projects, each highlighting a different part of molt.
+Fifteen runnable projects, each highlighting a different part of molt.
 
 ```
 demos/
@@ -16,8 +16,9 @@ demos/
   10-mojo-simd/      SIMD vectorization + benchmark vs Python/numpy
   11-mojo-matmul/    Matrix multiply: naive → SIMD → tiled + parallel
   12-mojo-extension/ Mojo compiled to Python .so via PythonModuleBuilder
-  13-c-extension/    C extension module from a .h header — no .molt.toml needed
+  13-c-extension/    C as a Python extension module (header-driven, no boilerplate)
   14-polyglot/       molt run as universal launcher: Ruby, Node, Go, Julia, Elixir…
+  15-c-project/      C as the primary language: molt run hello.c + multi-file project
 ```
 
 ---
@@ -347,7 +348,7 @@ That's the entire configuration. Compare to Cython (`.pyx` + `setup.py` + compil
 
 ## 14 — polyglot
 
-**What it shows:** `molt run` as a universal script launcher. Any file whose extension is registered in `~/.molt/run-handlers.yaml` is dispatched directly — no tasks, no configuration, no activation. Ships with 25 built-in handlers and lets you add your own.
+**What it shows:** `molt run` as a universal script launcher. Any file whose extension is registered in `~/.molt/run-handlers.yaml` is dispatched directly — no tasks, no configuration, no activation. Ships with 27 built-in handlers and lets you add your own.
 
 **What's in the demo:**
 
@@ -420,4 +421,64 @@ molt run-handler reset
 | `{python}` | Project's pinned Python interpreter |
 | `{zig}` | Auto-installed zig binary |
 
-Handlers are stored in `~/.molt/run-handlers.yaml`. User-added entries take precedence over built-ins of the same extension. 25 runtimes ship out of the box: Ruby, Node, TypeScript, Lua, Bash, Perl, R, PHP, Swift, Go, Java, Kotlin, Groovy, PowerShell, Nim, Crystal, Julia, Elixir, Haskell, Clojure, Dart, V, Odin, and more.
+Handlers are stored in `~/.molt/run-handlers.yaml`. User-added entries take precedence over built-ins of the same extension. 27 runtimes ship out of the box: Ruby, Node, TypeScript, Lua, Bash, Perl, R, PHP, Swift, Go, Java, Kotlin, Groovy, PowerShell, Nim, Crystal, Julia, Elixir, Haskell, Clojure, Dart, V, Odin, and more.
+
+---
+
+## 15 — c-project
+
+**What it shows:** molt managing C as the *primary* project language — not as a Python extension (that's demo 13), but as a first-class C program compiled and run by molt.
+
+Two capabilities in one demo:
+
+1. **`molt run hello.c`** — single-file compile-and-run. The built-in `.c` handler compiles with `zig cc` (cross-platform, no toolchain install) and executes in one command.
+2. **Multi-file C project via tasks** — `build`, `stats`, `demo`, `clean` tasks let you manage a real C project with the same `molt run <task>` workflow as any Python project.
+
+**What's in the demo:**
+
+```
+15-c-project/
+  hello.c        single-file C program (molt run hello.c)
+  pyproject.toml tasks: build, stats, demo, clean
+  src/
+    main.c       statistics CLI: mean/std/min/max + ASCII histogram
+    stats.c      statistics implementation
+    stats.h      header
+  demo.py        Python orchestrator — calls the C binary with 3 datasets
+```
+
+**Running:**
+
+```bash
+cd demos/15-c-project
+
+# Single-file: compile and run in one command (no config)
+molt run hello.c              # Hello from C! 👋 World
+molt run hello.c Alice        # Hello from C! 👋 Alice
+
+# Multi-file project: build then run
+molt run build                # cc -O2 → bin/stats
+molt run stats 88 92 71 95 84 # run the binary with args
+molt run demo                 # Python drives C: 3 datasets + histograms
+molt run clean                # rm compiled binaries
+```
+
+**How the `.c` handler works:**
+
+```
+molt run hello.c Alice
+  → ext "c" → run-handler lookup
+  → Unix: sh -c "{zig} cc -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}"
+  → sh -c "/path/zig cc -O2 -o /proj/hello /proj/hello.c && /proj/hello Alice"
+  → Hello from C! 👋 Alice
+```
+
+`zig cc` is a drop-in for `clang`/`gcc`. The handler works on macOS, Linux, and Windows without any additional toolchain setup.
+
+**Customise the handler:**
+
+```bash
+molt run-handler add c "sh -c \"clang -O2 -o {dir}/{basename} {file} && {dir}/{basename} {args}\""
+molt run-handler show c   # inspect the active command
+molt run-handler reset    # restore zig cc default
+```
