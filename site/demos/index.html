@@ -128,8 +128,10 @@
     <div style="margin-bottom:3rem;">
       <p class="label">Demos</p>
       <h1 style="font-size:clamp(1.8rem,4vw,3rem); margin-bottom:.8rem;">14 runnable examples</h1>
-      <p style="color:var(--muted); font-size:1.1rem; max-width:600px;">
+      <p style="color:var(--muted); font-size:1.1rem; max-width:680px;">
         Every demo lives in <code>demos/</code> and runs with <code>molt run &lt;task&gt;</code>.
+        Covers the full stack: Python apps, header-driven C extensions (Python ↔ C in both directions),
+        Mojo kernels, hermetic binary distribution, and a universal polyglot launcher for 25 runtimes.
         Clone the repo and explore at your own pace.
       </p>
       <div style="display:flex;gap:1rem;margin-top:1.5rem;flex-wrap:wrap;">
@@ -779,33 +781,38 @@ molt run demo</code></pre>
             <span class="demo-number">13</span>
             <div class="pill-row" style="margin:0;">
               <span class="pill badge-native">⚙️ C extension</span>
-              <span class="pill" style="color:var(--muted);border-color:var(--border);">no boilerplate</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">Python ↔ C</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">zero boilerplate</span>
             </div>
           </div>
-          <h2>C extension module — header-driven</h2>
+          <h2>C extension module — header-driven, bidirectional</h2>
           <p class="demo-desc">
-            First-class C extension modules with zero manifest boilerplate. Declare
+            First-class C extensions with zero manifest boilerplate. Declare
             <code>[[tool.molt.c.modules]]</code> in <code>pyproject.toml</code>, point at a
-            <code>.h</code> header, and <code>molt sync</code> auto-parses the function
-            signatures, generates a proper CPython extension module (not ctypes!), and compiles
-            via <code>zig cc</code> — cross-platform with no toolchain install required.
+            <code>.h</code> header, and <code>molt sync</code> auto-parses every scalar function
+            signature, generates a full CPython <code>PyInit_</code> / <code>PyMethodDef</code>
+            module (not ctypes!), and compiles via <code>zig cc</code>. The relationship is
+            <strong>bidirectional</strong>: Python calls C at native speed, and C can call back
+            into Python packages via <code>PyImport_ImportModule</code> — the full molt package
+            store is on <code>PYTHONPATH</code>.
           </p>
           <div class="two-col">
             <div class="demo-section">
               <h4>What you'll see</h4>
               <ul class="demo-bullets">
-                <li>Header parsed → CPython extension generated automatically</li>
+                <li>Header parsed → <code>PyInit_fastmath</code> generated automatically</li>
                 <li>8 functions: arithmetic, statistics, integer ops</li>
-                <li>Real <code>PyInit_fastmath</code> module — not a ctypes wrapper</li>
-                <li><code>zig cc</code> handles macOS, Linux, Windows without separate toolchains</li>
-                <li>Cached in <code>~/.molt/native/</code> — instant rebuild on unchanged source</li>
+                <li>Real CPython extension — not a ctypes wrapper</li>
+                <li><code>zig cc</code>: macOS, Linux, Windows, no extra toolchain</li>
+                <li>Cached in <code>~/.molt/native/</code> — instant on unchanged source</li>
+                <li>C code can call <code>PyImport_ImportModule("numpy")</code> — it's on <code>PYTHONPATH</code></li>
               </ul>
             </div>
             <div class="demo-section">
               <h4>Available tasks</h4>
               <ul class="cmd-list">
                 <li><span class="c">molt sync</span> <span class="d">— parse header + compile .so</span></li>
-                <li><span class="c">molt run demo</span> <span class="d">— call all 8 functions</span></li>
+                <li><span class="c">molt run demo</span> <span class="d">— call all 8 functions from Python</span></li>
                 <li><span class="c">molt run bench</span> <span class="d">— C extension vs Python</span></li>
                 <li><span class="c">molt c build</span> <span class="d">— explicit rebuild</span></li>
                 <li><span class="c">molt c list</span> <span class="d">— show discovered modules</span></li>
@@ -818,29 +825,48 @@ molt run demo</code></pre>
 [[tool.molt.c.modules]]
 name = <span class="str">"fastmath"</span>
 src  = [<span class="str">"fastmath.c"</span>]
-<span class="cmt"># headers defaults to fastmath.h — auto-discovered</span>
+<span class="cmt"># headers defaults to fastmath.h — auto-discovered from src directory</span>
 
 [tool.molt.tasks]
 demo  = <span class="str">"python main.py"</span>
 bench = <span class="str">"python bench.py"</span></code></pre>
           </div>
           <div class="demo-section">
-            <h4>Header → module (zero manual binding)</h4>
-            <pre><code><span class="cmt">/* fastmath.h — molt parses this automatically */</span>
+            <h4>Python calling C — zero glue code</h4>
+            <pre><code><span class="cmt">/* fastmath.h — molt parses this, generates all PyArg/PyInit boilerplate */</span>
 <span class="fn">double</span> <span class="fn">add</span>(<span class="fn">double</span> a, <span class="fn">double</span> b);
 <span class="fn">double</span> <span class="fn">clamp</span>(<span class="fn">double</span> value, <span class="fn">double</span> lo, <span class="fn">double</span> hi);
 <span class="fn">double</span> <span class="fn">lerp</span>(<span class="fn">double</span> a, <span class="fn">double</span> b, <span class="fn">double</span> t);
 <span class="kw">int</span>    <span class="fn">gcd</span>(<span class="kw">int</span> a, <span class="kw">int</span> b);
-<span class="fn">double</span> <span class="fn">mean3</span>(<span class="fn">double</span> a, <span class="fn">double</span> b, <span class="fn">double</span> c);
+<span class="fn">double</span> <span class="fn">variance3</span>(<span class="fn">double</span> a, <span class="fn">double</span> b, <span class="fn">double</span> c);
 
-<span class="cmt"># Python — just import and call</span>
+<span class="cmt"># Python side — import and call like any module</span>
 <span class="kw">import</span> fastmath
-<span class="fn">print</span>(fastmath.<span class="fn">lerp</span>(<span class="num">0.0</span>, <span class="num">100.0</span>, <span class="num">0.25</span>))   <span class="cmt"># → 25.0</span>
-<span class="fn">print</span>(fastmath.<span class="fn">gcd</span>(<span class="num">48</span>, <span class="num">18</span>))              <span class="cmt"># → 6</span></code></pre>
+<span class="fn">print</span>(fastmath.<span class="fn">lerp</span>(<span class="num">0.0</span>, <span class="num">100.0</span>, <span class="num">0.25</span>))    <span class="cmt"># → 25.0</span>
+<span class="fn">print</span>(fastmath.<span class="fn">gcd</span>(<span class="num">48</span>, <span class="num">18</span>))               <span class="cmt"># → 6</span>
+<span class="fn">print</span>(fastmath.<span class="fn">variance3</span>(<span class="num">2.0</span>, <span class="num">4.0</span>, <span class="num">6.0</span>))  <span class="cmt"># → 2.666...</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>C calling Python — the full package store is available</h4>
+            <pre><code><span class="cmt">/* Any C extension can call back into managed Python packages */</span>
+<span class="cmt">/* PYTHONPATH is already set to ~/.molt/pkg/... by molt sync  */</span>
+#<span class="kw">include</span> &lt;Python.h&gt;
+
+<span class="kw">static</span> PyObject* call_numpy(PyObject* self, PyObject* args) {
+    PyObject* list;
+    <span class="kw">if</span> (!PyArg_ParseTuple(args, <span class="str">"O"</span>, &amp;list)) <span class="kw">return</span> NULL;
+
+    <span class="cmt">/* numpy is in the molt store — importable from C */</span>
+    PyObject* np   = PyImport_ImportModule(<span class="str">"numpy"</span>);
+    PyObject* arr  = PyObject_CallMethod(np,  <span class="str">"array"</span>, <span class="str">"O"</span>, list);
+    PyObject* mean = PyObject_CallMethod(arr, <span class="str">"mean"</span>,  NULL);
+    Py_DECREF(arr); Py_DECREF(np);
+    <span class="kw">return</span> mean;   <span class="cmt">/* Python float → caller */</span>
+}</code></pre>
           </div>
           <div class="demo-section">
             <h4>Cross-compilation</h4>
-            <pre><code><span class="cmt"># Compile for Linux from macOS — no Linux toolchain needed</span>
+            <pre><code><span class="cmt"># Compile for Linux from macOS — no Linux toolchain install needed</span>
 molt c build --target linux_amd64
 molt c build --target linux_arm64</code></pre>
           </div>
@@ -848,7 +874,8 @@ molt c build --target linux_arm64</code></pre>
             <h4>Run it</h4>
             <pre><code>cd demos/13-c-extension
 molt sync           <span class="cmt"># parses fastmath.h → compiles fastmath.so</span>
-molt run demo       <span class="cmt"># calls all 8 functions</span></code></pre>
+molt run demo       <span class="cmt"># Python calls all 8 C functions</span>
+molt run bench      <span class="cmt"># benchmark: C extension vs Python</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/13-c-extension" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>

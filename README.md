@@ -94,12 +94,24 @@ distribution under a single CLI, with three guiding principles:
    single small JSON file (`.molt/syspath.json`) that lists the store
    paths to put on `PYTHONPATH`. There's no per-project `.venv`, no
    activation, no `source` — `molt run` just sets the env and execs.
-3. **Native code is a first-class citizen.** Python is fast to write,
-   slow to run. molt has built-in pipelines for Cython (`.pyx`), Rust
-   (`.rs` via PyO3), and a manifest-driven "kernel module" system that
-   accepts any C-ABI language (Zig, C, C++, Odin, Nim, …) or pre-built
-   shared library. Drop a file in your project, get an importable
-   Python module.
+3. **Native code is a first-class citizen — in both directions.** molt
+   has six distinct pipelines for native integration:
+   - **Header-driven C extensions** (`[[tool.molt.c.modules]]`): point at a
+     `.h` file and molt auto-parses the function signatures, generates the
+     entire CPython `PyInit_` / `PyMethodDef` glue, and compiles a real
+     `.so` via `zig cc` — no Cython, no cffi, no manual binding.
+   - **Cython** (`.pyx`): hot loops and C-API integration with Python syntax.
+   - **Rust + PyO3** (`.rs`): type-safe complex APIs with full async support.
+   - **Kernel modules** (`.molt.toml` + any C-ABI source): Zig, C, C++,
+     Odin, Nim, Assembly — drop a file, get a Python module.
+   - **Pre-built kernels**: bind vendor `.so` libraries with a manifest only.
+   - **External native recipes** (`[[tool.molt.native]]`): wrap an existing
+     Cargo / CMake / autotools project.
+
+   The relationship is **bidirectional**: Python calling C extensions, but
+   also C and Mojo code calling back into Python packages via the project's
+   `PYTHONPATH` — `PyImport_ImportModule("numpy")` in C, or
+   `Python.import_module("numpy")` in Mojo, and the packages are there.
 
 The implication: the same molt project source supports the entire
 lifecycle from **`molt init`** (start a new project) through
@@ -393,10 +405,11 @@ without `pipx install`, `pip install --user`, or shell-specific setup.
 This is where molt diverges sharply from other Python toolchains.
 Python is famously good as glue and bad as a number-cruncher. molt
 makes adding native code in any language a one- or two-file change.
-There are five distinct paths, each suited to a different use case:
+There are **six** distinct paths, each suited to a different use case:
 
 | Path | What you write | Best for |
 |---|---|---|
+| `[[tool.molt.c.modules]]` (header-driven C) | A `.h` header + `.c` source | Zero-boilerplate C extensions; molt auto-generates all CPython glue from the header |
 | `.pyx` (Cython) | Python-flavoured DSL | Numerical kernels, custom C-API integration, hot loops with type hints |
 | `.rs` (Rust + PyO3) | Rust + `#[pyfunction]` macros | Type-safe complex APIs, async I/O, anything where Rust's safety pays off |
 | `<name>.molt.toml + <name>.zig/.c/.cpp/...` (kernel modules) | Plain native source + manifest | Drop-a-file native functions in any C-ABI language; primitives only |
@@ -405,15 +418,127 @@ There are five distinct paths, each suited to a different use case:
 
 Pick by use case, not by aesthetics:
 
-- "I have one tight inner loop" → kernel module (zig or C).
+- "I have a `.h` header I want to call from Python" → `[[tool.molt.c.modules]]`.
+- "I have one tight inner loop in Zig or C" → kernel module.
 - "I want to take a Python list and return a dict" → `.pyx` or `.rs`.
 - "I want to bind libsodium from Homebrew" → pre-built kernel.
 - "I have a multi-file Rust crate" → `[[tool.molt.native]]` with the
   rust preset.
 
-All five compile to ABI-tagged `.so` files cached in `~/.molt/native/`
+All six compile to ABI-tagged `.so` files cached in `~/.molt/native/`
 and staged into the project's view at sync time. They appear in
 Python as ordinary modules.
+
+---
+
+## First-class C extensions (header-driven)
+
+The **simplest** path to a CPython extension module: no Cython, no cffi,
+no manual `PyArg_ParseTuple` wrangling. Declare `[[tool.molt.c.modules]]`
+in `pyproject.toml`, point at a `.h` header, and `molt sync` does the rest.
+
+### Python calling C
+
+```c
+/* fastmath.h — molt parses this automatically */
+double add(double a, double b);
+double lerp(double a, double b, double t);
+double clamp(double value, double lo, double hi);
+int    gcd(int a, int b);
+double mean3(double a, double b, double c);
+```
+
+```c
+/* fastmath.c — plain C, zero Python-awareness */
+double add(double a, double b)   { return a + b; }
+double lerp(double a, double b, double t) { return a + t * (b - a); }
+double clamp(double v, double lo, double hi) { return v < lo ? lo : v > hi ? hi : v; }
+int    gcd(int a, int b) { while (b) { int t = b; b = a % b; a = t; } return a; }
+double mean3(double a, double b, double c) { return (a + b + c) / 3.0; }
+```
+
+```toml
+# pyproject.toml — that's the entire configuration
+[[tool.molt.c.modules]]
+name = "fastmath"
+src  = ["fastmath.c"]
+# headers defaults to ["fastmath.h"] — auto-discovered from src directory
+```
+
+```sh
+$ molt sync          # parses fastmath.h → generates glue.c → compiles fastmath.so
+→ c: 1 module(s)
+✓ fastmath  (cpython-312-darwin-arm64)
+```
+
+```python
+import fastmath
+print(fastmath.lerp(0.0, 100.0, 0.25))   # → 25.0
+print(fastmath.gcd(48, 18))               # → 6
+print(fastmath.clamp(-5.0, 0.0, 1.0))    # → 0.0
+```
+
+What molt generates automatically from the header:
+- `PyInit_fastmath` — the CPython module entry point
+- `PyMethodDef` table — one entry per parsed function
+- `PyArg_ParseTuple` call for each function's arguments
+- `__doc__` strings from function signatures
+- `fastmath.pyi` stub for IDE / mypy / pyright integration
+
+### C calling Python
+
+Because molt compiles your C extension with the project's Python include
+directory and sets `PYTHONPATH` to the full package store, **C code can
+call back into Python packages at runtime**:
+
+```c
+/* ml_glue.c — C calling numpy and returning results to Python */
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+
+static PyObject* numpy_mean(PyObject* self, PyObject* args) {
+    PyObject* list;
+    if (!PyArg_ParseTuple(args, "O", &list)) return NULL;
+
+    /* Import numpy from the project's molt-managed store */
+    PyObject* np = PyImport_ImportModule("numpy");
+    PyObject* arr = PyObject_CallMethod(np, "array", "O", list);
+    PyObject* mean = PyObject_CallMethod(arr, "mean", NULL);
+
+    Py_DECREF(arr); Py_DECREF(np);
+    return mean;  /* a Python float back to the caller */
+}
+```
+
+This works because `molt sync` writes the full `PYTHONPATH` into the
+process environment before your extension is loaded. `numpy`, `pandas`,
+`torch` — any managed dependency is importable from C.
+
+### Cross-platform compilation
+
+```sh
+# Compile for Linux from macOS — no Linux toolchain install needed
+$ molt c build --target linux_amd64
+$ molt c build --target linux_arm64
+
+# Explicit rebuild (skips cache)
+$ molt c build
+
+# List discovered modules
+$ molt c list
+```
+
+The `zig cc` cross-compiler handles the platform ABI differences
+automatically. The same `.c` source builds correctly for every target.
+
+### Extra compiler flags
+
+```toml
+[[tool.molt.c.modules]]
+name  = "fastmath"
+src   = ["fastmath.c", "mathutil.c"]
+flags = ["-O3", "-march=native", "-DNDEBUG"]
+```
 
 ---
 
@@ -1226,9 +1351,72 @@ verification, cross-compile builds.
 
 ---
 
+## Universal script launcher (run-handler system)
+
+`molt run` is not limited to Python. Any file with a registered
+extension is dispatched directly to the appropriate runtime — no tasks,
+no configuration, no activation:
+
+```sh
+$ molt run hello.rb        # → ruby hello.rb
+$ molt run hello.js Alice  # → node hello.js Alice  (args forwarded)
+$ molt run hello.go        # → go run hello.go
+$ molt run hello.jl        # → julia hello.jl
+$ molt run hello.exs       # → elixir hello.exs
+```
+
+25 runtimes ship built-in. Add your own in one command:
+
+```sh
+$ molt run-handler add deno "deno run {file} {args}"
+$ molt run server.ts       # → deno run server.ts
+
+# Per-OS overrides
+$ molt run-handler add ts "npx ts-node {file} {args}" --windows "npx.cmd ts-node {file} {args}"
+
+# Inspect and manage
+$ molt run-handler list    # all 25 built-ins + user handlers
+$ molt run-handler show rb # Extension: .rb  Command: ruby {file} {args}
+$ molt run-handler reset   # restore factory defaults
+```
+
+**Dispatch order inside `molt run <arg>`:**
+
+1. Flag-shaped arg → project's default entry point
+2. No arg → `main.py` or `python -m <pkg>`
+3. Ends in `.py` and file exists → project Python interpreter
+4. Ends in `.mojo` / `.🔥` and file exists → `mojo run`
+5. **Has any extension, file exists, handler registered → `runWithHandler`**
+6. Matches a task in `[tool.molt.tasks]` → task runner
+7. Fallthrough → exec binary on PATH
+
+**Token reference:**
+
+| Token | Expands to |
+|---|---|
+| `{file}` | Absolute path to the script |
+| `{dir}` | Directory containing the script |
+| `{basename}` | Filename without extension |
+| `{args}` | Extra arguments, space-joined |
+| `{python}` | Project's pinned Python interpreter |
+| `{zig}` | Auto-installed zig binary |
+
+Handlers are stored in `~/.molt/run-handlers.yaml`. User entries take
+precedence over built-ins of the same extension. The project's full
+molt environment (`PYTHONPATH`, `.molt/bin/` on `PATH`) is applied
+before exec — so `{python}` resolves to the pinned interpreter and any
+installed packages are available to child processes.
+
+---
+
 ## Where to go next
 
-- [`demos/`](demos/) — fourteen runnable example projects
+- [`demos/`](demos/) — fourteen runnable example projects:
+  - `01–06` core toolchain (init, deps, FastAPI, data, CLI, binary dist)
+  - `07` assembly kernel module
+  - `08–12` Mojo (hello world, numpy interop, SIMD, matmul, Python extension)
+  - `13` header-driven C extension (`[[tool.molt.c.modules]]`)
+  - `14` universal script launcher (Ruby, Go, Julia, Elixir, Node, …)
 - [`docs/MANUAL.md`](docs/MANUAL.md) — exhaustive command reference
 - [`docs/global-store.md`](docs/global-store.md) — store architecture deep dive
 - [`docs/kernel-modules.md`](docs/kernel-modules.md) — kernel-module reference
@@ -1236,5 +1424,6 @@ verification, cross-compile builds.
   the manifest-driven kernel pipeline
 - [`docs/native-modules.md`](docs/native-modules.md) — `[[tool.molt.native]]`
   recipes and presets
+- [`docs/mcp-server.md`](docs/mcp-server.md) — MCP server for Claude Code / Cursor
 
 For each individual command, `molt <cmd> --help` is built-in.

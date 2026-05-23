@@ -49,9 +49,10 @@
           The <span class="hi">hermetic</span><br>Python toolchain.
         </h1>
         <p class="hero-sub fade-up delay-2">
-          One global package store shared across every project. Zero <code>.venv</code>
-          directories. Ship your app as a single integrity-verified binary — with no
-          Python required on the target.
+          One global package store. Zero <code>.venv</code> directories.
+          Header-driven C extensions with no boilerplate. First-class Mojo and assembly support.
+          Run Ruby, Go, Julia, or Elixir scripts with the same <code>molt run</code> command.
+          Ship everything as a single integrity-verified binary.
         </p>
         <div class="hero-btns fade-up delay-3">
           <a href="#install" class="btn btn-primary">
@@ -71,8 +72,12 @@
             <div class="stat-lbl">venvs per project</div>
           </div>
           <div>
-            <div class="stat-num">5</div>
-            <div class="stat-lbl">release targets</div>
+            <div class="stat-num">6</div>
+            <div class="stat-lbl">native code paths</div>
+          </div>
+          <div>
+            <div class="stat-num">25</div>
+            <div class="stat-lbl">script runtimes</div>
           </div>
           <div>
             <div class="stat-num">1</div>
@@ -102,10 +107,10 @@
   </div>
 </section>
 
-<!-- ── 3 pillars ──────────────────────────────────────────────────────── -->
+<!-- ── 4 pillars ──────────────────────────────────────────────────────── -->
 <section id="pillars" style="padding-block:4rem; background:var(--bg2);">
   <div class="wrap">
-    <div class="grid3">
+    <div class="grid4">
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🗄️</div>
         <div class="feat-title">Global package store</div>
@@ -122,6 +127,16 @@
           <code>molt run</code> builds <code>PYTHONPATH</code> directly from the global
           store and <code>syscall.Exec</code>s your interpreter. Switch Python versions
           with <code>molt python use 3.13</code> — no venv rebuild.
+        </p>
+      </div>
+      <div class="feature-card" data-reveal>
+        <div class="feat-icon">⚙️</div>
+        <div class="feat-title">Native code — both directions</div>
+        <p class="feat-desc">
+          Point at a <code>.h</code> header — molt parses it, generates the entire CPython
+          glue, and compiles a real <code>.so</code> via <code>zig cc</code>. C can
+          call Python packages too: <code>PYTHONPATH</code> is set, so
+          <code>PyImport_ImportModule("numpy")</code> just works.
         </p>
       </div>
       <div class="feature-card" data-reveal>
@@ -142,8 +157,8 @@
   <div class="wrap">
     <div class="section-head" data-reveal>
       <p class="label">Everything you need</p>
-      <h2>Replace five tools with one</h2>
-      <p>molt unifies pyenv, pip, venv, task runners, and distribution tooling under a single coherent CLI.</p>
+      <h2>Replace six tools with one</h2>
+      <p>molt unifies pyenv, pip, venv, task runners, native build pipelines, and distribution tooling under a single coherent CLI.</p>
     </div>
     <div class="grid3">
       <div class="feature-card" data-reveal>
@@ -164,12 +179,27 @@
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🔥</div>
         <div class="feat-title">First-class Mojo support</div>
-        <p class="feat-desc">Add <code>mojo</code> as a dependency. Molt auto-detects it, sets <code>MOJO_PYTHON_LIBRARY</code>, writes a shim, and lets you <code>molt run main.mojo</code>.</p>
+        <p class="feat-desc">Add <code>mojo</code> as a dependency. Molt auto-detects it, sets <code>MOJO_PYTHON_LIBRARY</code>, writes a shim, and <code>molt run main.mojo</code> dispatches directly. Call <code>Python.import_module("numpy")</code> from Mojo — it's there.</p>
       </div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">⚙️</div>
-        <div class="feat-title">Native kernel modules</div>
-        <p class="feat-desc">Compile C, Rust, or ASM to a <code>.so</code> extension via <code>molt build-kernel</code>. Generates the ctypes shim automatically. Zero Cython boilerplate.</p>
+        <div class="feat-title">Header-driven C extensions</div>
+        <p class="feat-desc">Point <code>[[tool.molt.c.modules]]</code> at a <code>.h</code> file. Molt parses every scalar function signature, generates the full CPython <code>PyInit_</code> / <code>PyMethodDef</code> glue, and compiles a real <code>.so</code> via <code>zig cc</code>. No Cython, no cffi, no <code>setup.py</code>.</p>
+      </div>
+      <div class="feature-card" data-reveal>
+        <div class="feat-icon">🔄</div>
+        <div class="feat-title">Bidirectional Python ↔ C</div>
+        <p class="feat-desc">Python calls C extensions at native speed. C calls back into Python packages via <code>PyImport_ImportModule</code> — the full store is on <code>PYTHONPATH</code>. Works for Mojo too: <code>Python.import_module("pandas")</code> resolves to the molt-managed install.</p>
+      </div>
+      <div class="feature-card" data-reveal>
+        <div class="feat-icon">🧬</div>
+        <div class="feat-title">Six native code paths</div>
+        <p class="feat-desc">Header-driven C, Cython, Rust + PyO3, manifest-driven kernel modules (any C-ABI language: Zig, C++, Odin, Nim, ASM), pre-built <code>.so</code> binding, and external build recipes. All cached in <code>~/.molt/native/</code>.</p>
+      </div>
+      <div class="feature-card" data-reveal>
+        <div class="feat-icon">🌐</div>
+        <div class="feat-title">Universal script launcher</div>
+        <p class="feat-desc"><code>molt run hello.rb</code> → <code>ruby hello.rb</code>. 25 runtimes built in (Ruby, Node, Go, Julia, Elixir, Lua, Swift, Perl, R, Kotlin, Dart, …). Add your own: <code>molt run-handler add deno "deno run {file} {args}"</code>. Per-OS overrides supported.</p>
       </div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🤖</div>
@@ -184,7 +214,7 @@
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🌍</div>
         <div class="feat-title">Cross-platform</div>
-        <p class="feat-desc">macOS (arm64 + amd64), Linux (amd64 + arm64), Windows (amd64). Single static Go binary — no runtime dependencies.</p>
+        <p class="feat-desc">macOS (arm64 + amd64), Linux (amd64 + arm64), Windows (amd64). <code>zig cc</code> cross-compiles C extensions from any host. Single static Go binary — no runtime deps.</p>
       </div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🧹</div>
@@ -282,7 +312,7 @@
     <div class="demos-header" data-reveal>
       <p class="label">14 runnable examples</p>
       <h2>See molt in action</h2>
-      <p>From a simple Hello World to Mojo SIMD kernels, hermetic binary distribution, and header-driven C extensions.</p>
+      <p>From Hello World to Mojo SIMD kernels, header-driven C extensions (Python calling C and C calling Python), hermetic binary distribution, and a universal polyglot script launcher across 25 runtimes.</p>
     </div>
 
     <div class="demo-tabs">
