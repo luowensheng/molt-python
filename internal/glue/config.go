@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// manifestSuffixes are the file suffixes recognised as glue manifest files.
+// A glue manifest is a <name>.molt.toml that contains a top-level `lang` key.
+// This distinguishes it from a native kernel manifest (which has no lang key).
+var manifestSuffixes = []string{".molt.toml", ".molt.json", ".molt.yaml", ".molt.yml"}
+
 // GlueConfig holds all [[tool.molt.glue]] blocks from the project config.
 type GlueConfig struct {
 	Modules []GlueModuleConfig
@@ -125,19 +130,57 @@ type GlueArg struct {
 	Type string
 }
 
-// LoadGlueConfig reads all [[tool.molt.glue]] stanzas from the project's
-// moltproject.toml or pyproject.toml. Returns an empty GlueConfig (no error)
-// when no [[tool.molt.glue]] blocks are present.
+// LoadGlueConfig loads glue module configurations for a project.
+//
+// It merges two sources (in this priority order):
+//
+//  1. <name>.molt.toml files in the project directory that contain a top-level
+//     `lang` key. These are the preferred, per-module format — identical to the
+//     native kernel manifest format but extended with glue-specific keys (lang,
+//     src, transport, crates, pkg_module). The module name is the file basename
+//     stripped of the .molt.toml suffix.
+//
+//  2. [[tool.molt.glue]] blocks in moltproject.toml or pyproject.toml (legacy /
+//     backward-compatible form, kept for projects that prefer inline config).
+//
+// Returns an empty GlueConfig (no error) when neither source is present.
 func LoadGlueConfig(projectDir string) (GlueConfig, error) {
+	var cfg GlueConfig
+
+	// 1. Scan project directory for <name>.molt.toml glue manifests.
+	entries, _ := os.ReadDir(projectDir)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		isManifest := false
+		for _, sfx := range manifestSuffixes {
+			if strings.HasSuffix(name, sfx) {
+				isManifest = true
+				break
+			}
+		}
+		if !isManifest {
+			continue
+		}
+		fullPath := filepath.Join(projectDir, name)
+		m, err := ParseGlueManifest(fullPath)
+		if err != nil || m == nil {
+			continue // not a glue manifest (no lang key) or parse error
+		}
+		cfg.Modules = append(cfg.Modules, *m)
+	}
+
+	// 2. Also read [[tool.molt.glue]] blocks from the project TOML file.
 	data, err := readGlueConfigFile(projectDir)
 	if err != nil {
-		return GlueConfig{}, nil // no config file → zero modules, no error
+		return cfg, nil // no TOML config — just return whatever manifests found
 	}
 
 	const header = "[[tool.molt.glue]]"
 	const fnHeader = "[[tool.molt.glue.fn]]"
 
-	var cfg GlueConfig
 	var curMod *GlueModuleConfig
 	var curFn *GlueFn
 
@@ -232,6 +275,176 @@ func LoadGlueConfig(projectDir string) (GlueConfig, error) {
 	flushMod()
 
 	return cfg, nil
+}
+
+// ParseGlueManifest reads a <name>.molt.toml file and returns a GlueModuleConfig
+// if the file contains a `lang` key (identifying it as a glue manifest rather
+// than a native kernel manifest). Returns nil without error when the file has
+// no lang key — this silently skips kernel manifests.
+//
+// The module name defaults to the file's basename stripped of the manifest
+// suffix (e.g. "stats" from "stats.molt.toml").
+//
+// Supported top-level keys:
+//
+//	lang       = "go" | "rust"         (required — distinguishes glue from kernel)
+//	src        = "./gocode"            (local path or library import path / crate name)
+//	transport  = "stdio" | "unix_socket" | "tcp"  (default: "stdio")
+//	crates     = ["flate2 = '1.0'"]   (Rust only)
+//	pkg_module = "github.com/you/lib" (Go only — explicit module path)
+//	module     = "stats"              (override derived module name)
+//
+// Function declarations use the same [[fn]] format as native kernel manifests:
+//
+//	[[fn]]
+//	name    = "mean"
+//	args    = [{ name = "data", type = "[]f64" }]
+//	returns = "f64"
+func ParseGlueManifest(path string) (*GlueModuleConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Quick pre-scan: does the file have a `lang` key at the top level?
+	// If not, it's a native kernel manifest — skip it.
+	hasLang := false
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "lang") && strings.Contains(t, "=") {
+			hasLang = true
+			break
+		}
+		// Stop scanning once we hit the first [[fn]] — lang must come before fns.
+		if t == "[[fn]]" {
+			break
+		}
+	}
+	if !hasLang {
+		return nil, nil // kernel manifest — not a glue manifest
+	}
+
+	// Derive module name from filename.
+	base := filepath.Base(path)
+	for _, sfx := range manifestSuffixes {
+		if strings.HasSuffix(base, sfx) {
+			base = strings.TrimSuffix(base, sfx)
+			break
+		}
+	}
+	m := &GlueModuleConfig{Module: base}
+
+	// Use splitGlueLogicalLines so multi-line `args = [...]` values are
+	// joined before key/value parsing.
+	lines := splitGlueLogicalLines(data)
+	var curFn *GlueFn
+
+	flushFn := func() {
+		if curFn != nil && curFn.Name != "" {
+			m.Fns = append(m.Fns, *curFn)
+			curFn = nil
+		}
+	}
+
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if ci := strings.Index(line, " #"); ci >= 0 {
+			line = strings.TrimSpace(line[:ci])
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		if line == "[[fn]]" {
+			flushFn()
+			curFn = &GlueFn{}
+			continue
+		}
+		// Any other section header ends the current [[fn]] and top-level scope.
+		if strings.HasPrefix(line, "[") {
+			flushFn()
+			continue
+		}
+
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+
+		if curFn != nil {
+			switch key {
+			case "name":
+				curFn.Name = strings.Trim(val, `"'`)
+			case "call":
+				curFn.Call = strings.Trim(val, `"'`)
+			case "returns":
+				curFn.Returns = strings.Trim(strings.Trim(val, `"'`), " ")
+			case "args":
+				curFn.Args = parseGlueArgs(val)
+			}
+		} else {
+			switch key {
+			case "module":
+				m.Module = strings.Trim(val, `"'`)
+			case "lang":
+				m.Lang = strings.ToLower(strings.Trim(val, `"'`))
+			case "src":
+				m.Src = strings.Trim(val, `"'`)
+			case "transport":
+				m.Transport = strings.Trim(val, `"'`)
+			case "crates":
+				m.Crates = parseTOMLStringArray(val)
+			case "pkg_module":
+				m.PkgModule = strings.Trim(val, `"'`)
+			}
+		}
+	}
+	flushFn()
+
+	if m.Lang == "" {
+		return nil, nil // safety: lang disappeared after pre-scan
+	}
+	return m, nil
+}
+
+// splitGlueLogicalLines joins multi-line TOML values (e.g. args = [\n{…}\n])
+// into a single logical line so the key=value parser can handle them.
+// Tracks bracket/brace/quote depth; only breaks on newline at depth 0.
+func splitGlueLogicalLines(data []byte) []string {
+	var lines []string
+	var cur strings.Builder
+	depth := 0
+	inStr := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if c == '"' && (i == 0 || data[i-1] != '\\') {
+			inStr = !inStr
+		}
+		if !inStr {
+			switch c {
+			case '[', '{', '(':
+				depth++
+			case ']', '}', ')':
+				depth--
+			}
+		}
+		if c == '\n' && depth == 0 && !inStr {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			continue
+		}
+		if c == '\n' {
+			cur.WriteByte(' ')
+			continue
+		}
+		cur.WriteByte(c)
+	}
+	if cur.Len() > 0 {
+		lines = append(lines, cur.String())
+	}
+	return lines
 }
 
 // readGlueConfigFile reads the project configuration file.

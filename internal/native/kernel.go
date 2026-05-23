@@ -73,6 +73,13 @@ func DiscoverKernels(projectDir string, cfg KernelConfig) ([]Source, error) {
 			}
 			seen[absP] = true
 
+			// Skip glue manifests (they have a top-level `lang` key).
+			// Glue manifests use the same *.molt.toml suffix but are
+			// consumed by internal/glue, not by this kernel pipeline.
+			if isGlueManifest(absP) {
+				return nil
+			}
+
 			// Module name is the basename of the manifest with the
 			// suffix stripped. PackagePath is its directory relative
 			// to the search root, dotted-form.
@@ -652,4 +659,36 @@ func linkKernelSO(gluePath, objPath, soOut, pyInclude string, zigCfg ZigConfig, 
 		return fmt.Errorf("link kernel .so:\n%s", string(out))
 	}
 	return nil
+}
+
+// isGlueManifest returns true if the manifest file at path has a top-level
+// `lang` key, which marks it as a Transport Glue manifest (handled by
+// internal/glue) rather than a native kernel manifest.
+func isGlueManifest(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, raw := range splitLogicalLines(data) {
+		line := strings.TrimSpace(raw)
+		if ci := strings.Index(line, " #"); ci >= 0 {
+			line = strings.TrimSpace(line[:ci])
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Stop at first section header — top-level keys only.
+		if strings.HasPrefix(line, "[") {
+			return false
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		if key == "lang" {
+			return true
+		}
+	}
+	return false
 }

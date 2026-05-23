@@ -1,0 +1,36 @@
+# stats.molt.toml — Transport Glue manifest for the Go stats package.
+#
+# molt sync reads this file, compiles a JSON-RPC stdio server that imports
+# the Go package at `src`, and generates stats.py + stats.pyi in the
+# project's glue directory so `import stats` works from Python.
+#
+# The [[fn]] format is identical to native kernel manifests (.molt.toml),
+# extended with glue-specific top-level keys (lang, src, transport).
+
+lang      = "go"
+src       = "./gocode"   # Go package directory (package stats, NOT package main)
+transport = "stdio"      # subprocess per Python process; lazy-start on first call
+
+[[fn]]
+name        = "mean"
+description = "Arithmetic mean of a float64 slice."
+args        = [{ name = "data", type = "[]f64" }]
+returns     = "f64"
+
+[[fn]]
+name        = "stddev"
+description = "Population standard deviation."
+args        = [{ name = "data", type = "[]f64" }]
+returns     = "f64"
+
+[[fn]]
+name        = "histogram"
+description = "Bucket data into n equal-width bins; returns bin counts."
+args        = [{ name = "data", type = "[]f64" }, { name = "buckets", type = "i32" }]
+returns     = "[]i32"
+
+[[fn]]
+name        = "compress"
+description = "zlib-compress a byte slice; returns compressed bytes."
+args        = [{ name = "payload", type = "bytes" }]
+returns     = "bytes"

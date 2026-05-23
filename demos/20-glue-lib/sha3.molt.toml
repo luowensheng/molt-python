@@ -1,0 +1,21 @@
+# sha3.molt.toml — Transport Glue manifest for golang.org/x/crypto/sha3.
+#
+# No local Go code required. molt sync runs `go get golang.org/x/crypto/sha3`
+# inside the temp build module, then compiles the server.
+
+lang = "go"
+src  = "golang.org/x/crypto/sha3"   # third-party module; go get runs automatically
+
+[[fn]]
+name        = "sum256"
+description = "SHA3-256 hash; returns 32 bytes."
+call        = "sha3.Sum256"
+args        = [{ name = "data", type = "bytes" }]
+returns     = "bytes"
+
+[[fn]]
+name        = "sum512"
+description = "SHA3-512 hash; returns 64 bytes."
+call        = "sha3.Sum512"
+args        = [{ name = "data", type = "bytes" }]
+returns     = "bytes"

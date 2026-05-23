@@ -1,0 +1,14 @@
+# gosha256.molt.toml — Transport Glue manifest for Go stdlib crypto/sha256.
+#
+# No local Go code is required. molt sync runs `go get` (not needed for stdlib)
+# and compiles a server that calls sha256.Sum256 directly.
+
+lang = "go"
+src  = "crypto/sha256"   # Go stdlib package — no local Go code needed
+
+[[fn]]
+name        = "sum256"
+description = "SHA-256 hash; returns the 32-byte digest."
+call        = "sha256.Sum256"   # fully-qualified call: pkg.Func
+args        = [{ name = "data", type = "bytes" }]
+returns     = "bytes"

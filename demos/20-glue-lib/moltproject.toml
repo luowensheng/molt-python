@@ -2,41 +2,8 @@
 name = "demo-20-glue-lib"
 lang = "python"
 
-# ── Transport Glue: import Go stdlib packages with zero Go code ───────────────
-#
-# No local .go files needed. molt detects that `src` is a library import
-# path (contains "/" with no file extension) and generates a server that
-# imports the package directly.
-#
-# For stdlib:         no go.mod changes needed
-# For third-party:    molt runs `go get <path>` in a temp module before build
-
-[[tool.molt.glue]]
-module    = "gosha256"
-lang      = "go"
-src       = "crypto/sha256"          # Go stdlib — no local files
-transport = "stdio"
-
-  [[tool.molt.glue.fn]]
-  name    = "sum256"
-  args    = [{ name = "data", type = "bytes" }]
-  returns = "bytes"
-
-[[tool.molt.glue]]
-module    = "sha3"
-lang      = "go"
-src       = "golang.org/x/crypto/sha3"   # third-party; molt runs go get
-transport = "stdio"
-
-  [[tool.molt.glue.fn]]
-  name    = "sum256"
-  args    = [{ name = "data", type = "bytes" }]
-  returns = "bytes"
-
-  [[tool.molt.glue.fn]]
-  name    = "sum512"
-  args    = [{ name = "data", type = "bytes" }]
-  returns = "bytes"
+# Glue configuration lives in gosha256.molt.toml and sha3.molt.toml.
+# molt sync detects *.molt.toml files with a `lang` key and treats them as glue modules.
 
 [tool.molt.tasks]
 demo = "python main.py"

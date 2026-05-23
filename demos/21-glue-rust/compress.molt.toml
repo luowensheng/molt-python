@@ -1,0 +1,31 @@
+# compress.molt.toml — Transport Glue manifest for the Rust compression module.
+#
+# compress_glue.rs is a thin adapter file (NOT a full Cargo project) that
+# molt includes directly into the generated server via include!(...).
+# The flate2 crate is listed in `crates` and added to the generated Cargo.toml.
+#
+# unix_socket transport: a persistent daemon starts on first call; multiple
+# Python threads can share it concurrently.
+
+lang      = "rust"
+src       = "compress_glue.rs"   # thin adapter; included via include!() in generated main.rs
+crates    = ["flate2 = '1.0'"]   # added to the generated Cargo.toml [dependencies]
+transport = "unix_socket"        # persistent daemon; concurrent Python threads share it
+
+[[fn]]
+name        = "deflate"
+description = "zlib-compress data using flate2."
+args        = [{ name = "data", type = "bytes" }]
+returns     = "bytes"
+
+[[fn]]
+name        = "inflate"
+description = "zlib-decompress data."
+args        = [{ name = "data", type = "bytes" }]
+returns     = "bytes"
+
+[[fn]]
+name        = "ratio"
+description = "Compression ratio (compressed_len / original_len). < 1.0 = good."
+args        = [{ name = "data", type = "bytes" }]
+returns     = "f64"
