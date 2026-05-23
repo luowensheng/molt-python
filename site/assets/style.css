@@ -511,6 +511,8 @@ footer {
   font-size: .82rem;
   line-height: 1.8;
   color: var(--muted);
+  white-space: pre;
+  overflow-x: auto;
 }
 .store-diagram .hi { color: var(--accent); }
 .store-diagram .gr { color: var(--green); }
