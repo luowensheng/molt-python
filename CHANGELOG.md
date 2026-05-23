@@ -10,6 +10,37 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.0] — 2026-05-23
+
+### Transport Glue — call Go/Rust functions from Python over IPC
+
+The biggest new feature: declare `[[tool.molt.glue]]` blocks in your project config and
+`molt sync` auto-generates a typed Python module that calls your Go or Rust code through
+a zero-configuration IPC server. No `.so`, no cgo, no ABI constraints — any type that
+survives JSON round-trip works.
+
+- **Go support** — local packages (`src = "./mylib"`), Go stdlib (`src = "crypto/sha256"`),
+  and third-party modules (`src = "golang.org/x/crypto/sha3"`). Third-party: `go get` runs
+  automatically. Stdlib: clean go.mod, no require entries needed.
+- **Rust support** — thin adapter `.rs` file (`src = "compress_glue.rs"`) included directly
+  into the generated server via `include!`. Extra crates added to the generated `Cargo.toml`
+  via `crates = [...]`.
+- **Three transports**: `stdio` (subprocess per Python process, default), `unix_socket`
+  (persistent daemon, concurrent threads), `tcp` (network-addressable daemon).
+- **Type system**: `i32/i64/f32/f64/bool/string/bytes/[]i32/[]f64/[]string/json` — full
+  bidirectional mapping between Go, Rust, Python, and JSON wire format. `bytes` args/returns
+  are base64-encoded on the wire, transparent in Python.
+- **Python shim fix**: re-writes `python`/`python3` shims after glue build so the glue
+  directory is included in the hardcoded `PYTHONPATH` inside the shim.
+- **Typed stubs**: `.pyi` files generated alongside `.py` clients for full IDE completion.
+- **Glue driver system**: `~/.molt/glue-drivers.yaml` for custom language drivers; built-in
+  drivers for Go and Rust; extensible to Nim, Zig, Crystal, etc.
+- **CLI**: `molt glue list/show/regen/start/stop` and `molt glue-driver list/show/add`.
+- **3 new demos**: 19 (Go stdio), 20 (Go library imports), 21 (Rust unix_socket).
+- **Site**: 21 demos, Transport Glue feature card, demos 19–21 on GitHub Pages.
+
+---
+
 ## [0.1.0] — 2026-05-23
 
 First public release of molt — a hermetic Python toolchain built on top of [uv](https://github.com/astral-sh/uv).
@@ -77,5 +108,6 @@ First public release of molt — a hermetic Python toolchain built on top of [uv
 
 ---
 
-[Unreleased]: https://github.com/luowensheng/molt-python/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/luowensheng/molt-python/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/luowensheng/molt-python/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/luowensheng/molt-python/releases/tag/v0.1.0

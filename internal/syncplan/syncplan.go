@@ -21,6 +21,7 @@ import (
 	"os/exec"
 
 	"molt/internal/editor"
+	"molt/internal/glue"
 	"molt/internal/lockparse"
 	"molt/internal/native"
 	"molt/internal/projstate"
@@ -316,6 +317,37 @@ func Sync(projectDir string, opts Options) error {
 	// subsequent `molt run` / `molt mojo` invocations find the correct paths.
 	if err := writeMojoShimIfPresent(absProj, pyExe, spec); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: mojo shim: %v\n", err)
+	}
+
+	// 9c. Glue transport modules — compile Go/Rust/custom IPC servers + Python clients.
+	// The generated .py modules are placed in projstate.Dir(absProj)/glue/ which
+	// is prepended to the syspath so `import <module>` works after sync.
+	glueCfg, err := glue.LoadGlueConfig(absProj)
+	if err == nil && len(glueCfg.Modules) > 0 {
+		if _, glueErr := glue.BuildAll(glueCfg, absProj, opts.Verbose); glueErr != nil {
+			fmt.Fprintf(os.Stderr, "warn: glue build: %v\n", glueErr)
+		} else {
+			glueDir := glue.GlueDir(absProj)
+			// Prepend glue dir to syspath so generated Python modules are importable.
+			syspathDirs = append([]string{glueDir}, syspathDirs...)
+			spec.Syspath = syspathDirs
+			if err := syspath.Save(spec); err != nil {
+				fmt.Fprintf(os.Stderr, "warn: re-write syspath.json after glue build: %v\n", err)
+			}
+			// Re-write python/python3 shims so the glue dir is in the hardcoded
+			// PYTHONPATH inside the shim. Without this, tasks that invoke `python`
+			// via the shim overwrite PYTHONPATH and lose the glue dir.
+			{
+				pythonPath := strings.Join(append([]string{projstate.Dir(absProj)}, syspathDirs...), string(os.PathListSeparator))
+				binDir := projstate.Bin(absProj)
+				if err2 := writePythonShim(binDir, "python", pyExe, pythonPath); err2 != nil {
+					fmt.Fprintf(os.Stderr, "warn: re-write python shim after glue: %v\n", err2)
+				}
+				if err2 := writePythonShim(binDir, "python3", pyExe, pythonPath); err2 != nil {
+					fmt.Fprintf(os.Stderr, "warn: re-write python3 shim after glue: %v\n", err2)
+				}
+			}
+		}
 	}
 
 	// 10. Update registry + projstate meta.

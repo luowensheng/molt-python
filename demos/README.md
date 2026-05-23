@@ -1,6 +1,6 @@
 # molt demos
 
-Eighteen runnable projects, each highlighting a different part of molt.
+Twenty-one runnable projects, each highlighting a different part of molt.
 
 ```
 demos/
@@ -22,6 +22,9 @@ demos/
   16-cpp-project/    C++17 as the primary language: molt run hello.cpp + multi-file
   17-zig-project/    Zig 0.16 as the primary language: molt run hello.zig + build-exe
   18-rust-project/   Rust via pkg-backend: molt add → cargo, molt sync → cargo fetch
+  19-glue-go/        Transport Glue: Go functions called from Python (stdio)
+  20-glue-lib/       Transport Glue: Go stdlib + third-party library imports
+  21-glue-rust/      Transport Glue: Rust + flate2, unix_socket transport
 ```
 
 ---
@@ -645,4 +648,133 @@ molt pkg-backend add nim \
 # [tool.molt.backend]
 # add  = "bun add {package}{version_flag}"
 # sync = "bun install"
+```
+
+---
+
+## 19 — glue-go
+
+**Transport Glue: Go functions called from Python over stdio.**
+
+Calls a pure Go statistics package (`stats/stats.go`) from Python with no `.so`,
+no cgo, and no ABI compatibility issues. The Go package is `package stats` (not
+`package main`) — molt generates a server binary that imports it via a Go module
+`replace` directive, then exposes its functions as a Python module.
+
+### Layout
+
+```
+19-glue-go/
+  gocode/
+    go.mod      ← module user/stats
+    stats.go    ← package stats: Mean, Stddev, Histogram, Compress
+  moltproject.toml
+  main.py
+```
+
+### moltproject.toml
+
+```toml
+[[tool.molt.glue]]
+module    = "stats"
+lang      = "go"
+src       = "./stats"   # Go package directory — NOT package main
+transport = "stdio"
+
+  [[tool.molt.glue.fn]]
+  name    = "mean"
+  args    = [{ name = "data", type = "[]f64" }]
+  returns = "f64"
+```
+
+### What molt generates
+
+```
+.molt/_build_stats/go.mod   — module molt-glue-stats; replace user/stats => ./stats
+.molt/_build_stats/server.go — package main; import user "user/stats"; JSON dispatch
+.molt/glue/stats_server      — compiled binary
+.molt/glue/stats.py          — Python client (lazy subprocess start)
+.molt/glue/stats.pyi         — type stubs for IDE completion
+```
+
+### Run
+
+```sh
+molt sync       # compile Go server + generate Python client
+molt run demo   # python main.py — calls Go from Python over stdio
+molt glue list  # show all glue modules
+```
+
+---
+
+## 20 — glue-lib
+
+**Transport Glue: import Go stdlib and third-party packages — zero local Go code.**
+
+`src` is a Go import path, not a local file. molt detects this and generates a server
+that imports the package directly. Third-party paths trigger `go get` automatically.
+
+### moltproject.toml
+
+```toml
+[[tool.molt.glue]]
+module    = "gosha256"
+lang      = "go"
+src       = "crypto/sha256"               # stdlib — no go get needed
+
+[[tool.molt.glue]]
+module    = "sha3"
+lang      = "go"
+src       = "golang.org/x/crypto/sha3"   # third-party; molt runs go get
+```
+
+### Run
+
+```sh
+molt sync       # go get golang.org/x/crypto, compile both servers
+molt run demo   # python main.py — hash with stdlib and third-party Go crypto
+```
+
+---
+
+## 21 — glue-rust
+
+**Transport Glue: Rust (flate2 compression) over unix_socket.**
+
+`compress_glue.rs` is a thin adapter file — not a full crate. molt uses Rust's
+`include!` macro to pull it into a generated `main.rs`. The `flate2` crate is declared
+in `crates = [...]` and added to the generated `Cargo.toml`.
+
+Transport is `unix_socket`: the Rust server runs as a persistent daemon so multiple
+Python threads can share it concurrently.
+
+### Layout
+
+```
+21-glue-rust/
+  compress_glue.rs   ← pub fn deflate / inflate / ratio (NOT a crate)
+  moltproject.toml
+  main.py
+```
+
+### moltproject.toml
+
+```toml
+[[tool.molt.glue]]
+module    = "compress"
+lang      = "rust"
+src       = "compress_glue.rs"
+crates    = ["flate2 = '1.0'"]
+transport = "unix_socket"     # persistent daemon; concurrent callers
+```
+
+### Run
+
+```sh
+molt sync          # cargo build --release, generate compress.py
+molt run demo      # python main.py — concurrent compression from 10 threads
+
+# Optional: explicit daemon management
+molt glue start compress   # start server before Python imports it
+molt glue stop  compress   # stop it
 ```

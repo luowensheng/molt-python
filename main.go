@@ -21,6 +21,7 @@ import (
 	"molt/internal/adopt"
 	"molt/internal/builder"
 	"molt/internal/editor"
+	"molt/internal/glue"
 	"molt/internal/mcpserver"
 	"molt/internal/globalenv"
 	"molt/internal/integrity"
@@ -157,6 +158,12 @@ func main() {
 	// ── AI / MCP server ───────────────────────────────────────────────────
 	case "mcp":
 		err = mcpserver.RunMCPServer(version)
+
+	// ── Glue transport ────────────────────────────────────────────────────
+	case "glue":
+		err = cmdGlue(os.Args[2:])
+	case "glue-driver":
+		err = cmdGlueDriver(os.Args[2:])
 
 	// ── Native presets ────────────────────────────────────────────────────
 	case "native-preset":
@@ -370,6 +377,18 @@ uv:
   uv path                          Print resolved uv binary path
   uv version                       Print uv version
   uv <args...>                     Raw passthrough to uv
+
+Glue transport (~/.molt/glue-drivers.yaml — call Go/Rust/any lang from Python over IPC):
+  glue list                              List [[tool.molt.glue]] modules in this project
+  glue show <module>                     Show config + server status
+  glue regen <module>                    Force-rebuild (clears cache)
+  glue start <module>                    Start a persistent server (unix_socket/tcp)
+  glue stop  <module>                    Stop a persistent server
+  glue-driver list                       List all glue drivers (built-in + user)
+  glue-driver show <lang>                Show build_cmd, lib_setup_cmd, templates
+  glue-driver add <lang> --build <cmd>   Register a driver for a new language
+  glue-driver remove <lang>              Remove a user driver (built-ins protected)
+  glue-driver reset                      Restore factory defaults (Go + Rust)
 
 AI integration:
   mcp                              Start stdio MCP server (for Claude Code, Cursor, etc.)
@@ -4032,6 +4051,340 @@ func cmdPkgBackendAdd(args []string) error {
 		return err
 	}
 	fmt.Printf("✓ backend registered: %s → add: %s\n", lang, b.Add)
+	return nil
+}
+
+// ── glue: transport glue module management ───────────────────────────────────
+
+func cmdGlue(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: molt glue <subcommand>\n\n" +
+			"Subcommands:\n" +
+			"  list                           List all [[tool.molt.glue]] modules\n" +
+			"  show <module>                  Show config for a glue module\n" +
+			"  regen <module>                 Force-rebuild a glue module (clears cache)\n" +
+			"  start <module>                 Start a persistent server daemon (unix_socket/tcp)\n" +
+			"  stop  <module>                 Stop a persistent server daemon\n")
+	}
+	switch args[0] {
+	case "list":
+		return cmdGlueList()
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt glue show <module>")
+		}
+		return cmdGlueShow(args[1])
+	case "regen":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt glue regen <module>")
+		}
+		return cmdGlueRegen(args[1])
+	case "start":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt glue start <module>")
+		}
+		return cmdGlueStart(args[1])
+	case "stop":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt glue stop <module>")
+		}
+		return cmdGlueStop(args[1])
+	default:
+		return fmt.Errorf("unknown molt glue subcommand: %s", args[0])
+	}
+}
+
+func cmdGlueList() error {
+	root := projectRoot()
+	cfg, err := glue.LoadGlueConfig(root)
+	if err != nil {
+		return err
+	}
+	if len(cfg.Modules) == 0 {
+		fmt.Println("No [[tool.molt.glue]] modules declared in this project.")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "MODULE\tLANG\tTRANSPORT\tSRC")
+	fmt.Fprintln(w, "------\t----\t---------\t---")
+	for _, m := range cfg.Modules {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", m.Module, m.Lang, m.EffectiveTransport(), m.Src)
+	}
+	return w.Flush()
+}
+
+func cmdGlueShow(moduleName string) error {
+	root := projectRoot()
+	cfg, err := glue.LoadGlueConfig(root)
+	if err != nil {
+		return err
+	}
+	for _, m := range cfg.Modules {
+		if m.Module != moduleName {
+			continue
+		}
+		fmt.Printf("Module    : %s\n", m.Module)
+		fmt.Printf("Lang      : %s\n", m.Lang)
+		fmt.Printf("Src       : %s\n", m.Src)
+		fmt.Printf("Transport : %s\n", m.EffectiveTransport())
+		fmt.Printf("Functions : %d\n", len(m.Fns))
+		for _, fn := range m.Fns {
+			args := make([]string, len(fn.Args))
+			for i, a := range fn.Args {
+				args[i] = a.Name + " " + a.Type
+			}
+			fmt.Printf("  %s(%s) → %s\n", fn.Name, strings.Join(args, ", "), fn.Returns)
+		}
+		serverBin := filepath.Join(glue.GlueDir(root), m.Module+"_server")
+		if runtime.GOOS == "windows" {
+			serverBin += ".exe"
+		}
+		if _, err := os.Stat(serverBin); err == nil {
+			fmt.Printf("Server    : %s (compiled)\n", serverBin)
+		} else {
+			fmt.Printf("Server    : (not yet built — run molt sync)\n")
+		}
+		return nil
+	}
+	return fmt.Errorf("glue module %q not found in this project's config", moduleName)
+}
+
+func cmdGlueRegen(moduleName string) error {
+	root := projectRoot()
+	cfg, err := glue.LoadGlueConfig(root)
+	if err != nil {
+		return err
+	}
+	for _, m := range cfg.Modules {
+		if m.Module != moduleName {
+			continue
+		}
+		// Remove server binary to force rebuild.
+		serverBin := filepath.Join(glue.GlueDir(root), m.Module+"_server")
+		if runtime.GOOS == "windows" {
+			serverBin += ".exe"
+		}
+		_ = os.Remove(serverBin)
+		fmt.Printf("Building glue module %q...\n", moduleName)
+		singleCfg := glue.GlueConfig{Modules: []glue.GlueModuleConfig{m}}
+		if _, err := glue.BuildAll(singleCfg, root, true); err != nil {
+			return fmt.Errorf("regen failed: %w", err)
+		}
+		fmt.Printf("✓ glue/%s rebuilt\n", moduleName)
+		return nil
+	}
+	return fmt.Errorf("glue module %q not found", moduleName)
+}
+
+func cmdGlueStart(moduleName string) error {
+	root := projectRoot()
+	cfg, err := glue.LoadGlueConfig(root)
+	if err != nil {
+		return err
+	}
+	for _, m := range cfg.Modules {
+		if m.Module != moduleName {
+			continue
+		}
+		t := m.EffectiveTransport()
+		if t == "stdio" {
+			return fmt.Errorf("glue module %q uses stdio transport — it starts automatically on first Python import\n"+
+				"(use unix_socket or tcp transport for persistent servers)", moduleName)
+		}
+		serverBin := filepath.Join(glue.GlueDir(root), m.Module+"_server")
+		if runtime.GOOS == "windows" {
+			serverBin += ".exe"
+		}
+		if _, err := os.Stat(serverBin); err != nil {
+			return fmt.Errorf("server binary not found: %s\nRun 'molt sync' first", serverBin)
+		}
+		cmd := exec.Command(serverBin)
+		if t == "unix_socket" {
+			sockDir := os.TempDir()
+			sockPath := filepath.Join(sockDir, "molt-glue-"+moduleName+".sock")
+			cmd.Env = append(os.Environ(), "MOLT_GLUE_SOCK="+sockPath)
+			fmt.Printf("Starting %s server (unix_socket: %s)...\n", moduleName, sockPath)
+		} else {
+			portFile := filepath.Join(os.TempDir(), "molt-glue-"+moduleName+".port")
+			cmd.Env = append(os.Environ(), "MOLT_GLUE_PORT_FILE="+portFile)
+			fmt.Printf("Starting %s server (tcp, port file: %s)...\n", moduleName, portFile)
+		}
+		cmd.Stdin = nil
+		cmd.Stdout = nil
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start server: %w", err)
+		}
+		fmt.Printf("✓ glue/%s server started (pid %d)\n", moduleName, cmd.Process.Pid)
+		return nil
+	}
+	return fmt.Errorf("glue module %q not found", moduleName)
+}
+
+func cmdGlueStop(moduleName string) error {
+	// Find the socket/port file and remove it (the OS will close connections).
+	t := os.TempDir()
+	for _, name := range []string{
+		filepath.Join(t, "molt-glue-"+moduleName+".sock"),
+		filepath.Join(t, "molt-glue-"+moduleName+".port"),
+	} {
+		if _, err := os.Stat(name); err == nil {
+			_ = os.Remove(name)
+			fmt.Printf("✓ removed %s\n", name)
+		}
+	}
+	fmt.Printf("✓ glue/%s server stopped (connections will drain)\n", moduleName)
+	return nil
+}
+
+// ── glue-driver: driver registry management ──────────────────────────────────
+
+func cmdGlueDriver(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: molt glue-driver <subcommand>\n\n" +
+			"Subcommands:\n" +
+			"  list                           List all drivers (built-in + user)\n" +
+			"  show <lang>                    Show driver for a language\n" +
+			"  add <lang> [options]           Add or update a driver\n" +
+			"    --build <cmd>                Build command (required)\n" +
+			"    --lib-setup <cmd>            Lib setup command (optional)\n" +
+			"    --server-template <path>     Custom server template file\n" +
+			"    --client-template <path>     Custom Python client template file\n" +
+			"  remove <lang>                  Remove a user driver\n" +
+			"  reset                          Restore built-in defaults\n" +
+			"  path                           Print ~/.molt/glue-drivers.yaml path\n" +
+			"\nTokens: {server_dir} {server_file} {cargo_toml} {release_bin} {output} {import_path} {module}\n")
+	}
+	switch args[0] {
+	case "list":
+		return cmdGlueDriverList()
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt glue-driver show <lang>")
+		}
+		return cmdGlueDriverShow(args[1])
+	case "add":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt glue-driver add <lang> --build <cmd> [--lib-setup <cmd>] ...")
+		}
+		return cmdGlueDriverAdd(args[1:])
+	case "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: molt glue-driver remove <lang>")
+		}
+		if err := glue.Remove(args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("✓ glue driver for %q removed\n", args[1])
+		return nil
+	case "reset":
+		if err := glue.Reset(); err != nil {
+			return err
+		}
+		fmt.Println("✓ glue-drivers reset to built-in defaults")
+		return nil
+	case "path":
+		p, err := glue.GlobalPath()
+		if err != nil {
+			return err
+		}
+		fmt.Println(p)
+		return nil
+	default:
+		return fmt.Errorf("unknown molt glue-driver subcommand: %s", args[0])
+	}
+}
+
+func cmdGlueDriverList() error {
+	drivers, err := glue.Load()
+	if err != nil {
+		return err
+	}
+	// Merge with defaults so built-ins always appear.
+	seen := map[string]bool{}
+	all := make([]glue.GlueDriver, 0, len(drivers)+len(glue.DefaultDrivers()))
+	for _, d := range drivers {
+		all = append(all, d)
+		seen[strings.ToLower(d.Lang)] = true
+	}
+	for _, d := range glue.DefaultDrivers() {
+		if !seen[strings.ToLower(d.Lang)] {
+			all = append(all, d)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Lang < all[j].Lang })
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "LANG\tBUILD_CMD\tTEMPLATE")
+	fmt.Fprintln(w, "----\t---------\t--------")
+	for _, d := range all {
+		buildCmd := d.BuildCmd
+		if len(buildCmd) > 60 {
+			buildCmd = buildCmd[:57] + "..."
+		}
+		tmpl := d.ServerTemplate
+		if tmpl == "" {
+			tmpl = "(built-in)"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", d.Lang, buildCmd, tmpl)
+	}
+	return w.Flush()
+}
+
+func cmdGlueDriverShow(lang string) error {
+	d, ok, err := glue.Find(lang)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no glue driver registered for lang %q", lang)
+	}
+	fmt.Printf("Lang           : %s\n", d.Lang)
+	fmt.Printf("BuildCmd       : %s\n", d.BuildCmd)
+	if d.LibSetupCmd != "" {
+		fmt.Printf("LibSetupCmd    : %s\n", d.LibSetupCmd)
+	}
+	if d.ServerTemplate != "" {
+		fmt.Printf("ServerTemplate : %s\n", d.ServerTemplate)
+	} else {
+		fmt.Printf("ServerTemplate : (built-in)\n")
+	}
+	if d.ClientTemplate != "" {
+		fmt.Printf("ClientTemplate : %s\n", d.ClientTemplate)
+	} else {
+		fmt.Printf("ClientTemplate : (built-in)\n")
+	}
+	return nil
+}
+
+func cmdGlueDriverAdd(args []string) error {
+	lang := strings.ToLower(strings.TrimSpace(args[0]))
+	d, _, _ := glue.Find(lang)
+	d.Lang = lang
+
+	for i := 1; i < len(args)-1; i++ {
+		switch args[i] {
+		case "--build":
+			d.BuildCmd = args[i+1]
+			i++
+		case "--lib-setup":
+			d.LibSetupCmd = args[i+1]
+			i++
+		case "--server-template":
+			d.ServerTemplate = args[i+1]
+			i++
+		case "--client-template":
+			d.ClientTemplate = args[i+1]
+			i++
+		}
+	}
+	if d.BuildCmd == "" {
+		return fmt.Errorf("--build is required")
+	}
+	if err := glue.Add(d); err != nil {
+		return err
+	}
+	fmt.Printf("✓ glue driver registered: %s → build: %s\n", lang, d.BuildCmd)
 	return nil
 }
 

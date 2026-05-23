@@ -67,7 +67,7 @@
         </div>
         <div class="hero-stats fade-up delay-4">
           <div>
-            <div class="stat-num">18</div>
+            <div class="stat-num">21</div>
             <div class="stat-lbl">runnable demos</div>
           </div>
           <div>
@@ -195,6 +195,11 @@
         <p class="feat-desc">Define tasks in <code>pyproject.toml</code> under <code>[tool.molt.tasks]</code>. No Makefile, no shell scripts. <code>molt run dev</code> just works.</p>
       </div>
       <div class="feat-group-label"><span>Native code &amp; performance</span></div>
+      <div class="feature-card" data-reveal>
+        <div class="feat-icon">🔌</div>
+        <div class="feat-title">Transport Glue — Go/Rust from Python <span class="badge-new">NEW</span></div>
+        <p class="feat-desc">Declare a <code>[[tool.molt.glue]]</code> block. <code>molt sync</code> compiles a Go or Rust IPC server, generates a typed Python client, and adds it to <code>PYTHONPATH</code>. <code>import stats</code> calls Go at full speed — no <code>.so</code>, no ABI, no cgo constraints. Supports <code>stdio</code>, <code>unix_socket</code>, and <code>tcp</code> transports. Import stdlib or third-party packages with zero local Go/Rust code.</p>
+      </div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🔥</div>
         <div class="feat-title">First-class Mojo support</div>
@@ -555,7 +560,7 @@ $ molt pkg-backend add nim \
 <section id="demos">
   <div class="wrap">
     <div class="demos-header" data-reveal>
-      <p class="label">18 runnable examples</p>
+      <p class="label">21 runnable examples</p>
       <h2>See molt in action</h2>
       <p>From Hello World to Mojo SIMD kernels, header-driven C extensions (Python calling C and C calling Python), hermetic binary distribution, a universal polyglot script launcher across 28 runtimes, full C, C++17, Zig 0.16, and Rust project support, and a language-agnostic package management interface routing to Cargo, go mod, npm, and more.</p>
     </div>
@@ -579,6 +584,9 @@ $ molt pkg-backend add nim \
       <button class="demo-tab" data-demo="d16">16 C++ project</button>
       <button class="demo-tab" data-demo="d17">17 Zig project</button>
       <button class="demo-tab" data-demo="d18">18 Rust project</button>
+      <button class="demo-tab" data-demo="d19">19 Glue: Go</button>
+      <button class="demo-tab" data-demo="d20">20 Glue: Go libs</button>
+      <button class="demo-tab" data-demo="d21">21 Glue: Rust</button>
     </div>
 
     <div class="demo-panels">
@@ -1331,10 +1339,127 @@ test  = <span class="str">"cargo test"</span></code></pre>
         </div>
       </div>
 
+      <!-- 19 -->
+      <div class="demo-panel" data-demo="d19">
+        <div class="demo-info">
+          <span class="badge badge-native">🔌 Transport Glue</span>
+          <h3>19 — Transport Glue: user-written Go functions</h3>
+          <p>A Go package (<code>package stats</code>) lives in <code>gocode/</code>. Declare four functions in <code>moltproject.toml</code>. <code>molt sync</code> compiles a stdio server, generates <code>stats.py</code> + <code>stats.pyi</code>, and adds it to <code>PYTHONPATH</code>. <code>import stats</code> calls Go at full speed — no <code>.so</code>, no cgo, no ABI constraints.</p>
+          <ul class="demo-bullets">
+            <li><code>mean / stddev / histogram / compress</code> — all implemented in Go, called from Python</li>
+            <li>Typed Python stubs (<code>stats.pyi</code>) for IDE completion</li>
+            <li><code>bytes</code> args auto-encoded as base64 on the wire</li>
+            <li>stdio transport: one subprocess per Python process, zero networking</li>
+          </ul>
+          <a class="demo-link" href="demos/#d19">Full walkthrough →</a>
+        </div>
+        <div>
+          <pre><code><span class="cmt"># moltproject.toml</span>
+[[tool.molt.glue]]
+module = <span class="str">"stats"</span>
+lang   = <span class="str">"go"</span>
+src    = <span class="str">"./gocode"</span>
+
+  [[tool.molt.glue.fn]]
+  name    = <span class="str">"mean"</span>
+  args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"[]f64"</span> }]
+  returns = <span class="str">"f64"</span></code></pre>
+          <div class="terminal" style="margin-top:1rem;">
+            <div class="term-bar">
+              <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
+            </div>
+            <div class="term-body">
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt sync</span></div>
+              <div class="term-line"><span class="term-success"> → glue/stats: building (go/stdio)…</span></div>
+              <div class="term-line"><span class="term-success"> ✓ glue/stats built</span></div>
+              <div class="term-blank"></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run demo</span></div>
+              <div class="term-line"><span class="term-out"> mean:   84.33  stddev: 8.80</span></div>
+              <div class="term-line"><span class="term-out"> Compressed 7,000 bytes → 84 bytes</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 20 -->
+      <div class="demo-panel" data-demo="d20">
+        <div class="demo-info">
+          <span class="badge badge-native">🔌 Transport Glue</span>
+          <h3>20 — Transport Glue: Go library imports</h3>
+          <p>No local Go code at all. Set <code>src = "crypto/sha256"</code> for a stdlib package, or <code>src = "golang.org/x/crypto/sha3"</code> for a third-party module. <code>molt sync</code> runs <code>go get</code> for third-party deps, compiles the server, and wraps the Go package as a Python module.</p>
+          <ul class="demo-bullets">
+            <li>Go stdlib <code>crypto/sha256</code> → Python <code>import gosha256</code></li>
+            <li>Go third-party <code>golang.org/x/crypto/sha3</code> → Python <code>import sha3</code></li>
+            <li>Zero lines of Go written by the user — just toml declarations</li>
+            <li><code>bytes</code> return type: base64 decoded automatically to <code>bytes</code></li>
+          </ul>
+          <a class="demo-link" href="demos/#d20">Full walkthrough →</a>
+        </div>
+        <div>
+          <pre><code><span class="cmt"># moltproject.toml</span>
+[[tool.molt.glue]]
+module = <span class="str">"sha3"</span>
+lang   = <span class="str">"go"</span>
+src    = <span class="str">"golang.org/x/crypto/sha3"</span>
+
+  [[tool.molt.glue.fn]]
+  name    = <span class="str">"sum256"</span>
+  args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+  returns = <span class="str">"bytes"</span></code></pre>
+          <div class="terminal" style="margin-top:1rem;">
+            <div class="term-bar">
+              <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
+            </div>
+            <div class="term-body">
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run demo</span></div>
+              <div class="term-line"><span class="term-out"> SHA-256 (Go stdlib):  42a53681…</span></div>
+              <div class="term-line"><span class="term-out"> SHA3-256 (x/crypto):  7398bb66…</span></div>
+              <div class="term-line"><span class="term-success"> ✓ Both Go packages called from Python</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 21 -->
+      <div class="demo-panel" data-demo="d21">
+        <div class="demo-info">
+          <span class="badge badge-native">🦀 Transport Glue</span>
+          <h3>21 — Transport Glue: Rust with unix_socket</h3>
+          <p>A thin Rust adapter file (<code>compress_glue.rs</code>) wraps the <code>flate2</code> crate. <code>transport = "unix_socket"</code> starts a persistent daemon — multiple Python threads share one Rust server concurrently. Concurrent stress test: 10 threads call the server simultaneously.</p>
+          <ul class="demo-bullets">
+            <li><code>deflate / inflate / ratio</code> — Rust flate2 called from Python threads</li>
+            <li><code>crates = ["flate2 = '1.0'"]</code> adds crate deps to the generated Cargo.toml</li>
+            <li>unix_socket transport: persistent daemon, concurrent callers</li>
+            <li>10-thread stress test completes in &lt; 5 ms</li>
+          </ul>
+          <a class="demo-link" href="demos/#d21">Full walkthrough →</a>
+        </div>
+        <div>
+          <pre><code><span class="cmt"># moltproject.toml</span>
+[[tool.molt.glue]]
+module    = <span class="str">"compress"</span>
+lang      = <span class="str">"rust"</span>
+src       = <span class="str">"compress_glue.rs"</span>
+crates    = [<span class="str">"flate2 = '1.0'"</span>]
+transport = <span class="str">"unix_socket"</span></code></pre>
+          <div class="terminal" style="margin-top:1rem;">
+            <div class="term-bar">
+              <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
+            </div>
+            <div class="term-body">
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run demo</span></div>
+              <div class="term-line"><span class="term-out"> Original: 14,500 bytes</span></div>
+              <div class="term-line"><span class="term-out"> Compressed: 90 bytes (0.6%)</span></div>
+              <div class="term-line"><span class="term-success"> ✓ 10 threads completed in 2.8 ms</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /.demo-panels -->
 
     <div style="text-align:center; margin-top:3rem;">
-      <a href="demos/" class="btn btn-ghost">View all 18 demos in detail →</a>
+      <a href="demos/" class="btn btn-ghost">View all 21 demos in detail →</a>
     </div>
   </div>
 </section>

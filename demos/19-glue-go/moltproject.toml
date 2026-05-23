@@ -1,0 +1,43 @@
+[project]
+name = "demo-19-glue-go"
+lang = "python"
+
+# ── Transport Glue: call Go functions from Python ─────────────────────────────
+#
+# The `stats/` directory contains a Go package (package stats, NOT package main).
+# molt sync:
+#   1. Generates .molt/_build_stats/go.mod  (with replace => ./stats)
+#   2. Generates .molt/_build_stats/server.go  (imports "user/stats")
+#   3. Compiles to .molt/glue/stats_server
+#   4. Generates .molt/glue/stats.py + stats.pyi
+#
+# After sync: `import stats` in Python calls Go functions over a stdio pipe.
+
+[[tool.molt.glue]]
+module    = "stats"          # Python import name
+lang      = "go"
+src       = "./gocode"       # Go package directory (NOT package main)
+transport = "stdio"          # subprocess per Python process (default)
+
+  [[tool.molt.glue.fn]]
+  name    = "mean"
+  args    = [{ name = "data", type = "[]f64" }]
+  returns = "f64"
+
+  [[tool.molt.glue.fn]]
+  name    = "stddev"
+  args    = [{ name = "data", type = "[]f64" }]
+  returns = "f64"
+
+  [[tool.molt.glue.fn]]
+  name    = "histogram"
+  args    = [{ name = "data", type = "[]f64" }, { name = "buckets", type = "i32" }]
+  returns = "[]i32"
+
+  [[tool.molt.glue.fn]]
+  name    = "compress"
+  args    = [{ name = "payload", type = "bytes" }]
+  returns = "bytes"
+
+[tool.molt.tasks]
+demo = "python main.py"
