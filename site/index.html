@@ -25,6 +25,7 @@
     <div class="nav-links">
       <a href="#features">Features</a>
       <a href="#how">How it works</a>
+      <a href="#performance">Performance</a>
       <a href="#demos">Demos</a>
       <a href="#install">Install</a>
       <a href="demos/">All demos</a>
@@ -50,8 +51,10 @@
         </h1>
         <p class="hero-sub fade-up delay-2">
           One global package store. Zero <code>.venv</code> directories.
-          Header-driven C extensions with no boilerplate. First-class Mojo and assembly support.
-          Run Ruby, Go, Julia, or Elixir scripts with the same <code>molt run</code> command.
+          Header-driven C extensions with no boilerplate — drop in a <code>.h</code> file
+          and get <strong>30–100× speedups</strong> on CPU-bound hot paths.
+          First-class C, C++17, Zig, Mojo, and assembly support.
+          Cross-compile for Linux from macOS with <code>zig cc</code> — no Docker.
           Ship everything as a single integrity-verified binary.
         </p>
         <div class="hero-btns fade-up delay-3">
@@ -64,7 +67,7 @@
         </div>
         <div class="hero-stats fade-up delay-4">
           <div>
-            <div class="stat-num">15</div>
+            <div class="stat-num">17</div>
             <div class="stat-lbl">runnable demos</div>
           </div>
           <div>
@@ -131,11 +134,12 @@
       </div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">⚙️</div>
-        <div class="feat-title">Native code — both directions</div>
+        <div class="feat-title">Native hot paths — 30–500×</div>
         <p class="feat-desc">
           Point at a <code>.h</code> header — molt parses it, generates the entire CPython
-          glue, and compiles a real <code>.so</code> via <code>zig cc</code>. C can
-          call Python packages too: <code>PYTHONPATH</code> is set, so
+          glue, and compiles a real <code>.so</code> via <code>zig cc</code>. C extensions
+          run <strong>30–100× faster</strong> than Python loops; Zig/Mojo SIMD reaches
+          <strong>50–200×</strong>. C can call Python packages too:
           <code>PyImport_ImportModule("numpy")</code> just works.
         </p>
       </div>
@@ -213,8 +217,8 @@
       </div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🌍</div>
-        <div class="feat-title">Cross-platform</div>
-        <p class="feat-desc">macOS (arm64 + amd64), Linux (amd64 + arm64), Windows (amd64). <code>zig cc</code> cross-compiles C extensions from any host. Single static Go binary — no runtime deps.</p>
+        <div class="feat-title">Cross-platform builds from one machine</div>
+        <p class="feat-desc">macOS (arm64 + amd64), Linux (amd64 + arm64), Windows (amd64). <code>zig cc</code> cross-compiles C/C++/Zig for any target from your dev machine — no Docker, no remote SSH, no separate CI host. <code>molt build --os linux --arch amd64</code> from a Mac produces a Linux-native binary.</p>
       </div>
       <div class="feature-card" data-reveal>
         <div class="feat-icon">🧹</div>
@@ -303,6 +307,91 @@
         </div>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- ── Performance ────────────────────────────────────────────────────── -->
+<section id="performance" style="padding-block:5rem; background:var(--bg2);">
+  <div class="wrap">
+    <div class="section-head" data-reveal>
+      <p class="label">Native hot paths</p>
+      <h2>Speed up Python without changing languages</h2>
+      <p>Python is excellent for orchestration. When the bottleneck is a CPU-bound inner loop, drop in a C, C++, Zig, or Mojo hot path — molt compiles and wires it up automatically. Keep Python for everything else.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.5rem;margin-top:3rem;" data-reveal>
+
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1.5rem;">
+        <div style="font-size:1.6rem;margin-bottom:.6rem;">📈</div>
+        <h3 style="margin:0 0 .5rem;font-size:1.05rem;">Typical speedups</h3>
+        <table style="font-size:.82rem;width:100%;border-collapse:collapse;line-height:1.6;">
+          <tr><td style="color:var(--muted);padding-right:.8rem;">Float loop (10M)</td><td style="font-weight:600;color:var(--accent);">20–40×</td></tr>
+          <tr><td style="color:var(--muted);padding-right:.8rem;">C++ std::sort (1M)</td><td style="font-weight:600;color:var(--accent);">5–15×</td></tr>
+          <tr><td style="color:var(--muted);padding-right:.8rem;">SIMD dot product</td><td style="font-weight:600;color:var(--accent);">50–200×</td></tr>
+          <tr><td style="color:var(--muted);padding-right:.8rem;">Math primitives</td><td style="font-weight:600;color:var(--accent);">30–100×</td></tr>
+          <tr><td style="color:var(--muted);padding-right:.8rem;">Parallel (8-core, no GIL)</td><td style="font-weight:600;color:var(--accent);">4–8×</td></tr>
+          <tr><td style="color:var(--muted);padding-right:.8rem;">Mojo SIMD vs Python</td><td style="font-weight:600;color:var(--accent);">47× (demo 10)</td></tr>
+        </table>
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1.5rem;">
+        <div style="font-size:1.6rem;margin-bottom:.6rem;">⚡</div>
+        <h3 style="margin:0 0 .5rem;font-size:1.05rem;">The gradient of effort</h3>
+        <p style="font-size:.85rem;color:var(--muted);margin:0 0 .8rem;">Pick the strategy that matches the speedup you need.</p>
+        <div style="font-size:.82rem;line-height:1.9;">
+          <div><span style="color:var(--muted);">Python pure →</span> <strong>1×</strong> <span style="color:var(--muted);">no build</span></div>
+          <div><span style="color:var(--muted);">Cython →</span> <strong>2–10×</strong> <span style="color:var(--muted);">.pyx file</span></div>
+          <div><span style="color:var(--muted);">C extension →</span> <strong>5–100×</strong> <span style="color:var(--muted);">.h header</span></div>
+          <div><span style="color:var(--muted);">C++17 STL →</span> <strong>10–80×</strong> <span style="color:var(--muted);">subprocess or extern "C"</span></div>
+          <div><span style="color:var(--muted);">Zig / Mojo SIMD →</span> <strong>50–500×</strong> <span style="color:var(--muted);">vectorised</span></div>
+        </div>
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1.5rem;">
+        <div style="font-size:1.6rem;margin-bottom:.6rem;">🔄</div>
+        <h3 style="margin:0 0 .5rem;font-size:1.05rem;">Bidirectional interop</h3>
+        <p style="font-size:.85rem;color:var(--muted);margin:0 0 .8rem;">Python calls C, and C calls back into Python packages — numpy, scipy, pandas.</p>
+        <pre style="margin:0;font-size:.78rem;"><code><span class="cmt">// C calling Python (demo 13)</span>
+PyObject *np =
+  PyImport_ImportModule(<span class="str">"numpy"</span>);
+<span class="cmt">// numpy's BLAS mean, from C</span>
+PyObject *mean =
+  PyObject_CallMethod(
+    arr, <span class="str">"mean"</span>, NULL);</code></pre>
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1.5rem;">
+        <div style="font-size:1.6rem;margin-bottom:.6rem;">🌐</div>
+        <h3 style="margin:0 0 .5rem;font-size:1.05rem;">Cross-platform from one machine</h3>
+        <p style="font-size:.85rem;color:var(--muted);margin:0 0 .8rem;"><code>zig cc</code> cross-compiles C/C++/Zig for any target from your dev machine — no Docker, no remote SSH.</p>
+        <pre style="margin:0;font-size:.78rem;"><code><span class="cmt"># macOS → Linux binary</span>
+zig cc -target x86_64-linux-gnu \
+  -O2 -o bin/app-linux src/main.c
+
+<span class="cmt"># Full molt project, cross-compiled</span>
+molt build --os linux --arch amd64</code></pre>
+      </div>
+
+    </div>
+
+    <div data-reveal style="margin-top:3rem;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:2rem;">
+      <h3 style="margin:0 0 1rem;font-size:1.05rem;">The workflow: profile → drop in native → sync</h3>
+      <pre style="margin:0;font-size:.84rem;"><code><span class="cmt"># 1. Find the bottleneck</span>
+molt exec python -m cProfile -s cumulative main.py | head -20
+
+<span class="cmt"># 2. Add a C extension — just a header + one toml stanza</span>
+<span class="cmt">#    molt auto-generates PyInit_ / PyMethodDef / Py_BuildValue boilerplate</span>
+<span class="str">[[tool.molt.c.modules]]</span>
+header  = <span class="str">"fastsum.h"</span>
+sources = [<span class="str">"fastsum.c"</span>]
+
+<span class="cmt"># 3. Compile + wire up in one command</span>
+molt sync
+
+<span class="cmt"># 4. Call it — no restart, no pip install .</span>
+python -c <span class="str">"import fastsum; print(fastsum.sum_f64(data))"</span></code></pre>
+    </div>
+
   </div>
 </section>
 

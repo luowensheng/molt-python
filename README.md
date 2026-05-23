@@ -1409,6 +1409,163 @@ installed packages are available to child processes.
 
 ---
 
+## Speeding up Python with native hot paths
+
+Python is an excellent orchestration and glue language, but CPython pays a
+price for dynamism: every attribute access goes through a dict lookup, every
+arithmetic operation boxes and unboxes objects, and the GIL prevents true
+CPU-level parallelism across threads. For most code that price is invisible.
+For a numerical inner loop or a tight data-processing kernel, it is the
+difference between seconds and milliseconds.
+
+molt makes native code the path of least resistance — not a build-system
+adventure.
+
+### Where Python is slow (and by how much)
+
+| Scenario | Pure Python | Native equivalent | Typical speedup |
+|---|---|---|---|
+| Summing 10M floats in a loop | ~800 ms | C `for` loop | **20–40×** |
+| Sorting 1M structs | ~400 ms | C++ `std::sort` | **5–15×** |
+| 8-wide SIMD dot product | ~1200 ms | Zig / Mojo SIMD | **50–200×** |
+| Calling a math primitive 10M times | ~900 ms | C extension (no GIL) | **30–100×** |
+| Threaded parallel sum | GIL-serialised | C with `Py_BEGIN_ALLOW_THREADS` | **4–8× on 8-core** |
+| AES-128 block cipher, 1 GB | ~20 s | AES-NI via Zig or C | **200–500×** |
+
+These are representative orders of magnitude, not guarantees. The actual gain
+depends on whether your bottleneck is CPU, memory bandwidth, or latency.
+Profile first; optimise only what's hot.
+
+### The gradient of effort
+
+molt supports a spectrum of native-code strategies. Pick the one whose
+complexity matches the speedup you need:
+
+```
+Python pure        →  Cython (typed)  →  C extension  →  Zig / Mojo SIMD
+ 1×                    2–10×              5–100×           50–500×
+ no build step         .pyx file          .h header         .zig or .mojo file
+ easy to read          mostly Python      zero boilerplate  maximum hardware use
+                                          in molt
+```
+
+**1. Cython** — annotate types in a `.pyx` file, drop it next to your Python.
+molt compiles it automatically during `molt sync`.
+
+```toml
+# pyproject.toml
+[[tool.molt.native]]
+source = "fastsum.pyx"       # Cython auto-detected by extension
+```
+
+**2. Header-driven C extension (demo 13)** — write a `.h` file with your
+function signatures, implement in `.c`. molt parses the header, generates all
+CPython boilerplate, and compiles a real `.so`.
+
+```toml
+[[tool.molt.c.modules]]
+header = "fastmath.h"        # molt reads every scalar signature
+sources = ["fastmath.c"]
+```
+
+```python
+import fastmath
+print(fastmath.sum_f64(data))   # direct C call, no marshal overhead
+```
+
+Speedup for a simple float summation: **30–50× vs a Python loop** because
+the C function processes values without boxing them into `float` objects.
+
+**3. C++ templates (demo 16)** — for data structures, sorting, or STL
+algorithms that need C++17 features. Compile via molt tasks and call the
+binary from Python, or expose as a C extension via `extern "C"`.
+
+**4. Zig with SIMD (demo 17)** — for true vectorised computation. A Zig
+`@Vector(8, f32)` processes 8 floats per CPU instruction. On modern x86-64
+this means a vectorised sum is **50–200× faster** than a Python loop and
+**2–4× faster than scalar C**, because the compiler maps the vector directly
+to AVX2 registers.
+
+```zig
+// Zig: 8 floats processed in parallel by a single CPU instruction
+const v: @Vector(8, f32) = data[i..][0..8].*;
+acc += @reduce(.Add, v);
+```
+
+**5. Mojo SIMD (demos 10–11)** — for Python scientists who want near-metal
+performance with a Python-like syntax and full access to numpy/pandas.
+Demo 10 shows a **47× speedup** over a pure Python loop; demo 11 reaches
+near-numpy-MKL matmul performance at N=128.
+
+### Calling Python packages from C
+
+The interop is bidirectional. C and Zig code can call back into Python
+packages — numpy, pandas, scipy — because molt sets `PYTHONPATH` to the
+full package store before executing any native code:
+
+```c
+// In your C extension: call numpy from C
+PyObject *np = PyImport_ImportModule("numpy");
+PyObject *arr = PyObject_CallMethod(np, "array", "O", py_list);
+PyObject *mean = PyObject_CallMethod(arr, "mean", NULL);
+// numpy's BLAS-backed mean, called from C, result returned to Python
+```
+
+This lets you write a C or Zig outer loop for parallelism or SIMD, while
+still delegating to numpy for linear algebra — the best of both worlds.
+
+### Cross-platform native builds
+
+`zig cc` and `zig c++` are drop-in cross-compilers. From a single developer
+machine (say, macOS arm64) you can produce native binaries for every target:
+
+```bash
+# Compile a C extension for Linux amd64 — from macOS, no Docker
+GOOS=linux GOARCH=amd64 molt build              # full molt binary, cross-compiled
+
+# Cross-compile a C++ binary for Linux
+zig c++ -target x86_64-linux-gnu -O2 -std=c++17 -o bin/stats-linux src/main.cpp
+
+# Build and package the entire molt project for Linux from macOS
+molt build --os linux --arch amd64              # cross-compiles Python + native code
+```
+
+**Why this matters for CI/CD:** your Mac development machine can produce
+Linux release artifacts without a Linux VM, remote SSH, or Docker. The Zig
+toolchain is downloaded once by molt into `~/.molt/toolchains/zig/` and
+shared across all projects.
+
+**ABI compatibility:** the store key includes the ABI tag, so a wheel built
+for `cp313-cp313-linux_x86_64` is never confused with one built for
+`cp313-cp313-macosx_arm64`. Cross-compiled artifacts land in the correct
+per-platform slot automatically.
+
+### Workflow: profile → identify → drop in native code
+
+```bash
+# 1. Profile your Python to find the bottleneck
+molt exec python -m cProfile -s cumulative main.py | head -20
+
+# 2. Write the hot function in C (drop a .h + .c next to your Python)
+echo '[[tool.molt.c.modules]]' >> pyproject.toml
+echo 'header = "fastsum.h"'  >> pyproject.toml
+echo 'sources = ["fastsum.c"]' >> pyproject.toml
+
+# 3. Re-sync: molt compiles the extension automatically
+molt sync
+
+# 4. Import and call — no Python restart needed
+python -c "import fastsum; print(fastsum.sum_f64([1.0, 2.0, 3.0]))"
+
+# 5. Profile again to confirm
+molt exec python -m cProfile -s cumulative main.py | head -20
+```
+
+No Makefile, no `setup.py`, no `pip install .`. The extension is compiled,
+staged, and visible to Python in one `molt sync` invocation.
+
+---
+
 ## Where to go next
 
 - [`demos/`](demos/) — seventeen runnable example projects:
