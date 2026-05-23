@@ -63,7 +63,7 @@
         </div>
         <div class="hero-stats fade-up delay-4">
           <div>
-            <div class="stat-num">13</div>
+            <div class="stat-num">14</div>
             <div class="stat-lbl">runnable demos</div>
           </div>
           <div>
@@ -280,7 +280,7 @@
 <section id="demos">
   <div class="wrap">
     <div class="demos-header" data-reveal>
-      <p class="label">13 runnable examples</p>
+      <p class="label">14 runnable examples</p>
       <h2>See molt in action</h2>
       <p>From a simple Hello World to Mojo SIMD kernels, hermetic binary distribution, and header-driven C extensions.</p>
     </div>
@@ -299,6 +299,7 @@
       <button class="demo-tab" data-demo="d11">11 Mojo matmul</button>
       <button class="demo-tab" data-demo="d12">12 Mojo extension</button>
       <button class="demo-tab" data-demo="d13">13 C extension</button>
+      <button class="demo-tab" data-demo="d14">14 Polyglot</button>
     </div>
 
     <div class="demo-panels">
@@ -833,10 +834,50 @@ src  = [<span class="str">"fastmath.c"</span>]
         </div>
       </div>
 
+      <!-- 14 -->
+      <div class="demo-panel" data-demo="d14">
+        <div class="demo-info">
+          <span class="badge badge-native">🌐 Polyglot</span>
+          <h3>14 — Universal script launcher</h3>
+          <p><code>molt run hello.rb</code> → <code>ruby hello.rb</code>. Any file whose extension is registered in <code>~/.molt/run-handlers.yaml</code> is dispatched directly — 25 runtimes built in, add your own in one command.</p>
+          <ul class="demo-bullets">
+            <li>Ruby, Node, Go, Julia, Elixir, Swift, Lua, Perl, Bash — just <code>molt run</code></li>
+            <li>Args forwarded: <code>molt run hello.rb Alice</code></li>
+            <li>Add custom handlers: <code>molt run-handler add deno "deno run {file} {args}"</code></li>
+            <li>Per-OS overrides: <code>--windows "npx.cmd ts-node {file} {args}"</code></li>
+          </ul>
+          <a class="demo-link" href="demos/#d14">Full walkthrough →</a>
+        </div>
+        <div>
+          <pre><code><span class="cmt"># No config needed — just run the file</span>
+molt run hello.rb       <span class="cmt"># → ruby hello.rb</span>
+molt run hello.js Bob   <span class="cmt"># → node hello.js Bob</span>
+molt run hello.go       <span class="cmt"># → go run hello.go</span>
+molt run hello.jl       <span class="cmt"># → julia hello.jl</span>
+
+<span class="cmt"># Register a custom handler globally</span>
+molt run-handler add deno <span class="str">"deno run {file} {args}"</span>
+molt run server.ts      <span class="cmt"># → deno run server.ts</span></code></pre>
+          <div class="terminal" style="margin-top:1rem;">
+            <div class="term-bar">
+              <span class="term-dot d1"></span><span class="term-dot d2"></span><span class="term-dot d3"></span>
+            </div>
+            <div class="term-body">
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run hello.rb molt</span></div>
+              <div class="term-line"><span class="term-out"> Hello from Ruby 2.6.10! 👋 molt</span></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run hello.jl molt</span></div>
+              <div class="term-line"><span class="term-out"> Hello from Julia 1.11.4! 👋 molt</span></div>
+              <div class="term-line"><span class="term-prompt">$</span><span class="term-cmd"> molt run hello.exs molt</span></div>
+              <div class="term-line"><span class="term-out"> Hello from Elixir 1.18.3! 👋 molt</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /.demo-panels -->
 
     <div style="text-align:center; margin-top:3rem;">
-      <a href="demos/" class="btn btn-ghost">View all 12 demos in detail →</a>
+      <a href="demos/" class="btn btn-ghost">View all 14 demos in detail →</a>
     </div>
   </div>
 </section>

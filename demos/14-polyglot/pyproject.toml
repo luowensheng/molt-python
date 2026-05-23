@@ -1,0 +1,28 @@
+[project]
+name = "14-polyglot"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.molt.tasks]
+# Run the polyglot showcase — all languages back to back
+all     = "python showcase.py"
+python  = "python showcase.py python"
+ruby    = "python showcase.py ruby"
+node    = "python showcase.py node"
+lua     = "python showcase.py lua"
+perl    = "python showcase.py perl"
+bash    = "python showcase.py bash"
+go      = "python showcase.py go"
+swift   = "python showcase.py swift"
+julia   = "python showcase.py julia"
+elixir  = "python showcase.py elixir"
+
+# Direct file dispatch — no tasks needed for these
+# molt run hello.rb    uses the built-in ruby handler
+# molt run hello.js    uses the built-in node handler
+# molt run hello.lua   etc.
+
+# Management
+handlers = "molt run-handler list"
+add-deno = "molt run-handler add deno 'deno run {file} {args}'"

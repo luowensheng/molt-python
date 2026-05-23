@@ -1,6 +1,6 @@
 # molt demos
 
-Thirteen runnable projects, each highlighting a different part of molt.
+Fourteen runnable projects, each highlighting a different part of molt.
 
 ```
 demos/
@@ -17,6 +17,7 @@ demos/
   11-mojo-matmul/    Matrix multiply: naive → SIMD → tiled + parallel
   12-mojo-extension/ Mojo compiled to Python .so via PythonModuleBuilder
   13-c-extension/    C extension module from a .h header — no .molt.toml needed
+  14-polyglot/       molt run as universal launcher: Ruby, Node, Go, Julia, Elixir…
 ```
 
 ---
@@ -341,3 +342,82 @@ src  = ["fastmath.c"]
 ```
 
 That's the entire configuration. Compare to Cython (`.pyx` + `setup.py` + compiler) or cffi (manual `ffi.cdef()` with copy-pasted signatures).
+
+---
+
+## 14 — polyglot
+
+**What it shows:** `molt run` as a universal script launcher. Any file whose extension is registered in `~/.molt/run-handlers.yaml` is dispatched directly — no tasks, no configuration, no activation. Ships with 25 built-in handlers and lets you add your own.
+
+**What's in the demo:**
+
+```
+14-polyglot/
+  hello.rb     Ruby greeting
+  hello.js     Node.js greeting
+  hello.lua    Lua greeting
+  hello.pl     Perl greeting
+  hello.sh     Bash greeting
+  hello.go     Go greeting
+  hello.swift  Swift greeting
+  hello.jl     Julia greeting
+  hello.exs    Elixir greeting
+  showcase.py  Python runner that executes and times each script
+  pyproject.toml
+```
+
+**Running:**
+
+```bash
+cd demos/14-polyglot
+
+# Run any individual script directly — no config needed
+molt run hello.rb               # Hello from Ruby 2.6.10! 👋 World
+molt run hello.rb Alice         # Hello from Ruby 2.6.10! 👋 Alice
+molt run hello.js Bob
+molt run hello.go Charlie
+molt run hello.jl               # Hello from Julia 1.11.4! 👋 World
+
+# Run the polyglot showcase (all languages in a table with timing)
+molt run all
+
+# Or filter to one language
+molt run julia
+```
+
+**Managing handlers:**
+
+```bash
+# See all built-in and user handlers
+molt run-handler list
+
+# Show command for a specific extension
+molt run-handler show rb
+# Extension : .rb
+# Command   : ruby {file} {args}
+
+# Register a custom handler globally
+molt run-handler add deno "deno run {file} {args}"
+
+# Cross-platform handler
+molt run-handler add ts "npx ts-node {file} {args}" --windows "npx.cmd ts-node {file} {args}"
+
+# Remove a custom handler (built-ins cannot be removed, only overridden)
+molt run-handler remove deno
+
+# Restore factory defaults
+molt run-handler reset
+```
+
+**Token reference:**
+
+| Token | Value |
+|---|---|
+| `{file}` | Absolute path to the file |
+| `{dir}` | Directory containing the file |
+| `{basename}` | Filename without extension |
+| `{args}` | Extra arguments space-joined |
+| `{python}` | Project's pinned Python interpreter |
+| `{zig}` | Auto-installed zig binary |
+
+Handlers are stored in `~/.molt/run-handlers.yaml`. User-added entries take precedence over built-ins of the same extension. 25 runtimes ship out of the box: Ruby, Node, TypeScript, Lua, Bash, Perl, R, PHP, Swift, Go, Java, Kotlin, Groovy, PowerShell, Nim, Crystal, Julia, Elixir, Haskell, Clojure, Dart, V, Odin, and more.

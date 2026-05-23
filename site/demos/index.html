@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Demos — molt</title>
-  <meta name="description" content="12 runnable molt demos: Python apps, FastAPI, data analysis, CLI tools, hermetic binaries, assembly kernels, and Mojo.">
+  <meta name="description" content="14 runnable molt demos: Python apps, FastAPI, data analysis, CLI tools, hermetic binaries, assembly kernels, Mojo, C extensions, and polyglot scripting.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -127,7 +127,7 @@
   <div class="wrap" style="padding-block:4rem;">
     <div style="margin-bottom:3rem;">
       <p class="label">Demos</p>
-      <h1 style="font-size:clamp(1.8rem,4vw,3rem); margin-bottom:.8rem;">13 runnable examples</h1>
+      <h1 style="font-size:clamp(1.8rem,4vw,3rem); margin-bottom:.8rem;">14 runnable examples</h1>
       <p style="color:var(--muted); font-size:1.1rem; max-width:600px;">
         Every demo lives in <code>demos/</code> and runs with <code>molt run &lt;task&gt;</code>.
         Clone the repo and explore at your own pace.
@@ -159,6 +159,7 @@
         <a href="#d11"><span class="n">11</span> Mojo matmul</a>
         <a href="#d12"><span class="n">12</span> Mojo extension</a>
         <a href="#d13"><span class="n">13</span> C extension</a>
+        <a href="#d14"><span class="n">14</span> Polyglot launcher</a>
       </aside>
 
       <!-- Demo cards -->
@@ -850,6 +851,95 @@ molt sync           <span class="cmt"># parses fastmath.h → compiles fastmath.
 molt run demo       <span class="cmt"># calls all 8 functions</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/13-c-extension" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
+        </div>
+
+        <!-- 14 -->
+        <div class="demo-card" id="d14">
+          <div class="demo-card-header">
+            <span class="demo-number">14</span>
+            <div class="pill-row" style="margin:0;">
+              <span class="pill badge-native">🌐 Polyglot</span>
+              <span class="pill" style="color:var(--muted);border-color:var(--border);">25 runtimes</span>
+            </div>
+          </div>
+          <h2>Universal script launcher — run-handler system</h2>
+          <p class="demo-desc">
+            <code>molt run hello.rb</code> dispatches to <code>ruby hello.rb</code> — no tasks, no config, no activation.
+            Any file extension registered in <code>~/.molt/run-handlers.yaml</code> is dispatched directly.
+            25 runtimes ship built-in and you can add your own in one command. All handlers support
+            per-OS command overrides and the full token vocabulary.
+          </p>
+          <div class="two-col">
+            <div class="demo-section">
+              <h4>What you'll see</h4>
+              <ul class="demo-bullets">
+                <li>9 languages confirmed: Ruby, Node.js, Lua, Perl, Bash, Go, Swift, Julia, Elixir</li>
+                <li>Args forwarded verbatim: <code>molt run hello.rb Alice</code></li>
+                <li>Polyglot table: all languages with timing via <code>molt run all</code></li>
+                <li>Custom handler registration: <code>molt run-handler add deno "deno run {file} {args}"</code></li>
+                <li>Cross-platform overrides: separate <code>--windows</code> command per extension</li>
+              </ul>
+            </div>
+            <div class="demo-section">
+              <h4>Available tasks</h4>
+              <ul class="cmd-list">
+                <li><span class="c">molt run hello.rb [name]</span> <span class="d">— Ruby</span></li>
+                <li><span class="c">molt run hello.js [name]</span> <span class="d">— Node.js</span></li>
+                <li><span class="c">molt run hello.go [name]</span> <span class="d">— Go</span></li>
+                <li><span class="c">molt run hello.jl [name]</span> <span class="d">— Julia</span></li>
+                <li><span class="c">molt run hello.exs [name]</span> <span class="d">— Elixir</span></li>
+                <li><span class="c">molt run all</span> <span class="d">— all languages in a table</span></li>
+                <li><span class="c">molt run-handler list</span> <span class="d">— show all 25 built-ins</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="demo-section">
+            <h4>Dispatch order in <code>molt run &lt;arg&gt;</code></h4>
+            <pre><code><span class="cmt"># molt run checks, in order:</span>
+<span class="cmt"># 1. Flag-shaped arg → default entry</span>
+<span class="cmt"># 2. No arg         → main.py / python -m &lt;pkg&gt;</span>
+<span class="cmt"># 3. Ends in .py    → runPythonScript</span>
+<span class="cmt"># 4. Ends in .mojo  → mojo run</span>
+<span class="cmt"># 5. Has any ext + handler registered → runWithHandler  ← THIS DEMO</span>
+<span class="cmt"># 6. Matches task in [tool.molt.tasks] → task runner</span>
+<span class="cmt"># 7. Fallthrough    → exec binary on PATH</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Managing handlers</h4>
+            <pre><code>molt run-handler list                         <span class="cmt"># all built-ins + user handlers</span>
+molt run-handler show rb                      <span class="cmt"># Extension: .rb  Command: ruby {file} {args}</span>
+molt run-handler add deno <span class="str">"deno run {file} {args}"</span>
+molt run-handler add ts <span class="str">"npx ts-node {file} {args}"</span> --windows <span class="str">"npx.cmd ts-node {file} {args}"</span>
+molt run-handler remove deno
+molt run-handler reset                        <span class="cmt"># restore factory defaults</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Token reference</h4>
+            <pre><code>{file}      <span class="cmt"># absolute path to the script</span>
+{dir}       <span class="cmt"># directory containing the script</span>
+{basename}  <span class="cmt"># filename without extension</span>
+{args}      <span class="cmt"># extra arguments, space-joined</span>
+{python}    <span class="cmt"># project's pinned Python interpreter</span>
+{zig}       <span class="cmt"># auto-installed zig binary</span></code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Live test output</h4>
+            <pre><code>molt run hello.rb    molt  →  Hello from Ruby 2.6.10! 👋 molt
+molt run hello.js    molt  →  Hello from Node.js v24.7.0! 👋 molt
+molt run hello.lua   molt  →  Hello from Lua 5.4! 👋 molt
+molt run hello.go    molt  →  Hello from Go go1.24.1! 👋 molt
+molt run hello.swift molt  →  Hello from Swift! 👋 molt
+molt run hello.jl    molt  →  Hello from Julia 1.11.4! 👋 molt
+molt run hello.exs   molt  →  Hello from Elixir 1.18.3! 👋 molt</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/14-polyglot
+molt run hello.rb              <span class="cmt"># Hello from Ruby!</span>
+molt run hello.rb Alice        <span class="cmt"># Hello from Ruby! 👋 Alice</span>
+molt run all                   <span class="cmt"># polyglot table with timing</span></code></pre>
+          </div>
+          <a href="https://github.com/luowensheng/molt-python/tree/main/demos/14-polyglot" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
 
       </div><!-- /.demo-cards -->
