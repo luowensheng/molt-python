@@ -103,6 +103,9 @@
     }
     .demo-nav a:hover { background: var(--bg3); color: var(--text); }
     .demo-nav a .n { color: var(--accent); font-family: var(--font-mono); font-size: .75rem; flex-shrink: 0; }
+    .kw  { color: #c792ea; }
+    .str { color: var(--green); }
+    .cmt { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -191,30 +194,35 @@
             tasks in <code>pyproject.toml</code>. The whole point: no <code>.venv</code>, no activation,
             and a sub-millisecond second run because the store already has <code>.ok</code>.
           </p>
-          <div class="two-col">
-            <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>First <code>molt run</code> prints "syncing project…" then greets</li>
-                <li><code>ls -la</code> confirms zero <code>.venv</code> directory</li>
-                <li>Second run skips sync entirely</li>
-                <li><code>molt python which</code> shows the pinned interpreter path</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run run</span> <span class="d">— default greeting</span></li>
-                <li><span class="c">molt run greet</span> <span class="d">— greet "Claude"</span></li>
-                <li><span class="c">molt run info</span> <span class="d">— Python + platform info</span></li>
-                <li><span class="c">molt task list</span> <span class="d">— list all tasks</span></li>
-              </ul>
-            </div>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>01-hello-app/
+├── main.py
+└── pyproject.toml</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Key code</h4>
+            <pre><code><span class="kw">import</span> sys, platform, time
+
+<span class="kw">def</span> greet(name: str) -> str:
+    <span class="kw">return</span> <span class="str">f"Hello, {name}! 👋"</span>
+
+<span class="kw">def</span> show_info() -> None:
+    print(<span class="str">f"Python  : {sys.version.split()[0]}"</span>)
+    print(<span class="str">f"Platform: {platform.system()} {platform.machine()}"</span>)
+    print(<span class="str">f"Time    : {time.strftime('%Y-%m-%d %H:%M:%S')}"</span>)
+
+<span class="kw">def</span> main() -> None:
+    name = sys.argv[1] <span class="kw">if</span> len(sys.argv) > 1 <span class="kw">else</span> <span class="str">"World"</span>
+    print(greet(name))
+    show_info()</code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/01-hello-app
-molt run greet</code></pre>
+molt run greet          <span class="cmt"># Hello, Claude! 👋</span>
+molt run info           <span class="cmt"># Python + platform info</span>
+molt run run            <span class="cmt"># default greeting</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/01-hello-app" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -230,34 +238,57 @@ molt run greet</code></pre>
           </div>
           <h2>Web scraper</h2>
           <p class="demo-desc">
-            Fetches posts and comments from <code>jsonplaceholder.typicode.com</code> and displays them
+            Fetches posts and users from <code>jsonplaceholder.typicode.com</code> and displays them
             as rich terminal tables. The real lesson: <code>requests</code> and <code>rich</code>
             are installed once into <code>~/.molt/pkg/</code> — a second project using the same
             packages costs zero extra download and disk space.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>02-web-scraper/
+├── scraper.py
+└── pyproject.toml</code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>Rich table output with colored columns</li>
-                <li><code>~/.molt/pkg/requests/</code> shared with other projects</li>
-                <li>Pagination with <code>--limit</code> argument</li>
-                <li>How <code>molt add</code> updates pyproject.toml + lock</li>
-              </ul>
+              <h4>Fetch + display</h4>
+              <pre><code><span class="kw">def</span> fetch_posts(limit: int = 10) -> list[dict]:
+    url = <span class="str">"https://jsonplaceholder.typicode.com/posts"</span>
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    <span class="kw">return</span> resp.json()[:limit]
+
+<span class="kw">def</span> show_posts(limit: int = 5) -> None:
+    posts = fetch_posts(limit)
+    table = Table(show_header=True,
+                  header_style=<span class="str">"bold magenta"</span>)
+    table.add_column(<span class="str">"ID"</span>, style=<span class="str">"dim"</span>, width=4)
+    table.add_column(<span class="str">"Title"</span>)
+    table.add_column(<span class="str">"User"</span>, width=8)
+    <span class="kw">for</span> post <span class="kw">in</span> posts:
+        table.add_row(str(post[<span class="str">"id"</span>]),
+                      post[<span class="str">"title"</span>][:60],
+                      str(post[<span class="str">"userId"</span>]))
+    console.print(table)</code></pre>
             </div>
             <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run posts 5</span> <span class="d">— fetch 5 posts</span></li>
-                <li><span class="c">molt run comments 3</span> <span class="d">— fetch 3 comments</span></li>
-                <li><span class="c">molt run users</span> <span class="d">— list all users</span></li>
-              </ul>
+              <h4>Entry point</h4>
+              <pre><code><span class="kw">def</span> main() -> None:
+    cmd   = sys.argv[1] <span class="kw">if</span> len(sys.argv) > 1 <span class="kw">else</span> <span class="str">"posts"</span>
+    limit = int(sys.argv[2]) <span class="kw">if</span> len(sys.argv) > 2 <span class="kw">else</span> 5
+
+    <span class="kw">if</span>   cmd == <span class="str">"posts"</span>: show_posts(limit)
+    <span class="kw">elif</span> cmd == <span class="str">"users"</span>: show_users()
+    <span class="kw">else</span>:
+        rprint(<span class="str">f"[red]Unknown:[/red] {cmd!r}"</span>)
+        sys.exit(1)</code></pre>
             </div>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/02-web-scraper
-molt run posts 5</code></pre>
+molt run posts 5    <span class="cmt"># fetch 5 posts → rich table</span>
+molt run users      <span class="cmt"># list all users with email + city</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/02-web-scraper" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -277,30 +308,46 @@ molt run posts 5</code></pre>
             Shows a real dev workflow — hot-reload server, test suite, linter — all
             through <code>molt run</code> with absolutely no <code>activate</code>.
           </p>
-          <div class="two-col">
-            <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>FastAPI running with Uvicorn hot-reload</li>
-                <li>4 pytest tests covering CRUD endpoints</li>
-                <li>Ruff linting with zero warnings</li>
-                <li>Auto-generated <code>/docs</code> (Swagger UI)</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run dev</span> <span class="d">— start hot-reload server</span></li>
-                <li><span class="c">molt run test</span> <span class="d">— run pytest suite</span></li>
-                <li><span class="c">molt run lint</span> <span class="d">— ruff check</span></li>
-              </ul>
-            </div>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>03-fastapi-api/
+├── pyproject.toml
+└── src/taskapi/
+    ├── app.py
+    └── __init__.py</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Key code — FastAPI routes</h4>
+            <pre><code>app = FastAPI(title=<span class="str">"Task API"</span>, version=<span class="str">"0.1.0"</span>)
+_tasks: dict[int, dict] = {}
+
+<span class="kw">class</span> TaskIn(BaseModel):
+    title: str
+    done: bool = False
+
+@app.get(<span class="str">"/tasks"</span>, response_model=list[Task])
+<span class="kw">def</span> list_tasks():
+    <span class="kw">return</span> list(_tasks.values())
+
+@app.post(<span class="str">"/tasks"</span>, response_model=Task, status_code=201)
+<span class="kw">def</span> create_task(body: TaskIn):
+    <span class="kw">global</span> _next_id
+    task = {<span class="str">"id"</span>: _next_id, <span class="str">"title"</span>: body.title, <span class="str">"done"</span>: body.done}
+    _tasks[_next_id] = task; _next_id += 1
+    <span class="kw">return</span> task
+
+@app.delete(<span class="str">"/tasks/{task_id}"</span>, status_code=204)
+<span class="kw">def</span> delete_task(task_id: int):
+    <span class="kw">if</span> task_id <span class="kw">not in</span> _tasks:
+        <span class="kw">raise</span> HTTPException(status_code=404, detail=<span class="str">"Task not found"</span>)
+    <span class="kw">del</span> _tasks[task_id]</code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/03-fastapi-api
-molt run test     # passes immediately
-molt run dev      # open http://localhost:8000/docs</code></pre>
+molt run test     <span class="cmt"># pytest suite — passes immediately</span>
+molt run dev      <span class="cmt"># uvicorn hot-reload → http://localhost:8000/docs</span>
+molt run lint     <span class="cmt"># ruff check</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/03-fastapi-api" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -316,34 +363,52 @@ molt run dev      # open http://localhost:8000/docs</code></pre>
           </div>
           <h2>Data analyzer</h2>
           <p class="demo-desc">
-            Generates 10 000 rows of synthetic sales data and analyzes them with pandas and numpy —
+            Generates 10 000 rows of synthetic sales data and analyzes them with pandas —
             displayed as rich terminal tables with an ASCII bar chart. Heavy scientific packages
             install once into the global store; every subsequent data-science project on the same
             machine reuses those exact wheel directories.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>04-data-analyzer/
+├── analyze.py
+├── generate.py
+├── data/sales.csv   <span class="cmt"># generated by: molt run generate</span>
+└── pyproject.toml</code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>pandas + numpy from the global store, not per-project</li>
-                <li>Revenue by product with inline ASCII bar chart</li>
-                <li>Summary statistics (mean, std, min, max)</li>
-                <li>Optional CSV export task</li>
-              </ul>
+              <h4>Load + enrich</h4>
+              <pre><code><span class="kw">def</span> load() -> pd.DataFrame:
+    df = pd.read_csv(DATA)
+    df[<span class="str">"revenue"</span>] = df[<span class="str">"units"</span>] * df[<span class="str">"unit_price"</span>]
+    <span class="kw">return</span> df</code></pre>
             </div>
             <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run analyze</span> <span class="d">— full analysis</span></li>
-                <li><span class="c">molt run summary</span> <span class="d">— stats only</span></li>
-                <li><span class="c">molt run export</span> <span class="d">— write output.csv</span></li>
-              </ul>
+              <h4>Top products</h4>
+              <pre><code><span class="kw">def</span> top_products(df, n=5):
+    top = (
+        df.groupby(<span class="str">"product"</span>)[<span class="str">"revenue"</span>]
+          .sum()
+          .sort_values(ascending=False)
+          .head(n)
+          .reset_index()
+    )
+    <span class="kw">for</span> i, row <span class="kw">in</span> top.iterrows():
+        table.add_row(
+            str(i + 1),
+            row[<span class="str">"product"</span>],
+            <span class="str">f"${row['revenue']:,.2f}"</span>
+        )</code></pre>
             </div>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/04-data-analyzer
-molt run analyze</code></pre>
+molt run generate   <span class="cmt"># write data/sales.csv</span>
+molt run summary    <span class="cmt"># totals, product count, region count</span>
+molt run top        <span class="cmt"># top 5 products by revenue</span>
+molt run trend      <span class="cmt"># monthly revenue with ASCII bar chart</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/04-data-analyzer" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -359,37 +424,50 @@ molt run analyze</code></pre>
           </div>
           <h2>CLI tool with global install</h2>
           <p class="demo-desc">
-            A Click-based file utility (<code>filetool</code>) with four subcommands: <code>find</code>,
-            <code>count</code>, <code>dup</code>, <code>big</code>. Running <code>molt tool install</code>
+            A Click-based file utility (<code>filetool</code>) with subcommands: <code>ls</code>,
+            <code>checksum</code>, <code>stats</code>. Running <code>molt tool install</code>
             writes a shim to <code>~/.molt/bin/</code> so the tool is available globally — no per-shell
             activation needed.
           </p>
-          <div class="two-col">
-            <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li><code>molt tool install</code> registers the shim globally</li>
-                <li><code>filetool find "*.py"</code> works from any directory</li>
-                <li><code>filetool dup .</code> detects duplicate files by hash</li>
-                <li><code>filetool big . 1mb</code> finds files over a threshold</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run find "*.py"</span> <span class="d">— glob search</span></li>
-                <li><span class="c">molt run count .</span> <span class="d">— count by extension</span></li>
-                <li><span class="c">molt run dup .</span> <span class="d">— find duplicates</span></li>
-                <li><span class="c">molt run big . 1mb</span> <span class="d">— files over size</span></li>
-                <li><span class="c">molt tool install</span> <span class="d">— global shim</span></li>
-              </ul>
-            </div>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>05-cli-tool/
+├── pyproject.toml
+└── src/filetool/
+    └── cli.py</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Key code — Click commands</h4>
+            <pre><code>@click.group()
+@click.version_option(<span class="str">"0.1.0"</span>, prog_name=<span class="str">"filetool"</span>)
+<span class="kw">def</span> cli(): <span class="str">"""File utilities — molt tool install demo."""</span>
+
+@cli.command()
+@click.argument(<span class="str">"directory"</span>, default=<span class="str">"."</span>, type=click.Path(exists=True))
+@click.option(<span class="str">"--ext"</span>, default=None, help=<span class="str">"Filter by extension (e.g. .py)"</span>)
+@click.option(<span class="str">"--sort"</span>, type=click.Choice([<span class="str">"name"</span>, <span class="str">"size"</span>, <span class="str">"mtime"</span>]), default=<span class="str">"name"</span>)
+<span class="kw">def</span> ls(directory, ext, sort):
+    <span class="str">"""List files in DIRECTORY with size and modification time."""</span>
+    path = Path(directory)
+    entries = [p <span class="kw">for</span> p <span class="kw">in</span> path.iterdir() <span class="kw">if</span> p.is_file()]
+    <span class="cmt"># sort by name / size / mtime, render as rich Table</span>
+
+@cli.command()
+@click.argument(<span class="str">"file"</span>, type=click.Path(exists=True))
+@click.option(<span class="str">"--algo"</span>, default=<span class="str">"sha256"</span>, type=click.Choice([<span class="str">"md5"</span>,<span class="str">"sha1"</span>,<span class="str">"sha256"</span>,<span class="str">"sha512"</span>]))
+<span class="kw">def</span> checksum(file, algo):
+    <span class="str">"""Compute a checksum for FILE."""</span>
+    h = hashlib.new(algo)
+    h.update(Path(file).read_bytes())
+    console.print(<span class="str">f"[bold]{algo}[/bold]  [green]{h.hexdigest()}[/green]  {file}"</span>)</code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/05-cli-tool
-molt tool install        # write ~/.molt/bin/filetool
-filetool find "*.toml"  # use it anywhere</code></pre>
+molt tool install              <span class="cmt"># write ~/.molt/bin/filetool</span>
+filetool ls . --sort size      <span class="cmt"># list files by size</span>
+filetool checksum pyproject.toml --algo sha256
+filetool stats . --ext .py    <span class="cmt"># count + total size of .py files</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/05-cli-tool" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -410,44 +488,52 @@ filetool find "*.toml"  # use it anywhere</code></pre>
             dependencies, and an SHA-256 integrity trailer. Demonstrates <code>molt inspect</code>,
             <code>molt verify-binary</code>, and running the binary on a machine with zero Python.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>06-binary-dist/
+├── sysinfo.py        <span class="cmt"># Click CLI: info / bench / version</span>
+└── pyproject.toml</code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>3.7 MB self-contained executable</li>
-                <li>SHA-256 Merkle root in <code>MOLT0001</code> trailer</li>
-                <li>Three named commands from one binary</li>
-                <li><code>molt inspect</code> dumps the embedded manifest</li>
-                <li>Binary runs with zero Python on target</li>
-              </ul>
+              <h4>sysinfo.py — CLI commands</h4>
+              <pre><code>@click.group()
+<span class="kw">def</span> cli(): <span class="str">"""System info utility — molt build demo."""</span>
+
+@cli.command()
+<span class="kw">def</span> info():
+    table = Table(show_header=False, box=None)
+    table.add_row(<span class="str">"Python"</span>,   sys.version.split()[0])
+    table.add_row(<span class="str">"Platform"</span>, platform.platform())
+    table.add_row(<span class="str">"CPUs"</span>,     str(os.cpu_count()))
+    table.add_row(<span class="str">"Disk free"</span>, _fmt_size(shutil.disk_usage(<span class="str">"/"</span>).free))
+    console.print(Panel(table, title=<span class="str">"System Info"</span>))
+
+@cli.command()
+@click.option(<span class="str">"--n"</span>, default=10_000_000)
+<span class="kw">def</span> bench(n: int):
+    start = time.perf_counter()
+    total = sum(range(n))
+    elapsed = time.perf_counter() - start
+    console.print(<span class="str">f"Rate: {n/elapsed/1e6:.1f}M ops/s"</span>)</code></pre>
             </div>
             <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run info</span> <span class="d">— system info (dev mode)</span></li>
-                <li><span class="c">molt run bench</span> <span class="d">— Python loop benchmark</span></li>
-                <li><span class="c">molt build</span> <span class="d">— produce the binary</span></li>
-                <li><span class="c">molt inspect ./06-binary-dist</span> <span class="d">— dump manifest</span></li>
-                <li><span class="c">molt verify-binary ./06-binary-dist</span> <span class="d">— check hash</span></li>
-                <li><span class="c">./06-binary-dist run bench</span> <span class="d">— run without Python</span></li>
-              </ul>
-            </div>
-          </div>
-          <div class="demo-section">
-            <h4>Binary structure</h4>
-            <pre><code>┌────────────────────────┐
-│  launcher (Go)         │  install / run / verify / uninstall
+              <h4>Binary structure</h4>
+              <pre><code>┌────────────────────────┐
+│  launcher (Go)         │  install / run / verify
 ├────────────────────────┤
-│  payload (tar.gz)      │  sysinfo.py + wheel dirs + manifest
+│  payload (tar.gz)      │  sysinfo.py + deps + manifest
 ├────────────────────────┤
-│  trailer               │  [payload_offset][root_hash][MOLT0001]
+│  trailer               │  [offset][root_hash][MOLT0001]
 └────────────────────────┘</code></pre>
+            </div>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/06-binary-dist
-molt build
-molt verify-binary ./06-binary-dist
+molt build                          <span class="cmt"># produce ./06-binary-dist binary</span>
+molt verify-binary ./06-binary-dist <span class="cmt"># check SHA-256 trailer</span>
+./06-binary-dist run info           <span class="cmt"># runs with zero Python on target</span>
 ./06-binary-dist run bench</code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/06-binary-dist" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
@@ -469,43 +555,52 @@ molt verify-binary ./06-binary-dist
             written in portable GAS <code>.S</code> syntax, compiled to a native <code>.so</code>
             via <code>zig cc</code>, and imported through an auto-generated ctypes shim.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>07-asm-kernel/
+├── mymath.molt.toml  <span class="cmt"># function manifest</span>
+├── mymath.S          <span class="cmt"># portable GAS assembly (arm64 + x86-64)</span>
+└── main.py           <span class="cmt"># Python caller</span></code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>GAS <code>.S</code> source → <code>kernel.so</code> via <code>zig cc</code></li>
-                <li>Auto-generated <code>kernel_shim.py</code> ctypes wrapper</li>
-                <li>Python calls <code>add(3, 4)</code> → 7 from native code</li>
-                <li>Works on macOS arm64 and Linux amd64/arm64</li>
-                <li>Rebuild is idempotent via <code>molt run build</code></li>
-              </ul>
+              <h4>mymath.molt.toml</h4>
+              <pre><code>[[fn]]
+name    = <span class="str">"add"</span>
+description = <span class="str">"Sum two 32-bit integers."</span>
+args    = [{name=<span class="str">"a"</span>,type=<span class="str">"i32"</span>},{name=<span class="str">"b"</span>,type=<span class="str">"i32"</span>}]
+returns = <span class="str">"i32"</span>
+
+[[fn]]
+name    = <span class="str">"mul"</span>
+description = <span class="str">"Multiply two 32-bit integers."</span>
+args    = [{name=<span class="str">"a"</span>,type=<span class="str">"i32"</span>},{name=<span class="str">"b"</span>,type=<span class="str">"i32"</span>}]
+returns = <span class="str">"i32"</span></code></pre>
             </div>
             <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run build</span> <span class="d">— compile .so + generate shim</span></li>
-                <li><span class="c">molt run demo</span> <span class="d">— call add() and mul() from Python</span></li>
-                <li><span class="c">molt run clean</span> <span class="d">— remove .so and shim</span></li>
-              </ul>
-            </div>
-          </div>
-          <div class="demo-section">
-            <h4>Assembly snippet</h4>
-            <pre><code>.globl _add
-_add:                      # int add(int a, int b)
-    add  w0, w0, w1        # w0 = a + b  (aarch64)
+              <h4>mymath.S (arm64) + caller</h4>
+              <pre><code><span class="cmt">// Portable: #ifdef __aarch64__ / __x86_64__</span>
+    .global SYM(add)
+SYM(add):
+    add  w0, w0, w1   <span class="cmt">// a + b → w0</span>
     ret
 
-.globl _mul
-_mul:                      # int mul(int a, int b)
+    .global SYM(mul)
+SYM(mul):
     mul  w0, w0, w1
-    ret</code></pre>
+    ret
+
+<span class="cmt"># main.py</span>
+<span class="kw">import</span> mymath
+print(mymath.add(3, 4))  <span class="cmt"># → 7</span>
+print(mymath.mul(6, 7))  <span class="cmt"># → 42</span></code></pre>
+            </div>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/07-asm-kernel
-molt run build
-molt run demo</code></pre>
+molt run build   <span class="cmt"># zig cc → mymath.so + auto-generate ctypes shim</span>
+molt run demo    <span class="cmt"># Python calls add() and mul() from native ASM</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/07-asm-kernel" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -521,38 +616,49 @@ molt run demo</code></pre>
           </div>
           <h2>Mojo hello world</h2>
           <p class="demo-desc">
-            The gentlest introduction to Mojo through molt. Covers variables and types,
-            typed functions, structs, traits, generics, operator overloading, and compile-time
-            metaprogramming — all in one demo, with zero manual Mojo SDK setup required.
+            The gentlest introduction to Mojo through molt. Covers typed functions, structs,
+            traits, generics, operator overloading, and compile-time metaprogramming — all in
+            one file, with zero manual Mojo SDK setup required.
           </p>
-          <div class="two-col">
-            <div class="demo-section">
-              <h4>Mojo concepts covered</h4>
-              <ul class="demo-bullets">
-                <li>Typed variables: <code>var x: Int = 42</code></li>
-                <li>Structs with methods and <code>__str__</code></li>
-                <li>Traits as interfaces</li>
-                <li>Generic structs: <code>Point[T: AnyType]</code></li>
-                <li>Operator overloading (<code>__add__</code>)</li>
-                <li>Compile-time <code>alias</code> constants</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run main.mojo</span> <span class="d">— hello + types demo</span></li>
-                <li><span class="c">molt run traits</span> <span class="d">— traits + generics demo</span></li>
-                <li><span class="c">molt run meta</span> <span class="d">— compile-time constants</span></li>
-              </ul>
-            </div>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>08-mojo-hello/
+├── main.mojo
+└── pyproject.toml</code></pre>
           </div>
           <div class="demo-section">
-            <h4>Setup (requires Mojo 1.0b1+)</h4>
-            <pre><code>cd demos/08-mojo-hello
-# Add to pyproject.toml first:
-# [tool.uv]
-# prerelease = "allow"
+            <h4>Key code — typed functions + struct</h4>
+            <pre><code><span class="kw">def</span> greet(name: String) -> String:
+    <span class="kw">return</span> <span class="str">"Hello, " + name + "!"</span>
 
+<span class="kw">def</span> clamp(val: Float64, lo: Float64, hi: Float64) -> Float64:
+    <span class="kw">if</span> val &lt; lo: <span class="kw">return</span> lo
+    <span class="kw">if</span> val &gt; hi: <span class="kw">return</span> hi
+    <span class="kw">return</span> val
+
+<span class="kw">struct</span> Point(Copyable, Writable):
+    <span class="kw">var</span> x: Float64
+    <span class="kw">var</span> y: Float64
+
+    <span class="kw">def</span> distance_to(self, other: Point) -> Float64:
+        <span class="kw">var</span> dx = self.x - other.x
+        <span class="kw">var</span> dy = self.y - other.y
+        <span class="kw">return</span> sqrt(dx * dx + dy * dy)
+
+<span class="cmt"># compile-time unrolling</span>
+<span class="kw">def</span> print_n_times[n: Int](msg: String):
+    comptime <span class="kw">for</span> _ <span class="kw">in</span> range(n):
+        print(msg)
+
+<span class="kw">def</span> main():
+    print(greet(<span class="str">"Mojo"</span>))
+    <span class="kw">var</span> a = Point(0.0, 0.0); <span class="kw">var</span> b = Point(3.0, 4.0)
+    print(<span class="str">"distance:"</span>, a.distance_to(b))  <span class="cmt"># 5.0</span>
+    print_n_times[3](<span class="str">"Hello from comptime!"</span>)</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Run it</h4>
+            <pre><code>cd demos/08-mojo-hello
 molt add mojo
 molt run main.mojo</code></pre>
           </div>
@@ -575,38 +681,42 @@ molt run main.mojo</code></pre>
             package installed via <code>molt add</code> is automatically visible to Mojo
             with no extra configuration.
           </p>
-          <div class="two-col">
-            <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>Mojo imports numpy with <code>Python.import_module</code></li>
-                <li>NumPy array operations from Mojo code</li>
-                <li>pandas DataFrame created and queried in Mojo</li>
-                <li>Mixed Python + Mojo data pipeline</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run bridge</span> <span class="d">— numpy stats from Mojo</span></li>
-                <li><span class="c">molt run pipeline</span> <span class="d">— pandas pipeline from Mojo</span></li>
-              </ul>
-            </div>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>09-mojo-numpy/
+├── main.mojo
+├── helpers.py   <span class="cmt"># local Python module imported from Mojo</span>
+└── pyproject.toml</code></pre>
           </div>
           <div class="demo-section">
-            <h4>Key code pattern</h4>
-            <pre><code>from python import Python
+            <h4>Key code — Mojo calling numpy</h4>
+            <pre><code><span class="kw">from</span> std.python <span class="kw">import</span> Python, PythonObject
 
-fn main() raises:
-    var np = Python.import_module("numpy")   # just works — PYTHONPATH is set
-    var arr = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    print("mean:", arr.mean())               # → 3.0</code></pre>
+<span class="kw">def</span> numpy_basics(np: PythonObject) raises:
+    <span class="kw">var</span> arr = np.arange(12).reshape(3, 4)
+    print(<span class="str">"shape:"</span>, arr.shape)        <span class="cmt"># (3, 4)</span>
+
+    <span class="kw">var</span> f       = arr.astype(np.float64)
+    <span class="kw">var</span> squared = f ** 2
+    print(<span class="str">"mean of squares:"</span>, squared.mean())
+
+    <span class="cmt"># linear algebra</span>
+    <span class="kw">var</span> A = np.array(Python.list(Python.list(2.0, 1.0), Python.list(5.0, 3.0)))
+    <span class="kw">var</span> b = np.array(Python.list(4.0, 7.0))
+    <span class="kw">var</span> x = np.linalg.solve(A, b)
+    print(<span class="str">"solution to Ax=b:"</span>, x)  <span class="cmt"># [5. -6.]</span>
+
+<span class="kw">def</span> main() raises:
+    <span class="kw">var</span> np = Python.import_module(<span class="str">"numpy"</span>)   <span class="cmt"># just works — PYTHONPATH set by molt</span>
+    <span class="kw">var</span> pd = Python.import_module(<span class="str">"pandas"</span>)
+    numpy_basics(np)
+    pandas_basics(pd, np)</code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/09-mojo-numpy
 molt add mojo numpy pandas
-molt run bridge</code></pre>
+molt run main.mojo</code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/09-mojo-numpy" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -623,48 +733,43 @@ molt run bridge</code></pre>
           <h2>Mojo SIMD vectorization</h2>
           <p class="demo-desc">
             Shows exactly where Mojo's speed advantage comes from: SIMD types that process
-            8 float32 values per CPU instruction, without GIL overhead. Benchmarks a
-            1-million-element addition against a pure Python loop — the gap is stark.
+            4 float32 values per CPU instruction on 128-bit NEON (Apple Silicon), without GIL
+            overhead. Benchmarks sigmoid over 1 million elements — the gap is stark.
           </p>
-          <div class="two-col">
-            <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>Manual SIMD while-loop (WIDTH=8 float32)</li>
-                <li>Hardware SIMD width detection at runtime</li>
-                <li>~40–50× speedup over Python loop</li>
-                <li>Scalar Mojo vs SIMD Mojo comparison too</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run simd</span> <span class="d">— SIMD vs Python benchmark</span></li>
-                <li><span class="c">molt run bench</span> <span class="d">— full timing suite</span></li>
-              </ul>
-            </div>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>10-mojo-simd/
+├── main.mojo
+└── pyproject.toml</code></pre>
           </div>
           <div class="demo-section">
-            <h4>Core SIMD pattern</h4>
-            <pre><code>alias WIDTH = 8  # 8× float32 = 256-bit (AVX2)
+            <h4>Key code — SIMD basics + sigmoid benchmark</h4>
+            <pre><code><span class="cmt"># SIMD construction and arithmetic</span>
+<span class="kw">var</span> a = SIMD[DType.float32, 4](1.0, 2.0, 3.0, 4.0)
+<span class="kw">var</span> b = SIMD[DType.float32, 4](10.0, 10.0, 10.0, 10.0)
+print(a + b)   <span class="cmt"># [11. 12. 13. 14.]</span>
+print(a * a)   <span class="cmt"># [1.  4.  9. 16.]</span>
 
-fn add_vectors(a: DTypePointer[DType.float32],
-               b: DTypePointer[DType.float32],
-               c: DTypePointer[DType.float32], n: Int):
-    var i = 0
-    while i + WIDTH <= n:
-        # Load 8 floats, add them, store 8 floats — one CPU instruction
-        c.store(i, a.load[WIDTH](i) + b.load[WIDTH](i))
-        i += WIDTH
-    while i < n:  # scalar tail
-        c.store(i, a.load(i) + b.load(i))
-        i += 1</code></pre>
+<span class="cmt"># benchmark: SIMD sigmoid on 1M float32 values</span>
+alias N = 1_000_000; alias W = 4   <span class="cmt"># 128-bit NEON width</span>
+
+<span class="kw">var</span> acc = SIMD[DType.float32, W](0.0)
+<span class="kw">var</span> i = 0
+<span class="kw">while</span> i + W &lt;= N:
+    <span class="kw">var</span> x = ptr.load[width=W](i)
+    acc += 1.0 / (1.0 + exp(-x))
+    i += W
+<span class="cmt"># scalar tail for leftover elements</span>
+<span class="kw">while</span> i &lt; N:
+    tail += 1.0 / (1.0 + exp(-ptr[i])); i += 1
+
+print(<span class="str">"speedup: "</span>, scalar_ms / simd_ms, <span class="str">"x"</span>)</code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/10-mojo-simd
 molt add mojo
-molt run bench</code></pre>
+molt run main.mojo</code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/10-mojo-simd" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -682,49 +787,48 @@ molt run bench</code></pre>
           <p class="demo-desc">
             Three implementations of N×N matrix multiplication in increasing order of
             optimization: naive O(N³) triple loop → SIMD-vectorized inner loop →
-            cache-friendly tiled + parallelized. Benchmarked against numpy (MKL) at N=128.
-            The tiled variant reaches ~85% of numpy's throughput.
+            cache-friendly tiled + parallelized. All three benchmarked side-by-side.
           </p>
-          <div class="two-col">
-            <div class="demo-section">
-              <h4>Implementations</h4>
-              <ul class="demo-bullets">
-                <li><strong>Naive</strong>: baseline triple-loop, 120 ms at N=128</li>
-                <li><strong>SIMD</strong>: vectorized inner loop, 18 ms (6.6× vs naive)</li>
-                <li><strong>Tiled+parallel</strong>: 6 ms (20× vs naive, ~85% of numpy)</li>
-                <li>numpy MKL reference: 4 ms</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run naive</span> <span class="d">— baseline implementation</span></li>
-                <li><span class="c">molt run simd</span> <span class="d">— SIMD inner loop</span></li>
-                <li><span class="c">molt run tiled</span> <span class="d">— tiled + parallel</span></li>
-                <li><span class="c">molt run bench</span> <span class="d">— all three + numpy</span></li>
-              </ul>
-            </div>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>11-mojo-matmul/
+├── main.mojo   <span class="cmt"># Matrix struct + 3 matmul implementations</span>
+└── pyproject.toml</code></pre>
           </div>
           <div class="demo-section">
-            <h4>Tiling strategy</h4>
-            <pre><code>alias TILE = 32  # tile size chosen for L1 cache fit
+            <h4>Key code — three implementations</h4>
+            <pre><code>comptime NELTS = 4   <span class="cmt"># 128-bit NEON: 4 × float32 per register</span>
+comptime TILE  = 4   <span class="cmt"># tune to cache line</span>
 
-fn matmul_tiled(C: Matrix, A: Matrix, B: Matrix):
-    for i_tile in range(0, N, TILE):
-        for j_tile in range(0, N, TILE):
-            for k_tile in range(0, N, TILE):
-                # inner TILE×TILE block stays in L1 cache
-                for i in range(i_tile, min(i_tile + TILE, N)):
-                    for k in range(k_tile, min(k_tile + TILE, N)):
-                        var a_val = A[i, k]
-                        # vectorize inner j loop
-                        ...</code></pre>
+<span class="cmt"># 1. Naive O(N³)</span>
+<span class="kw">def</span> matmul_naive(mut C: Matrix, A: Matrix, B: Matrix):
+    <span class="kw">for</span> m <span class="kw">in</span> range(C.rows):
+        <span class="kw">for</span> k <span class="kw">in</span> range(A.cols):
+            <span class="kw">for</span> n <span class="kw">in</span> range(C.cols):
+                C[m, n] += A[m, k] * B[k, n]
+
+<span class="cmt"># 2. SIMD-vectorized inner loop</span>
+<span class="kw">def</span> matmul_vectorized(mut C: Matrix, A: Matrix, B: Matrix):
+    <span class="kw">for</span> m <span class="kw">in</span> range(C.rows):
+        <span class="kw">for</span> k <span class="kw">in</span> range(A.cols):
+            <span class="kw">var</span> a_mk = A[m, k]; <span class="kw">var</span> n = 0
+            <span class="kw">while</span> n + NELTS &lt;= C.cols:
+                C.store[NELTS](m, n, C.load[NELTS](m,n) + a_mk * B.load[NELTS](k,n))
+                n += NELTS
+
+<span class="cmt"># 3. Tiled + parallelized</span>
+<span class="kw">def</span> matmul_tiled(mut C: Matrix, A: Matrix, B: Matrix):
+    @parameter
+    <span class="kw">def</span> calc_row(m: Int):
+        <span class="kw">for</span> ko <span class="kw">in</span> range(0, A.cols, TILE):
+            <span class="cmt"># ... tiled SIMD inner loop ...</span>
+    parallelize[calc_row](C.rows)</code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/11-mojo-matmul
-molt add mojo numpy
-molt run bench</code></pre>
+molt add mojo
+molt run main.mojo   <span class="cmt"># benchmarks all three variants at N=128</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/11-mojo-matmul" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -740,46 +844,61 @@ molt run bench</code></pre>
           </div>
           <h2>Mojo extension module</h2>
           <p class="demo-desc">
-            The final demo: compile a Mojo source file to a Python-importable <code>.so</code>
-            extension module — the same kind of artifact Cython produces, but without a C compiler
-            or <code>.pyx</code> files. Once built, <code>import fast_math</code> works in any
-            Python script with no special runtime.
+            Compile a Mojo source file to a Python-importable <code>.so</code> extension module —
+            the same kind of artifact Cython produces, but without a C compiler or <code>.pyx</code>
+            files. Exports three functions and a <code>RunningStats</code> struct via
+            <code>PythonModuleBuilder</code>.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>12-mojo-extension/
+├── fast_math.mojo      <span class="cmt"># exports factorial, sigmoid, dot, RunningStats</span>
+├── use_extension.py    <span class="cmt"># Python caller</span>
+└── pyproject.toml</code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>Exposed functions</h4>
-              <ul class="demo-bullets">
-                <li><code>fast_math.add(a, b)</code> → Float64</li>
-                <li><code>fast_math.mul(a, b)</code> → Float64</li>
-                <li><code>fast_math.variance(data)</code> → Float64</li>
-                <li>All callable from plain Python with <code>import fast_math</code></li>
-              </ul>
+              <h4>fast_math.mojo — module entry</h4>
+              <pre><code>@export
+<span class="kw">def</span> PyInit_fast_math() -> PythonObject:
+    <span class="kw">var</span> m = PythonModuleBuilder(<span class="str">"fast_math"</span>)
+    m.def_function[factorial](<span class="str">"factorial"</span>,
+        docstring=<span class="str">"Compute n!"</span>)
+    m.def_function[fast_sigmoid](<span class="str">"sigmoid"</span>,
+        docstring=<span class="str">"SIMD sigmoid over a list"</span>)
+    m.def_function[dot_product](<span class="str">"dot"</span>,
+        docstring=<span class="str">"Dot product of two lists"</span>)
+    _ = (m.add_type[RunningStats](<span class="str">"RunningStats"</span>)
+           .def_py_init[RunningStats.py_init]()
+           .def_method[RunningStats.py_update](<span class="str">"update"</span>)
+           .def_method[RunningStats.py_mean](<span class="str">"mean"</span>))
+    <span class="kw">return</span> m.finalize()</code></pre>
             </div>
             <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run build</span> <span class="d">— compile fast_math.so</span></li>
-                <li><span class="c">molt run demo</span> <span class="d">— call from Python</span></li>
-                <li><span class="c">molt run clean</span> <span class="d">— remove .so</span></li>
-              </ul>
-            </div>
-          </div>
-          <div class="demo-section">
-            <h4>How it works</h4>
-            <pre><code># 1. Compile Mojo → shared library
-mojo build fast_math.mojo --emit shared-lib -o fast_math.so
+              <h4>use_extension.py — Python caller</h4>
+              <pre><code><span class="kw">import</span> fast_math   <span class="cmt"># import like any C extension</span>
 
-# 2. Import in Python — no special loader needed
-import fast_math
-print(fast_math.add(3.0, 4.0))          # → 7.0
-print(fast_math.variance([2,4,4,4,5,5,7,9]))  # → 4.571...</code></pre>
+<span class="kw">for</span> n <span class="kw">in</span> [0, 5, 10, 20]:
+    print(<span class="str">f"{n}! = {fast_math.factorial(n)}"</span>)
+
+values = [-2.0, 0.0, 1.0, 2.0]
+print(fast_math.sigmoid(values))
+
+a = list(range(8)); b = list(range(8))
+print(<span class="str">f"dot = {fast_math.dot(a, b)}"</span>)  <span class="cmt"># 140</span>
+
+stats = fast_math.RunningStats()
+<span class="kw">for</span> x <span class="kw">in</span> [2.0, 4.0, 4.0, 5.0, 7.0, 9.0]:
+    stats.update(x)
+print(<span class="str">f"mean = {stats.mean():.4f}"</span>)  <span class="cmt"># 5.1667</span></code></pre>
+            </div>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/12-mojo-extension
 molt add mojo
-molt run build
-molt run demo</code></pre>
+molt run build   <span class="cmt"># mojo build fast_math.mojo --emit shared-lib -o fast_math.so</span>
+molt run demo    <span class="cmt"># python use_extension.py</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/12-mojo-extension" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -807,28 +926,36 @@ molt run demo</code></pre>
             into Python packages via <code>PyImport_ImportModule</code> — numpy, scipy, pandas
             are all reachable because <code>PYTHONPATH</code> is set to the full molt package store.
           </p>
-          <div class="two-col">
-            <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>Header parsed → <code>PyInit_fastmath</code> generated automatically</li>
-                <li>8 functions: arithmetic, statistics, integer ops</li>
-                <li>Real CPython extension — not a ctypes wrapper</li>
-                <li><code>zig cc</code>: macOS, Linux, Windows, no extra toolchain</li>
-                <li>Cached in <code>~/.molt/native/</code> — instant on unchanged source</li>
-                <li>C code can call <code>PyImport_ImportModule("numpy")</code> — it's on <code>PYTHONPATH</code></li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt sync</span> <span class="d">— parse header + compile .so</span></li>
-                <li><span class="c">molt run demo</span> <span class="d">— call all 8 functions from Python</span></li>
-                <li><span class="c">molt run bench</span> <span class="d">— C extension vs Python</span></li>
-                <li><span class="c">molt c build</span> <span class="d">— explicit rebuild</span></li>
-                <li><span class="c">molt c list</span> <span class="d">— show discovered modules</span></li>
-              </ul>
-            </div>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>13-c-extension/
+├── fastmath.h    <span class="cmt"># molt parses this — all declarations</span>
+├── fastmath.c    <span class="cmt"># implementations</span>
+├── main.py       <span class="cmt"># Python caller</span>
+└── pyproject.toml</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Key files</h4>
+            <pre><code><span class="cmt">/* fastmath.h — molt parses this header, generates all PyArg/PyInit boilerplate */</span>
+double add(double a, double b);
+double mul(double a, double b);
+double clamp(double value, double lo, double hi);
+double lerp(double a, double b, double t);
+int    gcd(int a, int b);
+int    ipow(int base, int exp);
+double mean3(double a, double b, double c);
+double variance3(double a, double b, double c);</code></pre>
+          </div>
+          <div class="demo-section">
+            <h4>Python side — zero glue written</h4>
+            <pre><code><span class="kw">import</span> fastmath
+print(fastmath.add(3.0, 4.0))           <span class="cmt"># → 7.0</span>
+print(fastmath.clamp(15.0, 0.0, 10.0))  <span class="cmt"># → 10.0</span>
+print(fastmath.lerp(0.0, 100.0, 0.25))  <span class="cmt"># → 25.0</span>
+print(fastmath.gcd(48, 18))             <span class="cmt"># → 6</span>
+print(fastmath.ipow(2, 10))             <span class="cmt"># → 1024</span>
+print(fastmath.mean3(1.0, 2.0, 3.0))    <span class="cmt"># → 2.0</span>
+print(fastmath.variance3(2.0, 4.0, 6.0)) <span class="cmt"># → 2.6666...</span></code></pre>
           </div>
           <div class="demo-section">
             <h4>The entire config (pyproject.toml)</h4>
@@ -836,68 +963,11 @@ molt run demo</code></pre>
 [[tool.molt.c.modules]]
 name = <span class="str">"fastmath"</span>
 src  = [<span class="str">"fastmath.c"</span>]
-<span class="cmt"># headers defaults to fastmath.h — auto-discovered from src directory</span>
+<span class="cmt"># headers defaults to fastmath.h — auto-discovered</span>
 
 [tool.molt.tasks]
 demo  = <span class="str">"python main.py"</span>
 bench = <span class="str">"python bench.py"</span></code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>Python calling C — zero glue code</h4>
-            <pre><code><span class="cmt">/* fastmath.h — molt parses this, generates all PyArg/PyInit boilerplate */</span>
-<span class="fn">double</span> <span class="fn">add</span>(<span class="fn">double</span> a, <span class="fn">double</span> b);
-<span class="fn">double</span> <span class="fn">clamp</span>(<span class="fn">double</span> value, <span class="fn">double</span> lo, <span class="fn">double</span> hi);
-<span class="fn">double</span> <span class="fn">lerp</span>(<span class="fn">double</span> a, <span class="fn">double</span> b, <span class="fn">double</span> t);
-<span class="kw">int</span>    <span class="fn">gcd</span>(<span class="kw">int</span> a, <span class="kw">int</span> b);
-<span class="fn">double</span> <span class="fn">variance3</span>(<span class="fn">double</span> a, <span class="fn">double</span> b, <span class="fn">double</span> c);
-
-<span class="cmt"># Python side — import and call like any module</span>
-<span class="kw">import</span> fastmath
-<span class="fn">print</span>(fastmath.<span class="fn">lerp</span>(<span class="num">0.0</span>, <span class="num">100.0</span>, <span class="num">0.25</span>))    <span class="cmt"># → 25.0</span>
-<span class="fn">print</span>(fastmath.<span class="fn">gcd</span>(<span class="num">48</span>, <span class="num">18</span>))               <span class="cmt"># → 6</span>
-<span class="fn">print</span>(fastmath.<span class="fn">variance3</span>(<span class="num">2.0</span>, <span class="num">4.0</span>, <span class="num">6.0</span>))  <span class="cmt"># → 2.666...</span></code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>C calling Python — the full package store is available</h4>
-            <pre><code><span class="cmt">/* Any C extension can call back into managed Python packages */</span>
-<span class="cmt">/* PYTHONPATH is already set to ~/.molt/pkg/... by molt sync  */</span>
-#<span class="kw">include</span> &lt;Python.h&gt;
-
-<span class="kw">static</span> PyObject* call_numpy(PyObject* self, PyObject* args) {
-    PyObject* list;
-    <span class="kw">if</span> (!PyArg_ParseTuple(args, <span class="str">"O"</span>, &amp;list)) <span class="kw">return</span> NULL;
-
-    <span class="cmt">/* numpy is in the molt store — importable from C */</span>
-    PyObject* np   = PyImport_ImportModule(<span class="str">"numpy"</span>);
-    PyObject* arr  = PyObject_CallMethod(np,  <span class="str">"array"</span>, <span class="str">"O"</span>, list);
-    PyObject* mean = PyObject_CallMethod(arr, <span class="str">"mean"</span>,  NULL);
-    Py_DECREF(arr); Py_DECREF(np);
-    <span class="kw">return</span> mean;   <span class="cmt">/* Python float → caller */</span>
-}</code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>Cross-compilation</h4>
-            <pre><code><span class="cmt"># Compile for Linux from macOS — no Linux toolchain install needed</span>
-molt c build --target linux_amd64
-molt c build --target linux_arm64</code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>Why it's fast: no boxing overhead</h4>
-            <pre><code><span class="cmt"># Python loop — every iteration boxes a float into a PyObject</span>
-<span class="kw">def</span> <span class="fn">sum_py</span>(data):
-    s = 0.0
-    <span class="kw">for</span> x <span class="kw">in</span> data: s += x   <span class="cmt"># ~15 opcodes per iteration</span>
-    <span class="kw">return</span> s
-
-<span class="cmt">/* C extension — raw memory, no boxing, no GIL held for the hot loop */</span>
-<span class="kw">static</span> PyObject *<span class="fn">py_sum_f64</span>(PyObject *self, PyObject *args) {
-    Py_buffer view;
-    PyArg_ParseTuple(args, <span class="str">"y*"</span>, &amp;view);   <span class="cmt">// one allocation</span>
-    <span class="kw">double</span> s = 0, *p = view.buf;
-    <span class="kw">for</span> (<span class="kw">int</span> i = 0; i &lt; view.len/8; i++) s += p[i];  <span class="cmt">// tight C loop</span>
-    <span class="kw">return</span> PyFloat_FromDouble(s);           <span class="cmt">// one box at the end</span>
-}
-<span class="cmt">// Result: ~35–50× faster than the Python loop on 10M floats</span></code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
@@ -922,79 +992,48 @@ molt run bench      <span class="cmt"># benchmark: C extension vs Python (30–5
           <p class="demo-desc">
             <code>molt run hello.rb</code> dispatches to <code>ruby hello.rb</code> — no tasks, no config, no activation.
             Any file extension registered in <code>~/.molt/run-handlers.yaml</code> is dispatched directly.
-            28 runtimes ship built-in and you can add your own in one command. All handlers support
-            per-OS command overrides and the full token vocabulary — including <code>{tmp}</code> for
-            compile-then-run workflows so compiled binaries never appear in your working directory.
+            28 runtimes ship built-in and you can add your own in one command.
           </p>
-          <div class="two-col">
-            <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>9 languages confirmed: Ruby, Node.js, Lua, Perl, Bash, Go, Swift, Julia, Elixir</li>
-                <li>Args forwarded verbatim: <code>molt run hello.rb Alice</code></li>
-                <li>Polyglot table: all languages with timing via <code>molt run all</code></li>
-                <li>Custom handler registration: <code>molt run-handler add deno "deno run {file} {args}"</code></li>
-                <li>Cross-platform overrides: separate <code>--windows</code> command per extension</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run hello.rb [name]</span> <span class="d">— Ruby</span></li>
-                <li><span class="c">molt run hello.js [name]</span> <span class="d">— Node.js</span></li>
-                <li><span class="c">molt run hello.go [name]</span> <span class="d">— Go</span></li>
-                <li><span class="c">molt run hello.jl [name]</span> <span class="d">— Julia</span></li>
-                <li><span class="c">molt run hello.exs [name]</span> <span class="d">— Elixir</span></li>
-                <li><span class="c">molt run all</span> <span class="d">— all languages in a table</span></li>
-                <li><span class="c">molt run-handler list</span> <span class="d">— show all 28 built-ins</span></li>
-              </ul>
-            </div>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>14-polyglot/
+├── hello.rb      hello.js      hello.go
+├── hello.lua     hello.pl      hello.sh
+├── hello.swift   hello.jl      hello.exs
+├── showcase.py   <span class="cmt"># runs all languages, captures output in a table</span>
+└── pyproject.toml</code></pre>
           </div>
           <div class="demo-section">
-            <h4>Dispatch order in <code>molt run &lt;arg&gt;</code></h4>
-            <pre><code><span class="cmt"># molt run checks, in order:</span>
-<span class="cmt"># 1. Flag-shaped arg → default entry</span>
-<span class="cmt"># 2. No arg         → main.py / python -m &lt;pkg&gt;</span>
-<span class="cmt"># 3. Ends in .py    → runPythonScript</span>
-<span class="cmt"># 4. Ends in .mojo  → mojo run</span>
-<span class="cmt"># 5. Has any ext + handler registered → runWithHandler  ← THIS DEMO</span>
-<span class="cmt"># 6. Matches task in [tool.molt.tasks] → task runner</span>
-<span class="cmt"># 7. Fallthrough    → exec binary on PATH</span></code></pre>
+            <h4>Key code — three hello scripts</h4>
+            <pre><code><span class="cmt">#!/usr/bin/env ruby  — hello.rb</span>
+name = ARGV[0] || <span class="str">"World"</span>
+puts <span class="str">"Hello from Ruby #{RUBY_VERSION}! 👋 #{name}"</span>
+
+<span class="cmt">#!/usr/bin/env node  — hello.js</span>
+const name = process.argv[2] || <span class="str">"World"</span>;
+console.log(`Hello from Node.js ${process.version}! 👋 ${name}`);
+
+<span class="cmt">// hello.go</span>
+func main() {
+    name := <span class="str">"World"</span>
+    if len(os.Args) > 1 { name = os.Args[1] }
+    fmt.Printf(<span class="str">"Hello from Go %s! 👋 %s\n"</span>, runtime.Version(), name)
+}</code></pre>
           </div>
           <div class="demo-section">
             <h4>Managing handlers</h4>
-            <pre><code>molt run-handler list                         <span class="cmt"># all built-ins + user handlers</span>
-molt run-handler show rb                      <span class="cmt"># Extension: .rb  Command: ruby {file} {args}</span>
+            <pre><code>molt run-handler list                           <span class="cmt"># all built-ins + user handlers</span>
+molt run-handler show rb                        <span class="cmt"># ruby {file} {args}</span>
 molt run-handler add deno <span class="str">"deno run {file} {args}"</span>
-molt run-handler add ts <span class="str">"npx ts-node {file} {args}"</span> --windows <span class="str">"npx.cmd ts-node {file} {args}"</span>
-molt run-handler remove deno
-molt run-handler reset                        <span class="cmt"># restore factory defaults</span></code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>Token reference</h4>
-            <pre><code>{file}      <span class="cmt"># absolute path to the script</span>
-{dir}       <span class="cmt"># directory containing the script</span>
-{basename}  <span class="cmt"># filename without extension</span>
-{args}      <span class="cmt"># extra arguments, space-joined</span>
-{tmp}       <span class="cmt"># stable per-file temp dir: $TMPDIR/molt-run/&lt;sha256[:8]&gt;/</span>
-{python}    <span class="cmt"># project's pinned Python interpreter</span>
-{zig}       <span class="cmt"># auto-installed zig binary (~/.molt/toolchains/zig/)</span></code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>Live test output</h4>
-            <pre><code>molt run hello.rb    molt  →  Hello from Ruby 2.6.10! 👋 molt
-molt run hello.js    molt  →  Hello from Node.js v24.7.0! 👋 molt
-molt run hello.lua   molt  →  Hello from Lua 5.4! 👋 molt
-molt run hello.go    molt  →  Hello from Go go1.24.1! 👋 molt
-molt run hello.swift molt  →  Hello from Swift! 👋 molt
-molt run hello.jl    molt  →  Hello from Julia 1.11.4! 👋 molt
-molt run hello.exs   molt  →  Hello from Elixir 1.18.3! 👋 molt</code></pre>
+molt run-handler reset                          <span class="cmt"># restore factory defaults</span></code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/14-polyglot
 molt run hello.rb              <span class="cmt"># Hello from Ruby!</span>
 molt run hello.rb Alice        <span class="cmt"># Hello from Ruby! 👋 Alice</span>
+molt run hello.js molt
+molt run hello.go molt
 molt run all                   <span class="cmt"># polyglot table with timing</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/14-polyglot" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
@@ -1012,111 +1051,50 @@ molt run all                   <span class="cmt"># polyglot table with timing</s
           </div>
           <h2>C project management — run, build, orchestrate</h2>
           <p class="demo-desc">
-            molt as a complete C project manager — not C-as-a-Python-extension (that's demo 13), but C as
-            the <em>primary language</em>. Two distinct capabilities: <strong>single-file run</strong>
-            (<code>molt run hello.c</code> compiles with <code>zig cc</code> and executes immediately —
-            no config, no Makefile) and <strong>multi-file project tasks</strong> (build, run, clean all
-            via <code>molt run &lt;task&gt;</code>). Python orchestrates the C binary through
+            molt as a complete C project manager. <strong>Single-file run</strong>:
+            <code>molt run hello.c</code> compiles with <code>zig cc</code> and executes immediately —
+            no config, no Makefile. <strong>Multi-file project</strong>: build, run, clean all
+            via <code>molt run &lt;task&gt;</code>. Python orchestrates the C binary through
             <code>subprocess</code>, living in the same molt project.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>15-c-project/
+├── hello.c           <span class="cmt"># single-file: molt run hello.c</span>
+├── src/
+│   ├── main.c        <span class="cmt"># multi-file CLI</span>
+│   ├── stats.c
+│   └── stats.h
+├── demo.py           <span class="cmt"># Python orchestrator</span>
+└── pyproject.toml</code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li><code>molt run hello.c</code> → compiles + runs in one command</li>
-                <li><code>molt run hello.c Alice</code> → args forwarded after compile</li>
-                <li><code>molt run build</code> → multi-file C binary (<code>bin/stats</code>)</li>
-                <li><code>molt run demo</code> → Python drives C binary: 3 datasets + histograms</li>
-                <li><code>molt run clean</code> → removes compiled artifacts</li>
-                <li><code>molt run-handler show c</code> → inspect the zig cc compile template</li>
-              </ul>
+              <h4>hello.c</h4>
+              <pre><code><span class="cmt">/* zero config — binary lands in $TMPDIR */</span>
+#include &lt;stdio.h&gt;
+int main(int argc, char *argv[]) {
+    const char *name = argc > 1 ? argv[1] : <span class="str">"World"</span>;
+    printf(<span class="str">"Hello from C! 👋 %s\n"</span>, name);
+    return 0;
+}</code></pre>
             </div>
             <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run hello.c [name]</span> <span class="d">— one-shot compile + run</span></li>
-                <li><span class="c">molt run build</span> <span class="d">— cc -O2 → bin/stats</span></li>
-                <li><span class="c">molt run stats &lt;nums...&gt;</span> <span class="d">— run the C binary</span></li>
-                <li><span class="c">molt run demo</span> <span class="d">— Python drives C: 3 datasets</span></li>
-                <li><span class="c">molt run clean</span> <span class="d">— remove compiled binaries</span></li>
-              </ul>
+              <h4>src/stats.h</h4>
+              <pre><code><span class="cmt">/* descriptive statistics on double[] */</span>
+double stats_mean(const double *data, int n);
+double stats_std (const double *data, int n);
+double stats_min (const double *data, int n);
+double stats_max (const double *data, int n);
+double stats_sum (const double *data, int n);</code></pre>
             </div>
-          </div>
-          <div class="demo-section">
-            <h4>Single-file C — zero configuration</h4>
-            <pre><code><span class="cmt">/* hello.c — no config needed; compiled binary goes to $TMPDIR, not CWD */</span>
-#<span class="kw">include</span> &lt;stdio.h&gt;
-<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">int</span> argc, <span class="kw">char</span> *argv[]) {
-    <span class="kw">const char</span> *name = argc &gt; 1 ? argv[1] : <span class="str">"World"</span>;
-    printf(<span class="str">"Hello from C! 👋 %s\n"</span>, name);
-    <span class="kw">return</span> 0;
-}
-
-$ molt run hello.c          <span class="cmt"># Hello from C! 👋 World</span>
-$ molt run hello.c Alice    <span class="cmt"># Hello from C! 👋 Alice</span></code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>How the .c handler works</h4>
-            <pre><code><span class="cmt"># The built-in handler (inspect with: molt run-handler show c)</span>
-<span class="cmt"># Unix:    sh -c "{zig} cc -O2 -o {tmp}/{basename} {file} && {tmp}/{basename} {args}"</span>
-<span class="cmt"># Windows: cmd /c "{zig} cc -O2 -o {tmp}\{basename}.exe {file} && {tmp}\{basename}.exe {args}"</span>
-
-<span class="cmt"># Tokens resolved at run time:</span>
-{zig}      <span class="cmt">→ /Users/.../.molt/toolchains/zig/0.16.0/zig  (auto-installed)</span>
-{tmp}      <span class="cmt">→ /var/.../molt-run/e54e302c/  (stable per-file temp dir)</span>
-{basename} <span class="cmt">→ hello</span>
-{file}     <span class="cmt">→ /path/to/15-c-project/hello.c</span>
-{args}     <span class="cmt">→ Alice</span></code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>Multi-file project — <code>moltproject.toml</code> tasks</h4>
-            <pre><code><span class="cmt"># moltproject.toml — for non-Python projects; no requires-python needed</span>
-[tool.molt.tasks]
-build = <span class="str">"cc -O2 -Wall -o bin/stats src/main.c src/stats.c -lm"</span>
-stats = <span class="str">"bin/stats"</span>       <span class="cmt"># run the binary (pass args with: molt run stats 1 2 3)</span>
-demo  = <span class="str">"python demo.py"</span>  <span class="cmt"># Python drives the C binary</span>
-clean = <span class="str">"rm -f bin/stats"</span>
-
-<span class="cmt"># Swap cc for zig cc for guaranteed cross-platform compilation:</span>
-<span class="cmt"># build = "zig cc -O2 -target x86_64-linux -o bin/stats-linux src/main.c src/stats.c"</span></code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>Python orchestrating C</h4>
-            <pre><code><span class="cmt"># demo.py — Python calls the C binary, lives in the same molt project</span>
-<span class="kw">import</span> subprocess
-<span class="kw">from</span> pathlib <span class="kw">import</span> Path
-
-BIN = Path(__file__).parent / <span class="str">"bin"</span> / <span class="str">"stats"</span>
-
-result = subprocess.<span class="fn">run</span>(
-    [<span class="fn">str</span>(BIN), <span class="str">"88"</span>, <span class="str">"92"</span>, <span class="str">"71"</span>, <span class="str">"95"</span>, <span class="str">"84"</span>],
-    capture_output=True, text=True
-)
-<span class="fn">print</span>(result.stdout)
-<span class="cmt"># ─────────────────────────────</span>
-<span class="cmt">#   mean      84.0000</span>
-<span class="cmt">#   std        8.0623</span>
-<span class="cmt">#   min       71.0000</span>
-<span class="cmt">#   max       95.0000</span>
-<span class="cmt"># ─────────────────────────────</span></code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>Customise the handler</h4>
-            <pre><code><span class="cmt"># Use system clang instead of zig cc (keep {tmp} so binary stays out of CWD)</span>
-molt run-handler add c <span class="str">"sh -c \"clang -O2 -o {tmp}/{basename} {file} && {tmp}/{basename} {args}\""</span>
-
-<span class="cmt"># C++ works the same way (.cpp is also built-in)</span>
-molt run hello.cpp      <span class="cmt"># → zig c++ -O2 ... binary in $TMPDIR</span>
-
-<span class="cmt"># Restore defaults</span>
-molt run-handler reset</code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/15-c-project
 molt run hello.c              <span class="cmt"># single-file compile + run</span>
 molt run hello.c Alice        <span class="cmt"># with arg</span>
-molt run build                <span class="cmt"># multi-file: cc → bin/stats</span>
+molt run build                <span class="cmt"># cc -O2 → bin/stats</span>
 molt run demo                 <span class="cmt"># Python drives C binary: 3 datasets</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/15-c-project" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
@@ -1137,67 +1115,47 @@ molt run demo                 <span class="cmt"># Python drives C binary: 3 data
             molt as a complete C++17 project manager. <strong>Single-file run</strong>:
             <code>molt run hello.cpp</code> compiles with <code>zig c++ -std=c++17</code>
             and executes — the binary lands in a temp dir, not your CWD. <strong>Multi-file project</strong>:
-            templates, structured bindings, and STL algorithms managed via
-            <code>moltproject.toml</code> tasks — no Python runtime required. Python can still
-            orchestrate the C++ binary via <code>subprocess</code>.
+            C++17 structured bindings, templates, and STL algorithms managed via
+            <code>moltproject.toml</code> tasks — no Python runtime required.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>16-cpp-project/
+├── hello.cpp        <span class="cmt"># single-file: molt run hello.cpp</span>
+├── src/
+│   ├── main.cpp     <span class="cmt"># multi-file CLI</span>
+│   └── vec.hpp      <span class="cmt"># C++17 template stats</span>
+└── moltproject.toml</code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li><code>molt run hello.cpp</code> → compiles + runs in one command</li>
-                <li><code>molt run hello.cpp Alice</code> → args forwarded after compile</li>
-                <li><code>molt run build</code> → <code>zig c++ -O2 -std=c++17 → bin/stats-cpp</code></li>
-                <li><code>molt run demo</code> → Python drives C++ binary: 3 datasets + histograms</li>
-                <li>C++17 structured bindings: <code>auto [lo, hi] = std::minmax_element(...)</code></li>
-              </ul>
+              <h4>hello.cpp</h4>
+              <pre><code>#include &lt;iostream&gt;
+#include &lt;string&gt;
+int main(int argc, char* argv[]) {
+    std::string name = argc > 1 ? argv[1] : <span class="str">"World"</span>;
+    std::cout &lt;&lt; <span class="str">"Hello from C++17! 👋 "</span> &lt;&lt; name &lt;&lt; <span class="str">"\n"</span>;
+}</code></pre>
             </div>
             <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run hello.cpp [name]</span> <span class="d">— one-shot compile + run</span></li>
-                <li><span class="c">molt run build</span> <span class="d">— zig c++ -O2 → bin/stats-cpp</span></li>
-                <li><span class="c">molt run stats &lt;nums...&gt;</span> <span class="d">— run the C++ binary</span></li>
-                <li><span class="c">molt run demo</span> <span class="d">— Python drives C++: 3 datasets</span></li>
-                <li><span class="c">molt run clean</span> <span class="d">— remove compiled binaries</span></li>
-              </ul>
+              <h4>src/vec.hpp — C++17 templates</h4>
+              <pre><code>template&lt;typename T&gt;
+Stats&lt;T&gt; compute(const std::vector&lt;T&gt;&amp; v) {
+    double s = std::accumulate(v.begin(), v.end(), 0.0);
+    double m = s / v.size();
+    auto [lo, hi] = std::minmax_element(
+                      v.begin(), v.end());
+    return { m, std::sqrt(var/v.size()),
+             (double)*lo, (double)*hi, s, v.size() };
+}</code></pre>
             </div>
-          </div>
-          <div class="demo-section">
-            <h4>Single-file C++ — zero configuration</h4>
-            <pre><code><span class="cmt">// hello.cpp — no config needed for single-file run (binary → temp dir)</span>
-#<span class="kw">include</span> &lt;iostream&gt;
-#<span class="kw">include</span> &lt;string&gt;
-<span class="kw">int</span> <span class="fn">main</span>(<span class="kw">int</span> argc, <span class="kw">char</span>* argv[]) {
-    std::string name = argc &gt; 1 ? argv[1] : <span class="str">"World"</span>;
-    std::cout &lt;&lt; <span class="str">"Hello from C++17! 👋 "</span> &lt;&lt; name &lt;&lt; <span class="str">"\n"</span>;
-}
-
-<span class="cmt">$ molt run hello.cpp Alice</span>
-Hello from C++17! 👋 Alice</code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>Multi-file project — <code>src/vec.hpp</code> (C++17 template)</h4>
-            <pre><code><span class="kw">template</span>&lt;<span class="kw">typename</span> T&gt;
-Stats&lt;T&gt; <span class="fn">compute</span>(<span class="kw">const</span> std::vector&lt;T&gt;&amp; v) {
-    <span class="kw">double</span> s = std::<span class="fn">accumulate</span>(v.<span class="fn">begin</span>(), v.<span class="fn">end</span>(), 0.0);
-    <span class="kw">double</span> m = s / v.<span class="fn">size</span>();
-    <span class="kw">auto</span> [lo, hi] = std::<span class="fn">minmax_element</span>(v.<span class="fn">begin</span>(), v.<span class="fn">end</span>());
-    <span class="kw">return</span> { m, std::<span class="fn">sqrt</span>(var / v.<span class="fn">size</span>()), (<span class="kw">double</span>)*lo, (<span class="kw">double</span>)*hi, s, v.<span class="fn">size</span>() };
-}
-
-<span class="cmt"># moltproject.toml — no Python required</span>
-[tool.molt.tasks]
-build = <span class="str">"zig c++ -O2 -std=c++17 -o bin/stats-cpp src/main.cpp"</span>
-stats = <span class="str">"bin/stats-cpp"</span>
-demo  = <span class="str">"python demo.py"</span></code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/16-cpp-project
 molt run hello.cpp              <span class="cmt"># single-file compile + run</span>
 molt run hello.cpp Alice        <span class="cmt"># with arg</span>
-molt run build                  <span class="cmt"># multi-file: zig c++ → bin/stats-cpp</span>
+molt run build                  <span class="cmt"># zig c++ -O2 -std=c++17 → bin/stats-cpp</span>
 molt run demo                   <span class="cmt"># Python drives C++ binary: 3 datasets</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/16-cpp-project" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
@@ -1218,67 +1176,33 @@ molt run demo                   <span class="cmt"># Python drives C++ binary: 3 
             molt as a complete Zig project manager. <strong>Single-file run</strong>:
             <code>molt run hello.zig</code> invokes <code>zig run</code> with no build step.
             <strong>Multi-file project</strong>: <code>zig build-exe</code> compiles separate
-            modules into a native binary managed by <code>moltproject.toml</code> tasks — no Python
-            runtime required. The <code>{zig}</code> token resolves to the auto-installed Zig binary.
-            Python can still orchestrate the Zig binary via <code>subprocess</code>.
+            modules into a native binary managed by <code>moltproject.toml</code> tasks. The
+            <code>{zig}</code> token resolves to the auto-installed Zig binary.
           </p>
-          <div class="two-col">
-            <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li><code>molt run hello.zig</code> → <code>zig run hello.zig</code> instantly</li>
-                <li><code>molt run hello.zig Alice</code> → args forwarded via <code>--</code></li>
-                <li><code>molt run build</code> → <code>zig build-exe → bin/stats-zig</code></li>
-                <li><code>molt run demo</code> → Python drives Zig binary: 3 datasets + histograms</li>
-                <li>Zig 0.16 idioms: error unions, explicit allocators, <code>std.process.Init</code></li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Available tasks</h4>
-              <ul class="cmd-list">
-                <li><span class="c">molt run hello.zig [name]</span> <span class="d">— zig run, no build step</span></li>
-                <li><span class="c">molt run build</span> <span class="d">— zig build-exe → bin/stats-zig</span></li>
-                <li><span class="c">molt run stats &lt;nums...&gt;</span> <span class="d">— run the Zig binary</span></li>
-                <li><span class="c">molt run demo</span> <span class="d">— Python drives Zig: 3 datasets</span></li>
-                <li><span class="c">molt run clean</span> <span class="d">— remove compiled binaries</span></li>
-              </ul>
-            </div>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>17-zig-project/
+├── hello.zig        <span class="cmt"># single-file: molt run hello.zig</span>
+├── src/
+│   ├── main.zig
+│   └── stats.zig    <span class="cmt"># error union: error{EmptySlice}!StatsResult</span>
+└── moltproject.toml</code></pre>
           </div>
           <div class="demo-section">
-            <h4>Single-file Zig — Zig 0.16 API</h4>
-            <pre><code><span class="cmt">// hello.zig — Zig 0.16: std.process.Init pattern</span>
-<span class="kw">const</span> std = @<span class="fn">import</span>(<span class="str">"std"</span>);
-<span class="kw">pub fn</span> <span class="fn">main</span>(init: std.process.Init) !<span class="kw">void</span> {
-    <span class="kw">const</span> arena = init.arena.<span class="fn">allocator</span>();
-    <span class="kw">const</span> args  = <span class="kw">try</span> init.minimal.args.<span class="fn">toSlice</span>(arena);
-    <span class="kw">const</span> name: []<span class="kw">const u8</span> = <span class="kw">if</span> (args.len &gt; 1) args[1] <span class="kw">else</span> <span class="str">"World"</span>;
-    <span class="kw">var</span> buf: [256]<span class="kw">u8</span> = <span class="kw">undefined</span>;
-    <span class="kw">const</span> msg = <span class="kw">try</span> std.fmt.<span class="fn">bufPrint</span>(&amp;buf,
+            <h4>Key code — hello.zig (Zig 0.16 API)</h4>
+            <pre><code>const std = @import(<span class="str">"std"</span>);
+
+pub fn main(init: std.process.Init) !void {
+    const arena = init.arena.allocator();
+    const args  = try init.minimal.args.toSlice(arena);
+    const name: []const u8 = if (args.len > 1) args[1] else <span class="str">"World"</span>;
+
+    var buf: [256]u8 = undefined;
+    const msg = try std.fmt.bufPrint(&amp;buf,
         <span class="str">"Hello from Zig {s}! 👋 {s}\n"</span>,
-        .{ @<span class="fn">import</span>(<span class="str">"builtin"</span>).zig_version_string, name });
-    <span class="kw">try</span> std.Io.File.<span class="fn">stdout</span>().<span class="fn">writeStreamingAll</span>(init.io, msg);
-}
-
-<span class="cmt">$ molt run hello.zig Alice</span>
-Hello from Zig 0.16.0! 👋 Alice</code></pre>
-          </div>
-          <div class="demo-section">
-            <h4>Multi-file project — <code>src/stats.zig</code> (error union pattern)</h4>
-            <pre><code><span class="kw">pub const</span> StatsResult = <span class="kw">struct</span> {
-    n: <span class="kw">usize</span>, sum: <span class="kw">f64</span>, mean: <span class="kw">f64</span>, std_dev: <span class="kw">f64</span>, min: <span class="kw">f64</span>, max: <span class="kw">f64</span>,
-};
-
-<span class="cmt">// Error union: returns EmptySlice or StatsResult</span>
-<span class="kw">pub fn</span> <span class="fn">compute</span>(data: []<span class="kw">const f64</span>) <span class="kw">error</span>{EmptySlice}!StatsResult {
-    <span class="kw">if</span> (data.len == 0) <span class="kw">return error</span>.EmptySlice;
-    <span class="cmt">// ... two-pass mean and variance</span>
-}
-
-<span class="cmt"># moltproject.toml — no Python required</span>
-[tool.molt.tasks]
-build = <span class="str">"zig build-exe src/main.zig -femit-bin=bin/stats-zig"</span>
-stats = <span class="str">"bin/stats-zig"</span>
-demo  = <span class="str">"python demo.py"</span></code></pre>
+        .{ @import(<span class="str">"builtin"</span>).zig_version_string, name });
+    try std.Io.File.stdout().writeStreamingAll(init.io, msg);
+}</code></pre>
           </div>
           <div class="demo-section">
             <h4>Run it</h4>
@@ -1307,27 +1231,38 @@ molt run demo                   <span class="cmt"># Python drives Zig binary: 3 
             language-agnostic interfaces. Set <code>lang = "rust"</code> in
             <code>moltproject.toml</code> and molt routes every package operation to
             <code>cargo</code> automatically — no manual Cargo invocations required.
-            The pkg-backend system covers 9 ecosystems out of the box: Rust, Go, Node,
-            Bun, Zig, C, Swift, Nim, and Python. Add or override backends with one command.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>18-rust-project/
+├── src/main.rs       <span class="cmt"># Stats struct + histogram + unit tests</span>
+├── Cargo.toml
+└── moltproject.toml</code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li><code>molt add serde --features derive</code> → <code>cargo add serde --features derive</code></li>
-                <li><code>molt sync</code> → <code>cargo fetch</code></li>
-                <li><code>molt remove serde</code> → <code>cargo remove serde</code></li>
-                <li><code>molt run build</code> → <code>cargo build --release</code></li>
-                <li><code>molt run stats 88 92 71 95 84</code> → Rust binary with histogram</li>
-                <li>Custom backend: <code>molt pkg-backend add nim …</code></li>
-              </ul>
+              <h4>src/main.rs — Stats struct</h4>
+              <pre><code>struct Stats {
+    n: usize, sum: f64, mean: f64,
+    std_dev: f64, min: f64, max: f64,
+}
+
+fn compute(data: &amp;[f64]) -> Option&lt;Stats&gt; {
+    if data.is_empty() { return None; }
+    let sum: f64 = data.iter().sum();
+    let mean = sum / data.len() as f64;
+    let variance: f64 = data.iter()
+        .map(|&amp;x| { let d = x - mean; d * d })
+        .sum::&lt;f64&gt;() / data.len() as f64;
+    Some(Stats { n: data.len(), sum, mean,
+                 std_dev: variance.sqrt(), .. })
+}</code></pre>
             </div>
             <div class="demo-section">
-              <h4>Key files</h4>
-              <pre><code><span class="cmt"># moltproject.toml</span>
-[project]
+              <h4>moltproject.toml</h4>
+              <pre><code>[project]
 name = <span class="str">"rust-project"</span>
-lang = <span class="str">"rust"</span>        <span class="cmt"># activates cargo backend</span>
+lang = <span class="str">"rust"</span>   <span class="cmt"># activates cargo backend</span>
 
 [tool.molt.tasks]
 build = <span class="str">"cargo build --release"</span>
@@ -1337,25 +1272,11 @@ demo  = <span class="str">"cargo run --release -- 88 92 71 95 84"</span></code><
             </div>
           </div>
           <div class="demo-section">
-            <h4>pkg-backend token reference</h4>
-            <pre><code>molt pkg-backend show rust
-<span class="cmt"># add:     cargo add {package} {version_flag} {flags}</span>
-<span class="cmt"># remove:  cargo remove {package}</span>
-<span class="cmt"># sync:    cargo fetch</span>
-<span class="cmt"># upgrade: cargo update {package}</span>
-
-<span class="cmt"># Per-project override (any fields; rest fall back to global backend)</span>
-<span class="cmt"># [tool.molt.backend]</span>
-<span class="cmt"># add  = "bun add {package}{version_flag}"</span>
-<span class="cmt"># sync = "bun install"</span></code></pre>
-          </div>
-          <div class="demo-section">
             <h4>Run it</h4>
             <pre><code>cd demos/18-rust-project
 molt run build                  <span class="cmt"># cargo build --release</span>
 molt run stats 88 92 71 95 84   <span class="cmt"># Rust binary: stats + histogram</span>
-molt run test                   <span class="cmt"># cargo test</span>
-molt run demo                   <span class="cmt"># preset dataset run</span></code></pre>
+molt run test                   <span class="cmt"># cargo test</span></code></pre>
           </div>
           <a href="https://github.com/luowensheng/molt-python/tree/main/demos/18-rust-project" class="demo-link" target="_blank" rel="noopener">View source on GitHub ↗</a>
         </div>
@@ -1376,36 +1297,59 @@ molt run demo                   <span class="cmt"># preset dataset run</span></c
             Four functions declared in <code>stats.molt.toml</code>. <code>molt sync</code>
             compiles a stdio JSON-RPC server, generates <code>stats.py</code> + <code>stats.pyi</code>,
             and adds it to <code>PYTHONPATH</code>. <code>import stats</code> calls Go functions
-            at full speed — no <code>.so</code>, no cgo, no ABI constraints. Works on any platform
-            where Go is available.
+            at full speed — no <code>.so</code>, no cgo, no ABI constraints.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>19-glue-go/
+├── stats.molt.toml    <span class="cmt"># manifest: lang, src, transport, [[fn]]</span>
+├── gocode/stats.go    <span class="cmt"># package stats — NOT package main</span>
+└── main.py            <span class="cmt"># Python caller</span></code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li><code>import stats</code> — auto-started subprocess over stdio</li>
-                <li><code>stats.mean([...]) → float</code> — typed, IDE-completed</li>
-                <li><code>stats.histogram(data, 5) → list[int]</code></li>
-                <li><code>stats.compress(payload) → bytes</code> — base64 on wire, transparent in Python</li>
-                <li><code>stats.pyi</code> stub enables full IDE completion</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Key config</h4>
-              <pre><code><span class="cmt"># stats.molt.toml</span>
-lang      = <span class="str">"go"</span>
-src       = <span class="str">"./gocode"</span>   <span class="cmt"># package stats dir</span>
+              <h4>stats.molt.toml</h4>
+              <pre><code>lang      = <span class="str">"go"</span>
+src       = <span class="str">"./gocode"</span>  <span class="cmt"># package stats dir</span>
 transport = <span class="str">"stdio"</span>
 
 [[fn]]
 name    = <span class="str">"mean"</span>
-args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"[]f64"</span> }]
+args    = [{name=<span class="str">"data"</span>, type=<span class="str">"[]f64"</span>}]
+returns = <span class="str">"f64"</span>
+
+[[fn]]
+name    = <span class="str">"stddev"</span>
+args    = [{name=<span class="str">"data"</span>, type=<span class="str">"[]f64"</span>}]
 returns = <span class="str">"f64"</span>
 
 [[fn]]
 name    = <span class="str">"compress"</span>
-args    = [{ name = <span class="str">"payload"</span>, type = <span class="str">"bytes"</span> }]
+args    = [{name=<span class="str">"payload"</span>, type=<span class="str">"bytes"</span>}]
 returns = <span class="str">"bytes"</span></code></pre>
+            </div>
+            <div class="demo-section">
+              <h4>gocode/stats.go + main.py</h4>
+              <pre><code><span class="cmt">// Mean returns the arithmetic mean of data.</span>
+func Mean(data []float64) float64 {
+    sum := 0.0
+    for _, v := range data { sum += v }
+    return sum / float64(len(data))
+}
+
+func Stddev(data []float64) float64 {
+    m := Mean(data); v := 0.0
+    for _, x := range data {
+        d := x - m; v += d * d
+    }
+    return math.Sqrt(v / float64(len(data)))
+}
+
+<span class="cmt"># main.py — import like any Python module</span>
+<span class="kw">import</span> stats
+data = [88.0, 92.0, 71.0, 95.0, 84.0, 76.0]
+print(<span class="str">f"mean:   {stats.mean(data):.2f}"</span>)
+print(<span class="str">f"stddev: {stats.stddev(data):.2f}"</span>)</code></pre>
             </div>
           </div>
           <div class="demo-section">
@@ -1435,27 +1379,23 @@ molt run demo        <span class="cmt"># calls Go mean/stddev/histogram/compress
             IPC server, and wraps the package as a Python module. Two Python modules, two Go
             packages, zero lines of Go written by the user.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>20-glue-lib/
+├── gosha256.molt.toml   <span class="cmt"># src = "crypto/sha256"  (stdlib)</span>
+├── sha3.molt.toml       <span class="cmt"># src = "golang.org/x/crypto/sha3"</span>
+└── main.py</code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li><code>import gosha256</code> → wraps <code>crypto/sha256</code> stdlib</li>
-                <li><code>import sha3</code> → wraps <code>golang.org/x/crypto/sha3</code></li>
-                <li><code>go get</code> runs automatically for third-party paths</li>
-                <li><code>bytes</code> return type: Go <code>[32]byte</code> decoded to Python <code>bytes</code></li>
-                <li>SHA-256 ≠ SHA3-256 verified in Python</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Key config</h4>
-              <pre><code><span class="cmt"># gosha256.molt.toml</span>
-lang = <span class="str">"go"</span>
-src  = <span class="str">"crypto/sha256"</span>   <span class="cmt"># stdlib</span>
+              <h4>gosha256.molt.toml</h4>
+              <pre><code>lang = <span class="str">"go"</span>
+src  = <span class="str">"crypto/sha256"</span>  <span class="cmt"># stdlib</span>
 
 [[fn]]
 name    = <span class="str">"sum256"</span>
 call    = <span class="str">"sha256.Sum256"</span>
-args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+args    = [{name=<span class="str">"data"</span>, type=<span class="str">"bytes"</span>}]
 returns = <span class="str">"bytes"</span>
 
 <span class="cmt"># sha3.molt.toml</span>
@@ -1463,10 +1403,29 @@ lang = <span class="str">"go"</span>
 src  = <span class="str">"golang.org/x/crypto/sha3"</span>
 
 [[fn]]
-name    = <span class="str">"sum256"</span>
-call    = <span class="str">"sha3.Sum256"</span>
-args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+name    = <span class="str">"sum256"</span>; call = <span class="str">"sha3.Sum256"</span>
+args    = [{name=<span class="str">"data"</span>, type=<span class="str">"bytes"</span>}]
+returns = <span class="str">"bytes"</span>
+[[fn]]
+name    = <span class="str">"sum512"</span>; call = <span class="str">"sha3.Sum512"</span>
+args    = [{name=<span class="str">"data"</span>, type=<span class="str">"bytes"</span>}]
 returns = <span class="str">"bytes"</span></code></pre>
+            </div>
+            <div class="demo-section">
+              <h4>main.py</h4>
+              <pre><code><span class="kw">import</span> gosha256  <span class="cmt"># wraps crypto/sha256</span>
+<span class="kw">import</span> sha3      <span class="cmt"># wraps golang.org/x/crypto/sha3</span>
+
+data = b<span class="str">"Transport Glue demo - hashing from Go"</span>
+
+sha256_digest  = gosha256.sum256(data)
+sha3_256       = sha3.sum256(data)
+sha3_512       = sha3.sum512(data)
+
+print(<span class="str">f"SHA-256  (stdlib):     {sha256_digest.hex()}"</span>)
+print(<span class="str">f"SHA3-256 (third-party):{sha3_256.hex()}"</span>)
+print(<span class="str">f"SHA3-512 (64 bytes):   {sha3_512.hex()[:32]}..."</span>)
+print(<span class="str">f"SHA-256 != SHA3-256: {sha256_digest != sha3_256}"</span>)</code></pre>
             </div>
           </div>
           <div class="demo-section">
@@ -1495,39 +1454,58 @@ molt run demo        <span class="cmt"># hash with SHA-256 and SHA3-256/512 from
             daemon — multiple Python threads share one Rust process concurrently. The demo runs a
             10-thread stress test, all threads compressing different payloads simultaneously.
           </p>
+          <div class="demo-section">
+            <h4>Layout</h4>
+            <pre><code>21-glue-rust/
+├── compress.molt.toml   <span class="cmt"># lang=rust, transport=unix_socket, crates=[flate2]</span>
+├── compress_glue.rs     <span class="cmt"># thin adapter — NOT a full Cargo project</span>
+└── main.py</code></pre>
+          </div>
           <div class="two-col">
             <div class="demo-section">
-              <h4>What you'll see</h4>
-              <ul class="demo-bullets">
-                <li>14,500-byte string compressed to 90 bytes (0.6%)</li>
-                <li>Round-trip deflate → inflate verified</li>
-                <li>10 threads share one unix_socket Rust server</li>
-                <li>All threads complete in &lt; 5 ms</li>
-                <li><code>crates = ["flate2 = '1.0'"]</code> → auto-added to Cargo.toml</li>
-              </ul>
-            </div>
-            <div class="demo-section">
-              <h4>Key files</h4>
-              <pre><code><span class="cmt"># compress.molt.toml</span>
-lang      = <span class="str">"rust"</span>
+              <h4>compress.molt.toml</h4>
+              <pre><code>lang      = <span class="str">"rust"</span>
 src       = <span class="str">"compress_glue.rs"</span>
 crates    = [<span class="str">"flate2 = '1.0'"</span>]
-transport = <span class="str">"unix_socket"</span>
+transport = <span class="str">"unix_socket"</span>  <span class="cmt"># persistent daemon</span>
 
 [[fn]]
 name    = <span class="str">"deflate"</span>
-args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+args    = [{name=<span class="str">"data"</span>, type=<span class="str">"bytes"</span>}]
 returns = <span class="str">"bytes"</span>
 
 [[fn]]
 name    = <span class="str">"inflate"</span>
-args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+args    = [{name=<span class="str">"data"</span>, type=<span class="str">"bytes"</span>}]
 returns = <span class="str">"bytes"</span>
 
 [[fn]]
 name    = <span class="str">"ratio"</span>
-args    = [{ name = <span class="str">"data"</span>, type = <span class="str">"bytes"</span> }]
+args    = [{name=<span class="str">"data"</span>, type=<span class="str">"bytes"</span>}]
 returns = <span class="str">"f64"</span></code></pre>
+            </div>
+            <div class="demo-section">
+              <h4>compress_glue.rs + main.py</h4>
+              <pre><code><span class="kw">pub fn</span> deflate(data: Vec&lt;u8&gt;) -> Vec&lt;u8&gt; {
+    <span class="kw">let mut</span> enc = ZlibEncoder::new(
+        Vec::new(), Compression::default());
+    enc.write_all(&amp;data).unwrap_or(());
+    enc.finish().unwrap_or_default()
+}
+
+<span class="kw">pub fn</span> inflate(data: Vec&lt;u8&gt;) -> Vec&lt;u8&gt; {
+    <span class="kw">let mut</span> dec = ZlibDecoder::new(data.as_slice());
+    <span class="kw">let mut</span> out = Vec::new();
+    dec.read_to_end(&amp;mut out).unwrap_or(0); out
+}
+
+<span class="cmt"># main.py</span>
+<span class="kw">import</span> compress
+data = b<span class="str">"Transport Glue demo payload! "</span> * 500
+compressed   = compress.deflate(data)
+decompressed = compress.inflate(compressed)
+assert decompressed == data  <span class="cmt"># round-trip check</span>
+print(<span class="str">f"ratio: {compress.ratio(data):.3f}"</span>)</code></pre>
             </div>
           </div>
           <div class="demo-section">
