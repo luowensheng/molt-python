@@ -108,6 +108,6 @@ First public release of molt — a hermetic Python toolchain built on top of [uv
 
 ---
 
-[Unreleased]: https://github.com/luowensheng/molt-python/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/luowensheng/molt-python/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/luowensheng/molt-python/releases/tag/v0.1.0
+[Unreleased]: https://github.com/olivierdevelops/molt-python/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/olivierdevelops/molt-python/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/olivierdevelops/molt-python/releases/tag/v0.1.0

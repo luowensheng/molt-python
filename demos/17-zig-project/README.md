@@ -38,17 +38,21 @@ The `.zig` run-handler invokes `zig run` directly — no compile step needed:
 ## Project layout
 
 ```
-hello.zig          # single-file demo — molt run hello.zig
+hello.zig             # single-file demo — molt run hello.zig
 src/
-  stats.zig        # statistics module: StatsResult struct + compute()
-  main.zig         # CLI: parse args, call stats.compute, print histogram
+  stats.zig           # statistics module: StatsResult struct + compute()
+  main.zig            # CLI: parse args, call stats.compute, print histogram
 bin/
-  stats-zig        # compiled output (gitignored)
-demo.py            # Python driver: runs the binary with three datasets
-pyproject.toml     # build / stats / demo / clean tasks
+  stats-zig           # compiled output from `molt run build` (gitignored)
+demo.py               # Python driver: runs the binary with three datasets
+moltproject.toml      # build / stats / demo / clean tasks (no Python required)
 ```
 
-## pyproject.toml tasks
+## moltproject.toml tasks
+
+This demo uses `moltproject.toml` — the config format for non-Python projects.
+It has the same `[tool.molt.tasks]` format as `pyproject.toml` but without
+`requires-python` or `dependencies`, so no Python sync step is needed.
 
 ```toml
 [tool.molt.tasks]

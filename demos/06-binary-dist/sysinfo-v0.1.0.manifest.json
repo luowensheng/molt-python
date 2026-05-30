@@ -4,13 +4,13 @@
     "name": "sysinfo",
     "version": "0.1.0"
   },
-  "built_at": "2026-05-08T05:47:54Z",
+  "built_at": "2026-05-22T21:55:02Z",
   "build_host": {
     "os": "darwin",
     "arch": "arm64"
   },
   "algorithm": "sha256",
-  "root_hash": "c72b9c5e8858473ae9739cddd760f061e1cd5d274537b29224e48e7d966246f6",
+  "root_hash": "21c19884e390c2444415be146a23006d21df0c2af215e71a5bf1f6c6a681d816",
   "payload": {
     "total_files": 3,
     "total_bytes": 4217,
@@ -24,7 +24,7 @@
       {
         "path": ".molt/manifest.json",
         "size": 711,
-        "sha256": "70c16d4de716bcb9de0f7f4ce25e4531d1957be5d64dea9432ece075775e51b7",
+        "sha256": "a8c13184c467a9889fd2aefb6616c05951f7a2ec4cb712952fa402b7544091e4",
         "source": "include"
       },
       {

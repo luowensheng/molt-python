@@ -33,7 +33,7 @@ inside molt's source.
 Capy's Go API is three lines:
 
 ```go
-import "github.com/luowensheng/capy"
+import "github.com/olivierdevelops/capy"
 
 lib, err := capy.NewLibraryYAML(librarySrc)  // compile library once; reuse forever
 output, err := lib.Run(capySrc)               // thread-safe; each call gets fresh context
@@ -524,7 +524,7 @@ loads from `~/.molt/templates/mytemplate/`.
 
 ```bash
 # In the molt repo root
-go get github.com/luowensheng/capy@latest
+go get github.com/olivierdevelops/capy@latest
 ```
 
 That's the only infrastructure change. The library compiles into the molt binary with
@@ -537,7 +537,7 @@ binary (Go's linker strips unused code).
 
 ## Migration order
 
-1. **`go get github.com/luowensheng/capy`** — add dependency
+1. **`go get github.com/olivierdevelops/capy`** — add dependency
 2. **Driver custom templates** — detect `.yaml`/`.capy` extension on `server_template`;
    use `capy.NewLibraryYAML` instead of `text/template`. Zero breaking changes; `.tmpl`
    files keep working via the existing path.
@@ -560,5 +560,5 @@ additive (no existing code removed until the new path is tested).
 | New transport protocol | Fork the `.tmpl` file + add Go conditionals | Write a new library YAML |
 | Kernel codegen extensibility | Hard-coded `fmt.Fprintf` | Overridable Capy library per project |
 | `molt init` scaffolding | Compiled-in template strings | User-customizable YAML libraries |
-| Dependency added | — | `github.com/luowensheng/capy` |
+| Dependency added | — | `github.com/olivierdevelops/capy` |
 | Binary size increase | — | ~400 KB |

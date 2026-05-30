@@ -38,7 +38,7 @@ Key properties relevant to molt:
   `.capy` file → Python, JS, SQL, HTML, Blender, whatever you define.
 - **Sandboxed by construction** — only patterns in the library can appear in output.
   Great for AI-generated code that must stay in bounds.
-- **Go library** — `github.com/luowensheng/capy` — one function call, no subprocess.
+- **Go library** — `github.com/olivierdevelops/capy` — one function call, no subprocess.
 - **No built-in runner** — Capy writes text; something else must execute it.
 
 That last point is exactly where molt steps in.
@@ -101,21 +101,21 @@ molt run gen-all     # generate all targets at once
 ```bash
 molt add capy-bin    # if a Python wrapper exists
 # or add the binary globally:
-molt tool install github.com/luowensheng/capy/cmd/capy@latest
+molt tool install github.com/olivierdevelops/capy/cmd/capy@latest
 ```
 
 Since Capy is a Go binary you can also pin it with a task:
 
 ```toml
 [tool.molt.tasks]
-install-capy = "go install github.com/luowensheng/capy/cmd/capy@latest"
+install-capy = "go install github.com/olivierdevelops/capy/cmd/capy@latest"
 ```
 
 ---
 
 ## Pattern 2 — Transport Glue: call Capy from Python
 
-Capy exposes a Go library (`github.com/luowensheng/capy`). With molt's Transport Glue
+Capy exposes a Go library (`github.com/olivierdevelops/capy`). With molt's Transport Glue
 you can call it from Python with a single import — no subprocess, no shell, no temp files.
 
 ### The glue manifest
@@ -125,7 +125,7 @@ Create `capy.molt.toml` in your project:
 ```toml
 # capy.molt.toml
 lang      = "go"
-src       = "github.com/luowensheng/capy"   # third-party Go module
+src       = "github.com/olivierdevelops/capy"   # third-party Go module
 transport = "stdio"
 
 [[fn]]
@@ -152,7 +152,7 @@ add a thin Go adapter file alongside the manifest:
 package main
 
 import (
-    "github.com/luowensheng/capy/orchestrator"
+    "github.com/olivierdevelops/capy/orchestrator"
 )
 
 // RunFile transpiles scriptPath using the library at libraryPath.
@@ -553,7 +553,7 @@ sql      = "molt run run-sql"
 
 ```bash
 # 1. Install Capy binary globally (available to all molt projects)
-molt tool install github.com/luowensheng/capy/cmd/capy@latest
+molt tool install github.com/olivierdevelops/capy/cmd/capy@latest
 
 # 2. Verify
 capy version

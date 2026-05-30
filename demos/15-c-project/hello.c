@@ -6,6 +6,7 @@
 
 int main(int argc, char *argv[]) {
     const char *name = argc > 1 ? argv[1] : "World";
-    printf("Hello from C! 👋 %s\n", name);
+    int x = 69;
+    printf("Hello from %dC! 👋 %s\n", x, name);
     return 0;
 }

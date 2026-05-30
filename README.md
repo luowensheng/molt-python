@@ -1,40 +1,40 @@
 # molt — hermetic Python toolchain
 
-[![CI](https://github.com/luowensheng/molt-python/actions/workflows/ci.yml/badge.svg)](https://github.com/luowensheng/molt-python/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/luowensheng/molt-python)](https://github.com/luowensheng/molt-python/releases)
+[![CI](https://github.com/olivierdevelops/molt-python/actions/workflows/ci.yml/badge.svg)](https://github.com/olivierdevelops/molt-python/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/olivierdevelops/molt-python)](https://github.com/olivierdevelops/molt-python/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 ---
 
 ## Installation
 
-Download the latest binary for your platform from [GitHub Releases](https://github.com/luowensheng/molt-python/releases/latest):
+Download the latest binary for your platform from [GitHub Releases](https://github.com/olivierdevelops/molt-python/releases/latest):
 
 ```bash
 # macOS (Apple Silicon)
-curl -Lo molt https://github.com/luowensheng/molt-python/releases/latest/download/molt-darwin-arm64
+curl -Lo molt https://github.com/olivierdevelops/molt-python/releases/latest/download/molt-darwin-arm64
 chmod +x molt && sudo mv molt /usr/local/bin/
 
 # macOS (Intel)
-curl -Lo molt https://github.com/luowensheng/molt-python/releases/latest/download/molt-darwin-amd64
+curl -Lo molt https://github.com/olivierdevelops/molt-python/releases/latest/download/molt-darwin-amd64
 chmod +x molt && sudo mv molt /usr/local/bin/
 
 # Linux (x86-64)
-curl -Lo molt https://github.com/luowensheng/molt-python/releases/latest/download/molt-linux-amd64
+curl -Lo molt https://github.com/olivierdevelops/molt-python/releases/latest/download/molt-linux-amd64
 chmod +x molt && sudo mv molt /usr/local/bin/
 
 # Linux (ARM64)
-curl -Lo molt https://github.com/luowensheng/molt-python/releases/latest/download/molt-linux-arm64
+curl -Lo molt https://github.com/olivierdevelops/molt-python/releases/latest/download/molt-linux-arm64
 chmod +x molt && sudo mv molt /usr/local/bin/
 
 # Verify checksum (optional)
-curl -Lo molt.sha256 https://github.com/luowensheng/molt-python/releases/latest/download/molt-darwin-arm64.sha256
+curl -Lo molt.sha256 https://github.com/olivierdevelops/molt-python/releases/latest/download/molt-darwin-arm64.sha256
 sha256sum -c molt.sha256
 ```
 
 **From source** (requires Go 1.22+):
 ```bash
-git clone https://github.com/luowensheng/molt-python.git
+git clone https://github.com/olivierdevelops/molt-python.git
 cd molt-python && go build -o molt . && sudo mv molt /usr/local/bin/
 ```
 

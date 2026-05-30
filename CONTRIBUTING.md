@@ -9,7 +9,7 @@ Thank you for your interest in contributing! This document covers how to set up 
 **Prerequisites:** Go 1.22+
 
 ```bash
-git clone https://github.com/luowensheng/molt-python.git
+git clone https://github.com/olivierdevelops/molt-python.git
 cd molt-python
 go build -o molt .
 ./molt --version

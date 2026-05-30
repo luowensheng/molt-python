@@ -11,7 +11,7 @@
 
 **Please do not open a public GitHub issue for security vulnerabilities.**
 
-Use [GitHub's private vulnerability reporting](https://github.com/luowensheng/molt-python/security/advisories/new) to report security issues confidentially.
+Use [GitHub's private vulnerability reporting](https://github.com/olivierdevelops/molt-python/security/advisories/new) to report security issues confidentially.
 
 Include:
 - A description of the vulnerability and its potential impact

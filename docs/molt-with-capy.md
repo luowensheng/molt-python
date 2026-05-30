@@ -516,7 +516,7 @@ molt build         # unchanged
 The changes are additive. Nothing currently working breaks.
 
 ```
-go get github.com/luowensheng/capy
+go get github.com/olivierdevelops/capy
 
 internal/
   capy/

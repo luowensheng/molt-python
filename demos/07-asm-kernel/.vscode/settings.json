@@ -1,0 +1,8 @@
+{
+  "python.analysis.extraPaths": [
+    "/Users/oliverlaleau/.molt/projects/07-asm-kernel-592603ad7daf9a1c/cython",
+    "/Users/oliverlaleau/Documents/projects/molt-python/demos/07-asm-kernel"
+  ],
+  "python.defaultInterpreterPath": "/Users/oliverlaleau/.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/bin/python3",
+  "python.terminal.activateEnvironment": false
+}

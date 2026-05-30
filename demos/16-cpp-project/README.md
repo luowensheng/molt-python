@@ -30,26 +30,35 @@ molt run demo
 The `.cpp` run-handler compiles and runs in a single shell invocation:
 
 ```
-zig c++ -O2 -std=c++17 -o {dir}/{basename} {file} && {dir}/{basename} {args}
+zig c++ -O2 -std=c++17 -o {tmp}/{basename} {file} && {tmp}/{basename} {args}
 ```
 
 `{zig}` resolves to the auto-installed zig binary (`~/.molt/toolchains/zig/`),
 so the compiler is available on any machine without any manual installation.
 
+`{tmp}` resolves to a stable per-file temp directory
+(`$TMPDIR/molt-run/<sha256-hash>/`), so the compiled binary never appears in
+your working directory. The path is deterministic — re-running the same file
+reuses the same location (and the OS cleans it up on reboot).
+
 ## Project layout
 
 ```
-hello.cpp          # single-file demo — molt run hello.cpp
+hello.cpp             # single-file demo — molt run hello.cpp
 src/
-  vec.hpp          # generic Stats<T> template (C++17)
-  main.cpp         # CLI: parse args, compute stats, print histogram
+  vec.hpp             # generic Stats<T> template (C++17)
+  main.cpp            # CLI: parse args, compute stats, print histogram
 bin/
-  stats-cpp        # compiled output (gitignored)
-demo.py            # Python driver: runs the binary with three datasets
-pyproject.toml     # build / stats / demo / clean tasks
+  stats-cpp           # compiled output from `molt run build` (gitignored)
+demo.py               # Python driver: runs the binary with three datasets
+moltproject.toml      # build / stats / demo / clean tasks (no Python required)
 ```
 
-## pyproject.toml tasks
+## moltproject.toml tasks
+
+This demo uses `moltproject.toml` — the config format for non-Python projects.
+It has the same `[tool.molt.tasks]` format as `pyproject.toml` but without
+`requires-python` or `dependencies`, so no Python sync step is needed.
 
 ```toml
 [tool.molt.tasks]
